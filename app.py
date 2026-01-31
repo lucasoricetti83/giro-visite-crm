@@ -454,8 +454,13 @@ def main_app():
                 'lon_base': 12.4964,
                 'h_inizio': '09:00',
                 'h_fine': '18:00',
+                'pausa_inizio': '13:00',
+                'pausa_fine': '14:00',
                 'durata_visita': 45,
-                'giorni_lavorativi': [0, 1, 2, 3, 4]
+                'giorni_lavorativi': [0, 1, 2, 3, 4],
+                'attiva_ferie': False,
+                'ferie_inizio': None,
+                'ferie_fine': None
             }
     
     if 'esclusi_oggi' not in st.session_state:
@@ -622,7 +627,8 @@ def main_app():
         
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("👥 Totale Clienti", len(df))
-        c2.metric("✅ Attivi", len(df[df['visitare'] == 'SI']))
+        clienti_attivi = len(df[df['visitare'] == 'SI']) if not df.empty and 'visitare' in df.columns else 0
+        c2.metric("✅ Attivi", clienti_attivi)
         c3.metric("🔴 Critici", len(critici))
         c4.metric("🟠 Warning", len(warning))
         
@@ -836,6 +842,7 @@ def main_app():
         
         st.divider()
         st.subheader("📅 Giorni Lavorativi")
+        st.caption("Seleziona i giorni in cui effettui le visite")
         
         giorni_nomi = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"]
         cols = st.columns(7)
@@ -846,25 +853,105 @@ def main_app():
                 if st.checkbox(g, value=i in giorni_lavorativi, key=f"giorno_{i}"):
                     nuovi_giorni.append(i)
         
-        if nuovi_giorni != giorni_lavorativi:
+        if nuovi_giorni and nuovi_giorni != giorni_lavorativi:
             config['giorni_lavorativi'] = nuovi_giorni
             save_config(config)
             st.session_state.config = config
         
-        st.divider()
-        st.subheader("⏰ Orari")
+        # Mostra riepilogo giorni
+        giorni_nomi_full = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"]
+        giorni_selezionati = [giorni_nomi_full[i] for i in giorni_lavorativi]
+        st.info(f"📅 Giorni attivi: **{', '.join(giorni_selezionati)}**")
         
-        durata = st.slider("Durata visita (min)", 15, 120, config.get('durata_visita', 45))
+        st.divider()
+        st.subheader("⏰ Orari di Lavoro")
+        
+        col_orari1, col_orari2 = st.columns(2)
+        
+        # Converti stringhe in oggetti time se necessario
+        h_inizio_default = config.get('h_inizio', '09:00')
+        h_fine_default = config.get('h_fine', '18:00')
+        pausa_inizio_default = config.get('pausa_inizio', '13:00')
+        pausa_fine_default = config.get('pausa_fine', '14:00')
+        
+        if isinstance(h_inizio_default, str):
+            h_inizio_default = datetime.strptime(h_inizio_default, '%H:%M').time()
+        if isinstance(h_fine_default, str):
+            h_fine_default = datetime.strptime(h_fine_default, '%H:%M').time()
+        if isinstance(pausa_inizio_default, str):
+            pausa_inizio_default = datetime.strptime(pausa_inizio_default, '%H:%M').time()
+        if isinstance(pausa_fine_default, str):
+            pausa_fine_default = datetime.strptime(pausa_fine_default, '%H:%M').time()
+        
+        with col_orari1:
+            h_inizio = st.time_input("🌅 Inizio Lavoro", value=h_inizio_default, key="h_inizio_input")
+            pausa_inizio = st.time_input("🍽️ Inizio Pausa", value=pausa_inizio_default, key="pausa_inizio_input")
+        
+        with col_orari2:
+            h_fine = st.time_input("🌆 Fine Lavoro", value=h_fine_default, key="h_fine_input")
+            pausa_fine = st.time_input("🍽️ Fine Pausa", value=pausa_fine_default, key="pausa_fine_input")
+        
+        # Salva orari se cambiati
+        if st.button("💾 Salva Orari", key="salva_orari"):
+            config['h_inizio'] = h_inizio.strftime('%H:%M')
+            config['h_fine'] = h_fine.strftime('%H:%M')
+            config['pausa_inizio'] = pausa_inizio.strftime('%H:%M')
+            config['pausa_fine'] = pausa_fine.strftime('%H:%M')
+            save_config(config)
+            st.session_state.config = config
+            st.success("✅ Orari salvati!")
+        
+        st.divider()
+        st.subheader("⏱️ Durata Visita")
+        
+        durata = st.slider("Minuti per visita", 15, 120, config.get('durata_visita', 45))
         if durata != config.get('durata_visita'):
             config['durata_visita'] = durata
             save_config(config)
             st.session_state.config = config
         
         st.divider()
+        st.subheader("🏖️ Ferie / Giorni di Chiusura")
+        
+        attiva_ferie = st.checkbox("Attiva periodo di ferie", value=config.get('attiva_ferie', False), key="attiva_ferie")
+        
+        if attiva_ferie:
+            col_ferie1, col_ferie2 = st.columns(2)
+            
+            ferie_inizio_default = config.get('ferie_inizio', datetime.now().date())
+            ferie_fine_default = config.get('ferie_fine', datetime.now().date() + timedelta(days=7))
+            
+            if isinstance(ferie_inizio_default, str):
+                ferie_inizio_default = datetime.strptime(ferie_inizio_default, '%Y-%m-%d').date()
+            if isinstance(ferie_fine_default, str):
+                ferie_fine_default = datetime.strptime(ferie_fine_default, '%Y-%m-%d').date()
+            
+            with col_ferie1:
+                ferie_inizio = st.date_input("📅 Data Inizio Ferie", value=ferie_inizio_default, key="ferie_inizio")
+            with col_ferie2:
+                ferie_fine = st.date_input("📅 Data Fine Ferie", value=ferie_fine_default, key="ferie_fine")
+            
+            if st.button("💾 Salva Ferie", key="salva_ferie"):
+                config['attiva_ferie'] = True
+                config['ferie_inizio'] = ferie_inizio.isoformat()
+                config['ferie_fine'] = ferie_fine.isoformat()
+                save_config(config)
+                st.session_state.config = config
+                st.success(f"✅ Ferie salvate: {ferie_inizio.strftime('%d/%m/%Y')} - {ferie_fine.strftime('%d/%m/%Y')}")
+        else:
+            if config.get('attiva_ferie', False):
+                config['attiva_ferie'] = False
+                save_config(config)
+                st.session_state.config = config
+        
+        st.divider()
         st.subheader("📊 Info Account")
         st.write(f"**Email:** {st.session_state.user.email}")
         st.write(f"**Clienti totali:** {len(df)}")
-        st.write(f"**Clienti attivi:** {len(df[df['visitare'] == 'SI'])}")
+        if not df.empty and 'visitare' in df.columns:
+            st.write(f"**Clienti attivi:** {len(df[df['visitare'] == 'SI'])}")
+        else:
+            st.write(f"**Clienti attivi:** 0")
         
         st.divider()
         st.subheader("📥 Importa Clienti da CSV")
@@ -1024,7 +1111,7 @@ def main_app():
     
     # Footer
     st.divider()
-    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 1.1")
+    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 1.3")
 
 # --- RUN APP ---
 init_auth_state()
