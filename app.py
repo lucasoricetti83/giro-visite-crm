@@ -865,10 +865,166 @@ def main_app():
         st.write(f"**Email:** {st.session_state.user.email}")
         st.write(f"**Clienti totali:** {len(df)}")
         st.write(f"**Clienti attivi:** {len(df[df['visitare'] == 'SI'])}")
+        
+        st.divider()
+        st.subheader("📥 Importa Clienti da CSV")
+        
+        st.info("""
+        **Formato CSV richiesto:**
+        Il file deve avere queste colonne (nell'ordine che preferisci):
+        - `nome cliente` (obbligatorio)
+        - `indirizzo`, `cap`, `provincia`
+        - `latitude`, `longitude` (con virgola o punto)
+        - `telefono`, `cellulare`, `mail`
+        - `frequenza (giorni)`, `ultima visita`, `visitare`
+        - `referente`, `contatto`, `note`, `storico report`
+        """)
+        
+        uploaded_file = st.file_uploader("📂 Carica file CSV", type=['csv'])
+        
+        if uploaded_file is not None:
+            try:
+                # Leggi CSV
+                df_import = pd.read_csv(uploaded_file)
+                
+                st.success(f"✅ File caricato! Trovati **{len(df_import)} clienti**")
+                
+                # Mostra anteprima
+                with st.expander("👀 Anteprima dati", expanded=True):
+                    st.dataframe(df_import.head(5), use_container_width=True)
+                
+                # Pulsante importazione
+                col_imp1, col_imp2 = st.columns(2)
+                
+                if col_imp1.button("🚀 IMPORTA TUTTI I CLIENTI", type="primary", use_container_width=True):
+                    user_id = get_user_id()
+                    
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    successi = 0
+                    errori = 0
+                    errori_dettagli = []
+                    
+                    for idx, row in df_import.iterrows():
+                        try:
+                            # Converti latitude/longitude (gestisce sia virgola che punto)
+                            lat = None
+                            lon = None
+                            if 'latitude' in row and pd.notnull(row['latitude']):
+                                lat = float(str(row['latitude']).replace(',', '.'))
+                            if 'longitude' in row and pd.notnull(row['longitude']):
+                                lon = float(str(row['longitude']).replace(',', '.'))
+                            
+                            # Converti data ultima visita
+                            ultima_visita = None
+                            if 'ultima visita' in row and pd.notnull(row['ultima visita']):
+                                try:
+                                    data_str = str(row['ultima visita']).split(' ')[0]
+                                    ultima_visita = datetime.strptime(data_str, '%d/%m/%Y').isoformat()
+                                except:
+                                    pass
+                            
+                            # Converti appuntamento
+                            appuntamento = None
+                            if 'appuntamento' in row and pd.notnull(row['appuntamento']):
+                                try:
+                                    appuntamento = datetime.strptime(str(row['appuntamento']), '%d/%m/%Y %H:%M').isoformat()
+                                except:
+                                    try:
+                                        appuntamento = datetime.strptime(str(row['appuntamento']), '%d/%m/%Y').isoformat()
+                                    except:
+                                        pass
+                            
+                            # Prepara dati cliente
+                            cliente = {
+                                'user_id': user_id,
+                                'nome_cliente': str(row.get('nome cliente', '')) if pd.notnull(row.get('nome cliente')) else '',
+                                'indirizzo': str(row.get('indirizzo', '')) if pd.notnull(row.get('indirizzo')) else '',
+                                'cap': str(row.get('cap', '')) if pd.notnull(row.get('cap')) else '',
+                                'provincia': str(row.get('provincia', '')) if pd.notnull(row.get('provincia')) else '',
+                                'latitude': lat,
+                                'longitude': lon,
+                                'frequenza_giorni': int(row.get('frequenza (giorni)', 30)) if pd.notnull(row.get('frequenza (giorni)')) else 30,
+                                'ultima_visita': ultima_visita,
+                                'visitare': str(row.get('visitare', 'SI')).upper() if pd.notnull(row.get('visitare')) else 'SI',
+                                'storico_report': str(row.get('storico report', '')) if pd.notnull(row.get('storico report')) else '',
+                                'telefono': str(row.get('telefono', '')) if pd.notnull(row.get('telefono')) else '',
+                                'cellulare': str(row.get('cellulare', '')) if pd.notnull(row.get('cellulare')) else '',
+                                'mail': str(row.get('mail', '')) if pd.notnull(row.get('mail')) else '',
+                                'contatto': str(row.get('contatto', '')) if pd.notnull(row.get('contatto')) else '',
+                                'referente': str(row.get('referente', '')) if pd.notnull(row.get('referente')) else '',
+                                'note': str(row.get('note', '')) if pd.notnull(row.get('note')) else '',
+                                'appuntamento': appuntamento
+                            }
+                            
+                            # Pulisci valori vuoti e 'nan'
+                            cliente_clean = {}
+                            for k, v in cliente.items():
+                                if v is not None and str(v) != 'nan' and str(v) != '':
+                                    cliente_clean[k] = v
+                            cliente_clean['user_id'] = user_id
+                            
+                            # Verifica che ci sia almeno il nome
+                            if cliente_clean.get('nome_cliente'):
+                                supabase.table('clienti').insert(cliente_clean).execute()
+                                successi += 1
+                            else:
+                                errori += 1
+                                errori_dettagli.append(f"Riga {idx+2}: Nome cliente mancante")
+                            
+                        except Exception as e:
+                            errori += 1
+                            errori_dettagli.append(f"Riga {idx+2}: {str(e)[:50]}")
+                        
+                        # Aggiorna progress bar
+                        progress = (idx + 1) / len(df_import)
+                        progress_bar.progress(progress)
+                        status_text.text(f"Importazione: {idx+1}/{len(df_import)} ({successi} ✅ | {errori} ❌)")
+                    
+                    # Risultato finale
+                    progress_bar.empty()
+                    status_text.empty()
+                    
+                    if successi > 0:
+                        st.success(f"🎉 **Importazione completata!**")
+                        st.write(f"✅ Importati: **{successi}** clienti")
+                        if errori > 0:
+                            st.write(f"❌ Errori: **{errori}**")
+                            with st.expander("Dettagli errori"):
+                                for err in errori_dettagli[:20]:
+                                    st.write(f"- {err}")
+                        
+                        # Ricarica dati
+                        st.session_state.reload_data = True
+                        st.rerun()
+                    else:
+                        st.error("❌ Nessun cliente importato. Controlla il formato del file.")
+                
+                if col_imp2.button("❌ Annulla", use_container_width=True):
+                    st.rerun()
+                    
+            except Exception as e:
+                st.error(f"❌ Errore lettura file: {str(e)}")
+        
+        st.divider()
+        st.subheader("🗑️ Elimina Tutti i Dati")
+        st.warning("⚠️ Questa azione è **IRREVERSIBILE**!")
+        
+        if st.checkbox("Confermo di voler eliminare TUTTI i miei clienti", key="confirm_delete_all"):
+            if st.button("🗑️ ELIMINA TUTTO", type="primary"):
+                try:
+                    user_id = get_user_id()
+                    supabase.table('clienti').delete().eq('user_id', user_id).execute()
+                    st.session_state.reload_data = True
+                    st.success("✅ Tutti i clienti eliminati")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Errore: {str(e)}")
     
     # Footer
     st.divider()
-    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 1.0")
+    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 1.1")
 
 # --- RUN APP ---
 init_auth_state()
