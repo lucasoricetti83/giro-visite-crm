@@ -1477,256 +1477,317 @@ def main_app():
         st.header("👤 Anagrafica Cliente")
         
         if not df.empty:
-            # Filtri
-            col_filtro1, col_filtro2 = st.columns(2)
+            # === 1. BARRA RICERCA CLIENTE ===
+            col_filtro1, col_filtro2, col_filtro3 = st.columns([2, 1, 1])
             
             with col_filtro1:
-                # Filtro per stato cliente
-                stati_filtro = ["Tutti", "CLIENTE ATTIVO", "CLIENTE NUOVO", "CLIENTE POSSIBILE", "CLIENTE PROBABILE"]
-                filtro_stato = st.selectbox("📊 Filtra per stato:", stati_filtro, key="filtro_stato_anagrafica")
+                # Ricerca cliente
+                nomi_tutti = [""] + sorted(df['nome_cliente'].tolist())
+                idx = nomi_tutti.index(st.session_state.cliente_selezionato) if st.session_state.cliente_selezionato in nomi_tutti else 0
+                scelto = st.selectbox("🔍 Cerca cliente:", nomi_tutti, index=idx)
             
             with col_filtro2:
-                # Filtro per incluso nel giro
-                filtro_giro = st.selectbox("🚗 Filtra per giro:", ["Tutti", "Nel giro (SI)", "Fuori giro (NO)"], key="filtro_giro_anagrafica")
+                # Filtro per stato cliente
+                stati_filtro = ["Tutti", "🟢 Attivo", "🔵 Nuovo", "🟡 Possibile", "🟠 Probabile"]
+                filtro_stato = st.selectbox("📊 Stato:", stati_filtro, key="filtro_stato_anagrafica")
             
-            # Applica filtri
+            with col_filtro3:
+                # Filtro per incluso nel giro
+                filtro_giro = st.selectbox("🚗 Giro:", ["Tutti", "Nel giro", "Fuori giro"], key="filtro_giro_anagrafica")
+            
+            # Applica filtri per mostrare conteggio
             df_filtrato = df.copy()
+            mappa_stati = {"🟢 Attivo": "CLIENTE ATTIVO", "🔵 Nuovo": "CLIENTE NUOVO", "🟡 Possibile": "CLIENTE POSSIBILE", "🟠 Probabile": "CLIENTE PROBABILE"}
             if filtro_stato != "Tutti":
-                df_filtrato = df_filtrato[df_filtrato['stato_cliente'] == filtro_stato]
-            if filtro_giro == "Nel giro (SI)":
+                df_filtrato = df_filtrato[df_filtrato['stato_cliente'] == mappa_stati.get(filtro_stato, '')]
+            if filtro_giro == "Nel giro":
                 df_filtrato = df_filtrato[df_filtrato['visitare'] == 'SI']
-            elif filtro_giro == "Fuori giro (NO)":
+            elif filtro_giro == "Fuori giro":
                 df_filtrato = df_filtrato[df_filtrato['visitare'] != 'SI']
             
-            st.caption(f"📋 {len(df_filtrato)} clienti trovati")
-            
-            nomi = [""] + sorted(df_filtrato['nome_cliente'].tolist())
-            idx = nomi.index(st.session_state.cliente_selezionato) if st.session_state.cliente_selezionato in nomi else 0
-            scelto = st.selectbox("Seleziona cliente:", nomi, index=idx)
+            st.caption(f"📋 {len(df_filtrato)} clienti | Totale: {len(df)}")
             
             if scelto:
                 st.session_state.cliente_selezionato = scelto
                 cliente = df[df['nome_cliente'] == scelto].iloc[0]
                 
-                # Badge stato cliente
-                stato = cliente.get('stato_cliente', 'CLIENTE ATTIVO')
-                colori_stato = {
-                    'CLIENTE ATTIVO': '🟢',
-                    'CLIENTE NUOVO': '🔵',
-                    'CLIENTE POSSIBILE': '🟡',
-                    'CLIENTE PROBABILE': '🟠'
-                }
-                icona_stato = colori_stato.get(stato, '⚪')
+                st.divider()
                 
-                st.markdown(f"### {icona_stato} {stato}")
-                
-                # Azioni rapide
-                ca = st.columns(5)
-                if pd.notnull(cliente.get('latitude')) and cliente.get('latitude') != 0:
-                    ca[0].link_button("🚗 Naviga", f"https://www.google.com/maps/dir/?api=1&destination={cliente['latitude']},{cliente['longitude']}")
-                if cliente.get('cellulare'):
-                    ca[1].link_button("📱 Chiama", f"tel:{cliente['cellulare']}")
-                if cliente.get('mail'):
-                    ca[2].link_button("📧 Email", f"mailto:{cliente['mail']}")
+                # === 2. ANAGRAFICA DEL CLIENTE ===
+                with st.container(border=True):
+                    # Header con stato
+                    stato = cliente.get('stato_cliente', 'CLIENTE ATTIVO')
+                    colori_stato = {
+                        'CLIENTE ATTIVO': ('🟢', 'green'),
+                        'CLIENTE NUOVO': ('🔵', 'blue'),
+                        'CLIENTE POSSIBILE': ('🟡', 'orange'),
+                        'CLIENTE PROBABILE': ('🟠', 'red')
+                    }
+                    icona_stato, _ = colori_stato.get(stato, ('⚪', 'gray'))
+                    
+                    col_nome, col_stato = st.columns([3, 1])
+                    col_nome.markdown(f"## {scelto}")
+                    col_stato.markdown(f"### {icona_stato} {stato.replace('CLIENTE ', '')}")
+                    
+                    # Dati principali in colonne
+                    col_info1, col_info2 = st.columns(2)
+                    
+                    with col_info1:
+                        if cliente.get('indirizzo'):
+                            st.write(f"📍 **Indirizzo:** {cliente['indirizzo']}")
+                        if cliente.get('cap') or cliente.get('provincia'):
+                            st.write(f"🏙️ **CAP/Prov:** {cliente.get('cap', '')} {cliente.get('provincia', '')}")
+                        if cliente.get('contatto'):
+                            st.write(f"👤 **Referente:** {cliente['contatto']}")
+                    
+                    with col_info2:
+                        if cliente.get('telefono'):
+                            st.write(f"📞 **Telefono:** {cliente['telefono']}")
+                        if cliente.get('cellulare'):
+                            st.write(f"📱 **Cellulare:** {cliente['cellulare']}")
+                        if cliente.get('mail'):
+                            st.write(f"📧 **Email:** {cliente['mail']}")
+                    
+                    st.divider()
+                    
+                    # Info visite
+                    col_vis1, col_vis2, col_vis3 = st.columns(3)
+                    
+                    ultima = cliente.get('ultima_visita')
+                    if pd.notnull(ultima):
+                        col_vis1.metric("📅 Ultima visita", ultima.strftime('%d/%m/%Y'))
+                    else:
+                        col_vis1.metric("📅 Ultima visita", "Mai")
+                    
+                    col_vis2.metric("🔄 Frequenza", f"{cliente.get('frequenza_giorni', 30)} giorni")
+                    col_vis3.metric("🚗 Nel giro", "✅ SI" if cliente.get('visitare') == 'SI' else "❌ NO")
+                    
+                    # Pulsanti azione rapida
+                    st.divider()
+                    btn1, btn2, btn3, btn4 = st.columns(4)
+                    
+                    if pd.notnull(cliente.get('latitude')) and cliente.get('latitude') != 0:
+                        btn1.link_button("🚗 Naviga", f"https://www.google.com/maps/dir/?api=1&destination={cliente['latitude']},{cliente['longitude']}", use_container_width=True)
+                    else:
+                        btn1.button("🚗 Naviga", disabled=True, use_container_width=True)
+                    
+                    if cliente.get('cellulare'):
+                        btn2.link_button("📱 Chiama", f"tel:{cliente['cellulare']}", use_container_width=True)
+                    else:
+                        btn2.button("📱 Chiama", disabled=True, use_container_width=True)
+                    
+                    if cliente.get('mail'):
+                        btn3.link_button("📧 Email", f"mailto:{cliente['mail']}", use_container_width=True)
+                    else:
+                        btn3.button("📧 Email", disabled=True, use_container_width=True)
+                    
+                    if cliente.get('telefono'):
+                        btn4.link_button("📞 Telefono", f"tel:{cliente['telefono']}", use_container_width=True)
+                    else:
+                        btn4.button("📞 Telefono", disabled=True, use_container_width=True)
                 
                 st.divider()
                 
-                # Sezione GPS - Sono qui dal cliente
-                with st.container(border=True):
-                    st.subheader("📍 Aggiorna Posizione Cliente")
-                    st.caption("Usa questa funzione quando sei fisicamente dal cliente per salvare la posizione esatta")
-                    
-                    # Input manuale coordinate (nascosto di default)
-                    with st.expander("🎯 Inserisci coordinate GPS manualmente"):
-                        col_gps1, col_gps2 = st.columns(2)
-                        new_lat = col_gps1.number_input("Latitudine", value=0.0, format="%.6f", key="new_lat_input")
-                        new_lon = col_gps2.number_input("Longitudine", value=0.0, format="%.6f", key="new_lon_input")
-                        
-                        if st.button("📍 SALVA QUESTA POSIZIONE", type="primary", use_container_width=True):
-                            if new_lat != 0 and new_lon != 0:
-                                # Ottieni indirizzo dalle coordinate
-                                addr_info = reverse_geocode(new_lat, new_lon)
-                                update_data = {
-                                    'latitude': new_lat,
-                                    'longitude': new_lon
-                                }
-                                if addr_info:
-                                    update_data['indirizzo'] = addr_info['indirizzo_completo']
-                                    if addr_info['cap']:
-                                        update_data['cap'] = addr_info['cap']
-                                    if addr_info['provincia']:
-                                        update_data['provincia'] = addr_info['provincia']
-                                
-                                update_cliente(cliente['id'], update_data)
-                                st.session_state.reload_data = True
-                                st.success(f"✅ Posizione aggiornata! ({new_lat:.6f}, {new_lon:.6f})")
-                                st.rerun()
-                            else:
-                                st.error("❌ Inserisci coordinate valide")
-                    
-                    st.info("💡 **Suggerimento:** Apri Google Maps sul telefono, tieni premuto sulla tua posizione, e copia le coordinate")
+                # === 3. REGISTRA VISITA + PROMEMORIA (affiancati) ===
+                col_visita, col_promemoria = st.columns(2)
                 
-                st.divider()
-                
-                # Pulsante visita rapida
-                with st.container(border=True):
-                    st.subheader("🏁 Registra Visita")
-                    if st.button("✅ APPENA VISITATO", type="primary", use_container_width=True):
-                        st.session_state.show_report = True
-                    
-                    if st.session_state.get('show_report', False):
-                        dv = st.date_input("Data:", value=ora_italiana.date())
-                        report = st.text_area("Report:", placeholder="Note sulla visita...")
+                # --- Colonna Registra Visita ---
+                with col_visita:
+                    with st.container(border=True):
+                        st.subheader("🏁 Registra Visita")
                         
-                        c1, c2 = st.columns(2)
-                        if c1.button("💾 Salva", use_container_width=True):
-                            nuovo_report = f"[{dv.strftime('%d/%m/%Y')}] {report}"
+                        # Tipo visita
+                        tipo_visita = st.radio(
+                            "Tipo di contatto:",
+                            ["🚗 Visita dal cliente", "📞 Telefonata"],
+                            horizontal=True,
+                            key="tipo_visita"
+                        )
+                        
+                        data_visita = st.date_input("📅 Data:", value=ora_italiana.date(), key="data_visita_reg")
+                        
+                        report_visita = st.text_area(
+                            "📝 Note/Report:",
+                            placeholder="Descrivi brevemente la visita o telefonata...",
+                            height=100,
+                            key="report_visita"
+                        )
+                        
+                        if st.button("✅ REGISTRA VISITA", type="primary", use_container_width=True):
+                            # Crea report con tipo
+                            tipo_label = "VISITA" if "Visita" in tipo_visita else "TELEFONATA"
+                            nuovo_report = f"[{data_visita.strftime('%d/%m/%Y')}] [{tipo_label}] {report_visita}"
                             vecchio = str(cliente.get('storico_report', '') or '')
                             storico = nuovo_report + "\n\n" + vecchio if vecchio.strip() else nuovo_report
                             
                             update_cliente(cliente['id'], {
-                                'ultima_visita': dv.isoformat(),
+                                'ultima_visita': data_visita.isoformat(),
                                 'storico_report': storico
                             })
                             
                             if scelto not in st.session_state.visitati_oggi:
                                 st.session_state.visitati_oggi.append(scelto)
                             
-                            st.session_state.show_report = False
+                            st.session_state.reload_data = True
+                            st.success(f"✅ {tipo_label} registrata!")
+                            st.rerun()
+                
+                # --- Colonna Promemoria ---
+                with col_promemoria:
+                    with st.container(border=True):
+                        st.subheader("📝 Promemoria")
+                        
+                        promemoria_attuale = cliente.get('promemoria', '') if pd.notnull(cliente.get('promemoria')) else ''
+                        
+                        if promemoria_attuale:
+                            st.warning(f"**Attuale:** {promemoria_attuale}")
+                        
+                        nuovo_promemoria = st.text_area(
+                            "Promemoria prossima visita:",
+                            value=promemoria_attuale,
+                            placeholder="Es: Portare catalogo, Chiedere feedback...",
+                            height=100,
+                            key="input_promemoria"
+                        )
+                        
+                        col_prom1, col_prom2 = st.columns(2)
+                        
+                        if col_prom1.button("💾 Salva", use_container_width=True, type="primary"):
+                            update_cliente(cliente['id'], {'promemoria': nuovo_promemoria})
                             st.session_state.reload_data = True
                             st.success("✅ Salvato!")
                             st.rerun()
                         
-                        if c2.button("❌ Annulla", use_container_width=True):
-                            st.session_state.show_report = False
+                        if col_prom2.button("🗑️ Cancella", use_container_width=True):
+                            update_cliente(cliente['id'], {'promemoria': ''})
+                            st.session_state.reload_data = True
+                            st.success("✅ Cancellato!")
                             st.rerun()
                 
                 st.divider()
                 
-                # Sezione Promemoria
+                # === 4. GEOLOCALIZZA CLIENTE ===
                 with st.container(border=True):
-                    st.subheader("📝 Promemoria per prossima visita")
+                    st.subheader("📍 Geolocalizza Cliente")
                     
-                    promemoria_attuale = cliente.get('promemoria', '') if pd.notnull(cliente.get('promemoria')) else ''
-                    
-                    if promemoria_attuale:
-                        st.info(f"**Promemoria attuale:** {promemoria_attuale}")
-                    
-                    nuovo_promemoria = st.text_area(
-                        "Inserisci promemoria:",
-                        value=promemoria_attuale,
-                        placeholder="Es: Portare catalogo nuovo, Chiedere feedback prodotto X, Ricordare sconto...",
-                        key="input_promemoria"
-                    )
-                    
-                    col_prom1, col_prom2 = st.columns(2)
-                    
-                    if col_prom1.button("💾 Salva Promemoria", use_container_width=True, type="primary"):
-                        update_cliente(cliente['id'], {'promemoria': nuovo_promemoria})
-                        st.session_state.reload_data = True
-                        st.success("✅ Promemoria salvato!")
-                        st.rerun()
-                    
-                    if col_prom2.button("🗑️ Cancella Promemoria", use_container_width=True):
-                        update_cliente(cliente['id'], {'promemoria': ''})
-                        st.session_state.reload_data = True
-                        st.success("✅ Promemoria cancellato!")
-                        st.rerun()
-                
-                st.divider()
-                
-                # Form modifica
-                with st.form("edit_cliente"):
-                    st.subheader("✏️ Modifica Dati")
-                    c1, c2 = st.columns(2)
-                    
-                    nome = c1.text_input("Nome", cliente['nome_cliente'])
-                    indirizzo = c1.text_input("Indirizzo", cliente.get('indirizzo', ''))
-                    cap = c1.text_input("CAP", cliente.get('cap', ''))
-                    provincia = c1.text_input("Provincia", cliente.get('provincia', ''))
-                    frequenza = c1.number_input("Frequenza (gg)", value=int(cliente.get('frequenza_giorni', 30)))
-                    
-                    # Stato cliente
-                    stati_cliente = ["CLIENTE ATTIVO", "CLIENTE NUOVO", "CLIENTE POSSIBILE", "CLIENTE PROBABILE"]
-                    stato_attuale = cliente.get('stato_cliente', 'CLIENTE ATTIVO')
-                    if stato_attuale not in stati_cliente:
-                        stato_attuale = 'CLIENTE ATTIVO'
-                    stato_cliente = c1.selectbox("📊 Stato Cliente", stati_cliente, index=stati_cliente.index(stato_attuale))
-                    
-                    # Da visitare (attivo nel giro)
-                    visitare = c1.selectbox("🚗 Includi nel Giro?", ["SI", "NO"], index=0 if cliente.get('visitare') == 'SI' else 1)
-                    
-                    telefono = c2.text_input("Telefono", cliente.get('telefono', ''))
-                    cellulare = c2.text_input("Cellulare", cliente.get('cellulare', ''))
-                    mail = c2.text_input("Email", cliente.get('mail', ''))
-                    contatto = c2.text_input("Referente", cliente.get('contatto', ''))
-                    
-                    # Coordinate GPS
-                    st.divider()
-                    st.write("**📍 Coordinate GPS**")
-                    coord_c1, coord_c2 = st.columns(2)
+                    # Mostra coordinate attuali
                     lat_attuale = cliente.get('latitude') if pd.notnull(cliente.get('latitude')) else 0.0
                     lon_attuale = cliente.get('longitude') if pd.notnull(cliente.get('longitude')) else 0.0
-                    latitudine = coord_c1.number_input("Latitudine", value=float(lat_attuale), format="%.6f")
-                    longitudine = coord_c2.number_input("Longitudine", value=float(lon_attuale), format="%.6f")
                     
-                    if lat_attuale == 0 or lon_attuale == 0:
-                        st.warning("⚠️ Coordinate mancanti! Il cliente non apparirà nel giro ottimizzato.")
+                    if lat_attuale != 0 and lon_attuale != 0:
+                        st.success(f"📍 Coordinate attuali: **{lat_attuale:.6f}, {lon_attuale:.6f}**")
+                    else:
+                        st.error("⚠️ Coordinate mancanti! Il cliente non apparirà nel giro.")
                     
-                    note = st.text_area("Note", cliente.get('note', ''), height=100)
-                    storico = st.text_area("Storico Report", cliente.get('storico_report', ''), height=150)
+                    col_geo1, col_geo2 = st.columns(2)
                     
-                    col_save1, col_save2 = st.columns(2)
-                    
-                    if col_save1.form_submit_button("💾 Salva Modifiche", use_container_width=True):
-                        update_cliente(cliente['id'], {
-                            'nome_cliente': nome,
-                            'indirizzo': indirizzo,
-                            'cap': cap,
-                            'provincia': provincia,
-                            'frequenza_giorni': frequenza,
-                            'stato_cliente': stato_cliente,
-                            'visitare': visitare,
-                            'telefono': telefono,
-                            'cellulare': cellulare,
-                            'mail': mail,
-                            'contatto': contatto,
-                            'latitude': latitudine,
-                            'longitude': longitudine,
-                            'note': note,
-                            'storico_report': storico
-                        })
-                        st.session_state.reload_data = True
-                        st.success("✅ Salvato!")
-                        st.rerun()
-                    
-                    if col_save2.form_submit_button("🌍 Rigenera Coordinate da Indirizzo", use_container_width=True):
-                        if indirizzo:
-                            new_coords = get_coords(indirizzo)
-                            if new_coords:
-                                update_cliente(cliente['id'], {
-                                    'latitude': new_coords[0],
-                                    'longitude': new_coords[1]
-                                })
-                                st.session_state.reload_data = True
-                                st.success(f"✅ Coordinate aggiornate: {new_coords[0]:.6f}, {new_coords[1]:.6f}")
-                                st.rerun()
+                    with col_geo1:
+                        st.write("**🔍 Da indirizzo:**")
+                        if st.button("🌍 Genera coordinate da indirizzo", use_container_width=True):
+                            if cliente.get('indirizzo'):
+                                new_coords = get_coords(cliente['indirizzo'])
+                                if new_coords:
+                                    update_cliente(cliente['id'], {
+                                        'latitude': new_coords[0],
+                                        'longitude': new_coords[1]
+                                    })
+                                    st.session_state.reload_data = True
+                                    st.success(f"✅ Coordinate: {new_coords[0]:.6f}, {new_coords[1]:.6f}")
+                                    st.rerun()
+                                else:
+                                    st.error("❌ Indirizzo non trovato")
                             else:
-                                st.error("❌ Impossibile trovare le coordinate per questo indirizzo")
-                        else:
-                            st.error("❌ Inserisci un indirizzo prima")
+                                st.error("❌ Inserisci prima un indirizzo")
+                    
+                    with col_geo2:
+                        st.write("**📍 Manuale (sono qui):**")
+                        with st.expander("Inserisci coordinate GPS"):
+                            new_lat = st.number_input("Latitudine", value=0.0, format="%.6f", key="new_lat")
+                            new_lon = st.number_input("Longitudine", value=0.0, format="%.6f", key="new_lon")
+                            
+                            if st.button("💾 Salva posizione", use_container_width=True):
+                                if new_lat != 0 and new_lon != 0:
+                                    addr_info = reverse_geocode(new_lat, new_lon)
+                                    update_data = {'latitude': new_lat, 'longitude': new_lon}
+                                    if addr_info:
+                                        update_data['indirizzo'] = addr_info['indirizzo_completo']
+                                        if addr_info['cap']:
+                                            update_data['cap'] = addr_info['cap']
+                                        if addr_info['provincia']:
+                                            update_data['provincia'] = addr_info['provincia']
+                                    
+                                    update_cliente(cliente['id'], update_data)
+                                    st.session_state.reload_data = True
+                                    st.success("✅ Posizione salvata!")
+                                    st.rerun()
+                                else:
+                                    st.error("❌ Coordinate non valide")
+                        
+                        st.caption("💡 Da Google Maps: tieni premuto → copia coordinate")
                 
-                # Elimina
+                # === 5. MODIFICA DATI (in expander) ===
+                with st.expander("✏️ Modifica tutti i dati"):
+                    with st.form("edit_cliente"):
+                        c1, c2 = st.columns(2)
+                        
+                        nome = c1.text_input("Nome", cliente['nome_cliente'])
+                        indirizzo = c1.text_input("Indirizzo", cliente.get('indirizzo', ''))
+                        cap = c1.text_input("CAP", cliente.get('cap', ''))
+                        provincia = c1.text_input("Provincia", cliente.get('provincia', ''))
+                        frequenza = c1.number_input("Frequenza (gg)", value=int(cliente.get('frequenza_giorni', 30)))
+                        
+                        stati_cliente = ["CLIENTE ATTIVO", "CLIENTE NUOVO", "CLIENTE POSSIBILE", "CLIENTE PROBABILE"]
+                        stato_attuale = cliente.get('stato_cliente', 'CLIENTE ATTIVO')
+                        if stato_attuale not in stati_cliente:
+                            stato_attuale = 'CLIENTE ATTIVO'
+                        stato_cliente = c1.selectbox("📊 Stato", stati_cliente, index=stati_cliente.index(stato_attuale))
+                        visitare = c1.selectbox("🚗 Nel Giro?", ["SI", "NO"], index=0 if cliente.get('visitare') == 'SI' else 1)
+                        
+                        telefono = c2.text_input("Telefono", cliente.get('telefono', ''))
+                        cellulare = c2.text_input("Cellulare", cliente.get('cellulare', ''))
+                        mail = c2.text_input("Email", cliente.get('mail', ''))
+                        contatto = c2.text_input("Referente", cliente.get('contatto', ''))
+                        
+                        latitudine = c2.number_input("Latitudine", value=float(lat_attuale), format="%.6f")
+                        longitudine = c2.number_input("Longitudine", value=float(lon_attuale), format="%.6f")
+                        
+                        note = st.text_area("Note", cliente.get('note', ''), height=80)
+                        storico = st.text_area("Storico Report", cliente.get('storico_report', ''), height=120)
+                        
+                        if st.form_submit_button("💾 Salva Modifiche", use_container_width=True, type="primary"):
+                            update_cliente(cliente['id'], {
+                                'nome_cliente': nome,
+                                'indirizzo': indirizzo,
+                                'cap': cap,
+                                'provincia': provincia,
+                                'frequenza_giorni': frequenza,
+                                'stato_cliente': stato_cliente,
+                                'visitare': visitare,
+                                'telefono': telefono,
+                                'cellulare': cellulare,
+                                'mail': mail,
+                                'contatto': contatto,
+                                'latitude': latitudine,
+                                'longitude': longitudine,
+                                'note': note,
+                                'storico_report': storico
+                            })
+                            st.session_state.reload_data = True
+                            st.success("✅ Salvato!")
+                            st.rerun()
+                
+                # === 6. ELIMINA CLIENTE ===
                 with st.expander("🗑️ Elimina Cliente"):
-                    st.warning(f"⚠️ Eliminazione di **{scelto}** è DEFINITIVA")
-                    if st.checkbox("Confermo"):
-                        if st.button("❌ ELIMINA", type="primary"):
+                    st.warning(f"⚠️ L'eliminazione di **{scelto}** è DEFINITIVA e non può essere annullata!")
+                    conferma = st.checkbox("Confermo di voler eliminare questo cliente")
+                    if conferma:
+                        if st.button("❌ ELIMINA CLIENTE", type="primary"):
                             delete_cliente(cliente['id'])
                             st.session_state.cliente_selezionato = None
                             st.session_state.reload_data = True
                             st.rerun()
         else:
-            st.info("Nessun cliente presente")
+            st.info("Nessun cliente presente. Vai su ➕ Nuovo per aggiungerne uno.")
     
     # --- TAB: NUOVO CLIENTE ---
     elif st.session_state.active_tab == "➕ Nuovo":
@@ -2175,7 +2236,7 @@ def main_app():
     
     # Footer
     st.divider()
-    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 2.5")
+    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 2.6")
 
 # --- RUN APP ---
 init_auth_state()
