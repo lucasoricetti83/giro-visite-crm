@@ -20,18 +20,132 @@ SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 # LocationIQ API Key
 LOCATIONIQ_KEY = "pk.eb703bb4dbacec20df9f83c1a6a807e3"
 
+# Admin email (IL TUO ACCOUNT - CAMBIA CON LA TUA EMAIL!)
+# ⚠️ IMPORTANTE: Sostituisci con la tua email per avere accesso admin
+ADMIN_EMAIL = "TUA_EMAIL@esempio.com"  # <-- CAMBIA QUESTA RIGA!
+
+# Durata trial in giorni
+TRIAL_DAYS = 14
+
 @st.cache_resource
 def get_supabase_client():
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 supabase: Client = get_supabase_client()
 
-# --- 2. AUTENTICAZIONE ---
+# --- 2. GESTIONE ABBONAMENTI/UTENTI ---
+def get_user_subscription(user_id, email=None):
+    """Ottiene lo stato abbonamento di un utente"""
+    try:
+        response = supabase.table('user_subscriptions').select('*').eq('user_id', user_id).execute()
+        if response.data:
+            return response.data[0]
+        return None
+    except Exception as e:
+        # Tabella potrebbe non esistere ancora
+        return None
+
+def create_user_subscription(user_id, email, is_trial=True):
+    """Crea un nuovo record abbonamento per un utente"""
+    try:
+        today = datetime.now().date()
+        
+        # Controlla se è l'admin
+        is_admin = email.lower() == ADMIN_EMAIL.lower()
+        
+        data = {
+            'user_id': user_id,
+            'email': email,
+            'status': 'active' if is_admin else ('trial' if is_trial else 'pending'),
+            'is_admin': is_admin,
+            'created_at': datetime.now().isoformat()
+        }
+        
+        if is_trial and not is_admin:
+            data['trial_start'] = today.isoformat()
+            data['trial_end'] = (today + timedelta(days=TRIAL_DAYS)).isoformat()
+        
+        if is_admin:
+            data['subscription_start'] = today.isoformat()
+        
+        response = supabase.table('user_subscriptions').insert(data).execute()
+        return response.data[0] if response.data else None
+    except Exception as e:
+        st.error(f"Errore creazione abbonamento: {str(e)}")
+        return None
+
+def update_user_subscription(user_id, update_data):
+    """Aggiorna lo stato abbonamento di un utente"""
+    try:
+        response = supabase.table('user_subscriptions').update(update_data).eq('user_id', user_id).execute()
+        return True
+    except Exception as e:
+        return False
+
+def check_subscription_status(subscription):
+    """Verifica lo stato dell'abbonamento e restituisce (can_access, message)"""
+    if not subscription:
+        return False, "Account non trovato. Contatta l'amministratore."
+    
+    status = subscription.get('status', 'pending')
+    
+    if status == 'blocked':
+        reason = subscription.get('blocked_reason', 'Non specificato')
+        return False, f"❌ Account bloccato. Motivo: {reason}"
+    
+    if status == 'pending':
+        return False, "⏳ Account in attesa di approvazione. Riceverai una notifica quando sarà attivo."
+    
+    if status == 'expired':
+        return False, "⚠️ Abbonamento scaduto. Contatta l'amministratore per rinnovare."
+    
+    if status == 'trial':
+        trial_end = subscription.get('trial_end')
+        if trial_end:
+            trial_end_date = datetime.strptime(trial_end, '%Y-%m-%d').date() if isinstance(trial_end, str) else trial_end
+            if datetime.now().date() > trial_end_date:
+                # Trial scaduto
+                update_user_subscription(subscription['user_id'], {'status': 'expired'})
+                return False, "⚠️ Periodo di prova terminato. Contatta l'amministratore per attivare l'abbonamento."
+            days_left = (trial_end_date - datetime.now().date()).days
+            return True, f"🎁 Prova gratuita: {days_left} giorni rimanenti"
+    
+    if status == 'active':
+        # Controlla scadenza abbonamento
+        sub_end = subscription.get('subscription_end')
+        if sub_end:
+            sub_end_date = datetime.strptime(sub_end, '%Y-%m-%d').date() if isinstance(sub_end, str) else sub_end
+            if datetime.now().date() > sub_end_date:
+                update_user_subscription(subscription['user_id'], {'status': 'expired'})
+                return False, "⚠️ Abbonamento scaduto. Contatta l'amministratore per rinnovare."
+        return True, "✅ Account attivo"
+    
+    return False, "Stato account non riconosciuto."
+
+def is_admin(user_id):
+    """Verifica se l'utente è admin"""
+    try:
+        sub = get_user_subscription(user_id)
+        return sub.get('is_admin', False) if sub else False
+    except:
+        return False
+
+def get_all_users():
+    """Ottiene tutti gli utenti (solo per admin)"""
+    try:
+        response = supabase.table('user_subscriptions').select('*').order('created_at', desc=True).execute()
+        return response.data if response.data else []
+    except Exception as e:
+        return []
+
+# --- 3. AUTENTICAZIONE ---
 def init_auth_state():
     if 'user' not in st.session_state:
         st.session_state.user = None
     if 'session' not in st.session_state:
         st.session_state.session = None
+    if 'subscription' not in st.session_state:
+        st.session_state.subscription = None
 
 def login_page():
     st.title("🚀 Giro Visite CRM Pro")
@@ -52,21 +166,43 @@ def login_page():
                             "email": email,
                             "password": password
                         })
-                        st.session_state.user = response.user
-                        st.session_state.session = response.session
-                        st.success("✅ Accesso effettuato!")
-                        time_module.sleep(1)
-                        st.rerun()
+                        
+                        user = response.user
+                        
+                        # Verifica/crea abbonamento
+                        subscription = get_user_subscription(user.id, email)
+                        if not subscription:
+                            # Prima volta - crea record (l'admin viene riconosciuto automaticamente)
+                            subscription = create_user_subscription(user.id, email, is_trial=True)
+                        
+                        # Verifica stato abbonamento
+                        can_access, message = check_subscription_status(subscription)
+                        
+                        if can_access:
+                            st.session_state.user = user
+                            st.session_state.session = response.session
+                            st.session_state.subscription = subscription
+                            st.success(f"✅ Accesso effettuato! {message}")
+                            time_module.sleep(1)
+                            st.rerun()
+                        else:
+                            # Logout forzato
+                            supabase.auth.sign_out()
+                            st.error(message)
+                            
                     except Exception as e:
                         st.error(f"❌ Errore: {str(e)}")
                 else:
                     st.warning("⚠️ Inserisci email e password")
     
     with tab_register:
+        st.info(f"🎁 **Registrati per una prova gratuita di {TRIAL_DAYS} giorni!**")
+        
         with st.form("register_form"):
             new_email = st.text_input("📧 Email")
             new_password = st.text_input("🔑 Password", type="password")
             confirm_password = st.text_input("🔑 Conferma Password", type="password")
+            nome_azienda = st.text_input("🏢 Nome Azienda (opzionale)")
             submitted = st.form_submit_button("📝 Registrati", use_container_width=True, type="primary")
             
             if submitted:
@@ -81,11 +217,29 @@ def login_page():
                                 "email": new_email,
                                 "password": new_password
                             })
-                            st.success("✅ Registrazione completata! Controlla la tua email per confermare l'account.")
+                            
+                            if response.user:
+                                # Crea abbonamento trial
+                                create_user_subscription(
+                                    response.user.id, 
+                                    new_email, 
+                                    is_trial=True
+                                )
+                                
+                                st.success(f"""
+                                ✅ **Registrazione completata!**
+                                
+                                📧 Controlla la tua email per confermare l'account.
+                                
+                                🎁 Hai **{TRIAL_DAYS} giorni di prova gratuita** a partire dal primo accesso!
+                                """)
+                            else:
+                                st.success("✅ Controlla la tua email per confermare l'account.")
+                                
                         except Exception as e:
                             st.error(f"❌ Errore: {str(e)}")
                 else:
-                    st.warning("⚠️ Compila tutti i campi")
+                    st.warning("⚠️ Compila tutti i campi obbligatori")
     
     st.divider()
     st.caption("© 2025 Giro Visite CRM Pro - Versione SaaS")
@@ -97,8 +251,163 @@ def logout():
         pass
     st.session_state.user = None
     st.session_state.session = None
+    st.session_state.subscription = None
     st.session_state.clear()
     st.rerun()
+
+# --- 4. PANNELLO ADMIN ---
+def admin_panel():
+    """Pannello di amministrazione per gestire gli utenti"""
+    st.header("🔐 Pannello Amministratore")
+    
+    # Verifica admin
+    if not is_admin(st.session_state.user.id):
+        st.error("❌ Accesso non autorizzato")
+        return
+    
+    # Statistiche
+    users = get_all_users()
+    
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
+    total = len(users)
+    active = len([u for u in users if u['status'] == 'active'])
+    trial = len([u for u in users if u['status'] == 'trial'])
+    pending = len([u for u in users if u['status'] == 'pending'])
+    blocked = len([u for u in users if u['status'] == 'blocked'])
+    
+    col1.metric("👥 Totale Utenti", total)
+    col2.metric("✅ Attivi", active)
+    col3.metric("🎁 In Prova", trial)
+    col4.metric("⏳ In Attesa", pending)
+    col5.metric("🚫 Bloccati", blocked)
+    
+    st.divider()
+    
+    # Filtri
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        filtro_stato = st.selectbox(
+            "Filtra per stato:",
+            ["Tutti", "active", "trial", "pending", "blocked", "expired"]
+        )
+    with col_f2:
+        cerca_email = st.text_input("🔍 Cerca per email:")
+    
+    # Filtra utenti
+    users_filtrati = users
+    if filtro_stato != "Tutti":
+        users_filtrati = [u for u in users_filtrati if u['status'] == filtro_stato]
+    if cerca_email:
+        users_filtrati = [u for u in users_filtrati if cerca_email.lower() in u['email'].lower()]
+    
+    st.subheader(f"📋 Utenti ({len(users_filtrati)})")
+    
+    # Lista utenti
+    for user in users_filtrati:
+        with st.container(border=True):
+            col1, col2, col3 = st.columns([3, 2, 2])
+            
+            with col1:
+                # Badge admin
+                admin_badge = "👑 " if user.get('is_admin') else ""
+                st.markdown(f"### {admin_badge}{user['email']}")
+                
+                # Info
+                created = user.get('created_at', '')[:10] if user.get('created_at') else 'N/D'
+                st.caption(f"📅 Registrato: {created}")
+                
+                if user.get('notes'):
+                    st.caption(f"📝 {user['notes']}")
+            
+            with col2:
+                status = user['status']
+                status_colors = {
+                    'active': '🟢 Attivo',
+                    'trial': '🎁 In Prova',
+                    'pending': '⏳ In Attesa',
+                    'blocked': '🚫 Bloccato',
+                    'expired': '⚠️ Scaduto'
+                }
+                st.markdown(f"**{status_colors.get(status, status)}**")
+                
+                if status == 'trial' and user.get('trial_end'):
+                    trial_end = user['trial_end']
+                    if isinstance(trial_end, str):
+                        trial_end = datetime.strptime(trial_end, '%Y-%m-%d').date()
+                    days_left = (trial_end - datetime.now().date()).days
+                    st.caption(f"⏱️ Scade tra {days_left} giorni")
+                
+                if status == 'active' and user.get('subscription_end'):
+                    st.caption(f"📅 Scade: {user['subscription_end']}")
+            
+            with col3:
+                # Non mostrare azioni per se stesso o altri admin
+                if user['user_id'] != st.session_state.user.id and not user.get('is_admin'):
+                    
+                    # Azioni basate sullo stato
+                    if status in ['pending', 'expired', 'blocked']:
+                        # Attiva con trial
+                        if st.button("🎁 Attiva Trial", key=f"trial_{user['user_id']}", use_container_width=True):
+                            today = datetime.now().date()
+                            update_user_subscription(user['user_id'], {
+                                'status': 'trial',
+                                'trial_start': today.isoformat(),
+                                'trial_end': (today + timedelta(days=TRIAL_DAYS)).isoformat(),
+                                'blocked_reason': None
+                            })
+                            st.success("✅ Trial attivato!")
+                            st.rerun()
+                        
+                        # Attiva abbonamento
+                        if st.button("✅ Attiva Abbonamento", key=f"active_{user['user_id']}", use_container_width=True):
+                            today = datetime.now().date()
+                            update_user_subscription(user['user_id'], {
+                                'status': 'active',
+                                'subscription_start': today.isoformat(),
+                                'subscription_end': (today + timedelta(days=365)).isoformat(),
+                                'blocked_reason': None
+                            })
+                            st.success("✅ Abbonamento attivato (1 anno)!")
+                            st.rerun()
+                    
+                    if status in ['active', 'trial']:
+                        # Blocca
+                        if st.button("🚫 Blocca", key=f"block_{user['user_id']}", use_container_width=True):
+                            update_user_subscription(user['user_id'], {
+                                'status': 'blocked',
+                                'blocked_reason': 'Bloccato da amministratore'
+                            })
+                            st.warning("🚫 Utente bloccato")
+                            st.rerun()
+                    
+                    if status == 'blocked':
+                        # Sblocca
+                        if st.button("🔓 Sblocca", key=f"unblock_{user['user_id']}", use_container_width=True):
+                            update_user_subscription(user['user_id'], {
+                                'status': 'pending',
+                                'blocked_reason': None
+                            })
+                            st.success("✅ Utente sbloccato (in attesa)")
+                            st.rerun()
+    
+    # Sezione impostazioni
+    st.divider()
+    st.subheader("⚙️ Impostazioni Globali")
+    
+    with st.expander("📧 Notifiche Email (Coming Soon)"):
+        st.info("Le notifiche email saranno disponibili in una futura versione.")
+    
+    with st.expander("📊 Esporta Dati Utenti"):
+        if st.button("📥 Esporta CSV"):
+            df_users = pd.DataFrame(users)
+            csv = df_users.to_csv(index=False)
+            st.download_button(
+                "💾 Scarica CSV",
+                csv,
+                "utenti_export.csv",
+                "text/csv"
+            )
 
 # --- 3. DATABASE FUNCTIONS ---
 def get_user_id():
@@ -661,11 +970,49 @@ def calcola_piano_giornaliero(df, giorno_settimana, config, esclusi=[]):
 
 # --- 6. MAIN APP ---
 def main_app():
+    # Verifica abbonamento
+    subscription = st.session_state.get('subscription')
+    user_is_admin = is_admin(st.session_state.user.id) if st.session_state.user else False
+    
     # Sidebar con info utente
     with st.sidebar:
         st.markdown(f"### 👤 {st.session_state.user.email}")
+        
+        # Badge admin
+        if user_is_admin:
+            st.success("👑 **Amministratore**")
+        
+        # Banner stato abbonamento
+        if subscription:
+            status = subscription.get('status', 'pending')
+            
+            if status == 'trial':
+                trial_end = subscription.get('trial_end')
+                if trial_end:
+                    trial_end_date = datetime.strptime(trial_end, '%Y-%m-%d').date() if isinstance(trial_end, str) else trial_end
+                    days_left = (trial_end_date - datetime.now().date()).days
+                    if days_left <= 3:
+                        st.error(f"⚠️ **Prova scade tra {days_left} giorni!**")
+                    else:
+                        st.warning(f"🎁 **Prova:** {days_left} giorni rimasti")
+            
+            elif status == 'active' and subscription.get('subscription_end'):
+                sub_end = subscription.get('subscription_end')
+                sub_end_date = datetime.strptime(sub_end, '%Y-%m-%d').date() if isinstance(sub_end, str) else sub_end
+                days_left = (sub_end_date - datetime.now().date()).days
+                if days_left <= 30:
+                    st.warning(f"📅 Abbonamento scade tra {days_left} giorni")
+        
         if st.button("🚪 Logout", use_container_width=True):
             logout()
+        
+        # Pulsante Admin
+        if user_is_admin:
+            st.divider()
+            if st.button("🔐 Pannello Admin", use_container_width=True, type="primary"):
+                st.session_state.active_tab = "🔐 Admin"
+                st.rerun()
+        
         st.divider()
     
     # Carica dati
@@ -713,6 +1060,18 @@ def main_app():
     # Menu navigazione
     if 'active_tab' not in st.session_state:
         st.session_state.active_tab = "🚀 Giro Oggi"
+    
+    # Se è il pannello admin, mostralo
+    if st.session_state.active_tab == "🔐 Admin":
+        if user_is_admin:
+            admin_panel()
+            st.divider()
+            if st.button("⬅️ Torna all'App", use_container_width=True):
+                st.session_state.active_tab = "🚀 Giro Oggi"
+                st.rerun()
+            return
+        else:
+            st.session_state.active_tab = "🚀 Giro Oggi"
     
     nav = st.columns(7)
     menu = ["🚀 Giro Oggi", "📊 Dashboard", "📅 Agenda", "🗺️ Mappa", "👤 Anagrafica", "➕ Nuovo", "⚙️ Config"]
@@ -2236,7 +2595,7 @@ def main_app():
     
     # Footer
     st.divider()
-    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 2.6")
+    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 3.0")
 
 # --- RUN APP ---
 init_auth_state()
