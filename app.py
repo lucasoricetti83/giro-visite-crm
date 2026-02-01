@@ -22,7 +22,7 @@ LOCATIONIQ_KEY = "pk.eb703bb4dbacec20df9f83c1a6a807e3"
 
 # Admin email (IL TUO ACCOUNT - CAMBIA CON LA TUA EMAIL!)
 # ⚠️ IMPORTANTE: Sostituisci con la tua email per avere accesso admin
-ADMIN_EMAIL = "TUA_EMAIL@esempio.com"  # <-- CAMBIA QUESTA RIGA!
+ADMIN_EMAIL = "lucasoricetti@gmail.com"  # <-- CAMBIA QUESTA RIGA!
 
 # Durata trial in giorni
 TRIAL_DAYS = 14
