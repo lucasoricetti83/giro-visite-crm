@@ -1308,7 +1308,7 @@ def main_app():
                 
                 # Form per aggiungere visita fuori giro
                 with st.expander("➕ Registra visita a cliente fuori giro"):
-                    clienti_non_visitati = [c for c in df['nome_cliente'].tolist() if c not in st.session_state.visitati_oggi]
+                    clienti_non_visitati = [c for c in df['nome_cliente'].tolist() if c not in st.session_state.visitati_oggi] if not df.empty and 'nome_cliente' in df.columns else []
                     cliente_extra = st.selectbox("Seleziona cliente:", [""] + sorted(clienti_non_visitati), key="cliente_extra_giro")
                     
                     if cliente_extra:
@@ -1356,7 +1356,7 @@ def main_app():
                     for nome_v in st.session_state.visitati_oggi:
                         st.write(f"✅ {nome_v}")
                 
-                clienti_non_visitati = [c for c in df['nome_cliente'].tolist() if c not in st.session_state.visitati_oggi]
+                clienti_non_visitati = [c for c in df['nome_cliente'].tolist() if c not in st.session_state.visitati_oggi] if not df.empty and 'nome_cliente' in df.columns else []
                 cliente_extra = st.selectbox("Seleziona cliente da visitare:", [""] + sorted(clienti_non_visitati), key="cliente_no_giro")
                 
                 if cliente_extra:
@@ -1846,7 +1846,7 @@ def main_app():
             
             with col_filtro1:
                 # Ricerca cliente
-                nomi_tutti = [""] + sorted(df['nome_cliente'].tolist())
+                nomi_tutti = [""] + sorted(df['nome_cliente'].tolist()) if 'nome_cliente' in df.columns else [""]
                 idx = nomi_tutti.index(st.session_state.cliente_selezionato) if st.session_state.cliente_selezionato in nomi_tutti else 0
                 scelto = st.selectbox("🔍 Cerca cliente:", nomi_tutti, index=idx)
             
