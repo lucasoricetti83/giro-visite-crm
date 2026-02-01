@@ -124,6 +124,11 @@ def fetch_clienti():
             df['longitude'] = pd.to_numeric(df['longitude'], errors='coerce')
             df['frequenza_giorni'] = pd.to_numeric(df['frequenza_giorni'], errors='coerce').fillna(30).astype(int)
             df['visitare'] = df['visitare'].fillna('SI').str.upper()
+            # Default per stato_cliente se non esiste
+            if 'stato_cliente' not in df.columns:
+                df['stato_cliente'] = 'CLIENTE ATTIVO'
+            else:
+                df['stato_cliente'] = df['stato_cliente'].fillna('CLIENTE ATTIVO')
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -845,47 +850,62 @@ def main_app():
                     # Trova dati completi del cliente per promemoria e email
                     cliente_row = df[df['nome_cliente'] == t['nome_cliente']].iloc[0] if not df[df['nome_cliente'] == t['nome_cliente']].empty else None
                     
-                    with st.container(border=True):
-                        c1, c2 = st.columns([3, 2])
-                        
-                        with c1:
-                            if visitato:
-                                st.markdown(f"### ✅ {i}. {t['nome_cliente']}")
-                            else:
+                    # Stile diverso se visitato
+                    if visitato:
+                        with st.container(border=True):
+                            col_vis = st.columns([1, 4])
+                            col_vis[0].markdown("### ✅")
+                            col_vis[1].markdown(f"### ~~{i}. {t['nome_cliente']}~~")
+                            col_vis[1].caption(f"📍 {t.get('indirizzo', '')}")
+                    else:
+                        with st.container(border=True):
+                            c1, c2 = st.columns([3, 2])
+                            
+                            with c1:
                                 st.markdown(f"### {t['tipo_tappa'].split()[0]} {i}. {t['nome_cliente']}")
                                 st.caption(f"⏰ {t['ora_arrivo']}")
+                                
+                                if t.get('indirizzo'):
+                                    st.caption(f"📍 {t['indirizzo']}")
+                                
+                                # Mostra promemoria se presente
+                                if cliente_row is not None and pd.notnull(cliente_row.get('promemoria')) and str(cliente_row.get('promemoria')).strip():
+                                    st.warning(f"📝 **Promemoria:** {cliente_row['promemoria']}")
                             
-                            if t.get('indirizzo'):
-                                st.caption(f"📍 {t['indirizzo']}")
-                            
-                            # Mostra promemoria se presente
-                            if cliente_row is not None and pd.notnull(cliente_row.get('promemoria')) and str(cliente_row.get('promemoria')).strip():
-                                st.warning(f"📝 **Promemoria:** {cliente_row['promemoria']}")
-                        
-                        with c2:
-                            # Pulsanti azione
-                            btn_cols = st.columns(4)
-                            
-                            # Naviga
-                            btn_cols[0].link_button("🚗", f"https://www.google.com/maps/dir/?api=1&destination={t['latitude']},{t['longitude']}", use_container_width=True, help="Naviga")
-                            
-                            # Chiama
-                            if t.get('cellulare') and str(t.get('cellulare')).strip():
-                                btn_cols[1].link_button("📱", f"tel:{t['cellulare']}", use_container_width=True, help="Chiama")
-                            else:
-                                btn_cols[1].button("📱", disabled=True, use_container_width=True, key=f"tel_dis_{t['id']}")
-                            
-                            # Email
-                            if cliente_row is not None and pd.notnull(cliente_row.get('mail')) and str(cliente_row.get('mail')).strip():
-                                btn_cols[2].link_button("📧", f"mailto:{cliente_row['mail']}", use_container_width=True, help="Email")
-                            else:
-                                btn_cols[2].button("📧", disabled=True, use_container_width=True, key=f"mail_dis_{t['id']}")
-                            
-                            # Scheda cliente
-                            if btn_cols[3].button("👤", key=f"scheda_{t['id']}", help="Scheda", use_container_width=True):
-                                st.session_state.cliente_selezionato = t['nome_cliente']
-                                st.session_state.active_tab = "👤 Anagrafica"
-                                st.rerun()
+                            with c2:
+                                # PULSANTE REGISTRA VISITA
+                                if st.button(f"✅ VISITATO", key=f"visita_{t['id']}", type="primary", use_container_width=True):
+                                    # Aggiorna database
+                                    update_cliente(t['id'], {
+                                        'ultima_visita': ora_italiana.date().isoformat()
+                                    })
+                                    st.session_state.visitati_oggi.append(t['nome_cliente'])
+                                    st.session_state.reload_data = True
+                                    st.rerun()
+                                
+                                # Pulsanti azione
+                                btn_cols = st.columns(4)
+                                
+                                # Naviga
+                                btn_cols[0].link_button("🚗", f"https://www.google.com/maps/dir/?api=1&destination={t['latitude']},{t['longitude']}", use_container_width=True, help="Naviga")
+                                
+                                # Chiama
+                                if t.get('cellulare') and str(t.get('cellulare')).strip():
+                                    btn_cols[1].link_button("📱", f"tel:{t['cellulare']}", use_container_width=True, help="Chiama")
+                                else:
+                                    btn_cols[1].button("📱", disabled=True, use_container_width=True, key=f"tel_dis_{t['id']}")
+                                
+                                # Email
+                                if cliente_row is not None and pd.notnull(cliente_row.get('mail')) and str(cliente_row.get('mail')).strip():
+                                    btn_cols[2].link_button("📧", f"mailto:{cliente_row['mail']}", use_container_width=True, help="Email")
+                                else:
+                                    btn_cols[2].button("📧", disabled=True, use_container_width=True, key=f"mail_dis_{t['id']}")
+                                
+                                # Scheda cliente
+                                if btn_cols[3].button("👤", key=f"scheda_{t['id']}", help="Scheda", use_container_width=True):
+                                    st.session_state.cliente_selezionato = t['nome_cliente']
+                                    st.session_state.active_tab = "👤 Anagrafica"
+                                    st.rerun()
                 
                 # Navigazione completa
                 if tappe_oggi:
@@ -898,9 +918,93 @@ def main_app():
                         url = f"https://www.google.com/maps/dir/?api=1&origin={origin}&destination={dest}&waypoints={waypoints}&travelmode=driving"
                         st.link_button(f"🗺️ NAVIGA ({len(tappe_rimanenti)} tappe)", url, use_container_width=True, type="primary")
                     else:
-                        st.success("🎉 Hai completato tutte le visite!")
+                        st.success("🎉 Hai completato tutte le visite programmate!")
+                
+                # === SEZIONE VISITE FUORI GIRO ===
+                st.divider()
+                nomi_nel_giro = [t['nome_cliente'] for t in tappe_oggi]
+                visitati_fuori_giro = [v for v in st.session_state.visitati_oggi if v not in nomi_nel_giro]
+                
+                # Mostra clienti visitati fuori giro
+                if visitati_fuori_giro:
+                    st.subheader("➕ Visite Fuori Giro")
+                    for nome_vfg in visitati_fuori_giro:
+                        cliente_vfg = df[df['nome_cliente'] == nome_vfg]
+                        if not cliente_vfg.empty:
+                            cliente_vfg = cliente_vfg.iloc[0]
+                            with st.container(border=True):
+                                col_vfg1, col_vfg2 = st.columns([4, 1])
+                                col_vfg1.markdown(f"### ✅ {nome_vfg}")
+                                if cliente_vfg.get('indirizzo'):
+                                    col_vfg1.caption(f"📍 {cliente_vfg['indirizzo']}")
+                                if col_vfg2.button("👤", key=f"vfg_scheda_{nome_vfg}", help="Scheda"):
+                                    st.session_state.cliente_selezionato = nome_vfg
+                                    st.session_state.active_tab = "👤 Anagrafica"
+                                    st.rerun()
+                
+                # Form per aggiungere visita fuori giro
+                with st.expander("➕ Registra visita a cliente fuori giro"):
+                    clienti_non_visitati = [c for c in df['nome_cliente'].tolist() if c not in st.session_state.visitati_oggi]
+                    cliente_extra = st.selectbox("Seleziona cliente:", [""] + sorted(clienti_non_visitati), key="cliente_extra_giro")
+                    
+                    if cliente_extra:
+                        col_extra1, col_extra2 = st.columns(2)
+                        if col_extra1.button("✅ Registra Visita", type="primary", use_container_width=True):
+                            # Aggiorna ultima_visita nel database
+                            cliente_row = df[df['nome_cliente'] == cliente_extra].iloc[0]
+                            update_cliente(cliente_row['id'], {
+                                'ultima_visita': ora_italiana.date().isoformat()
+                            })
+                            st.session_state.visitati_oggi.append(cliente_extra)
+                            st.session_state.reload_data = True
+                            st.success(f"✅ Visita a {cliente_extra} registrata!")
+                            st.rerun()
+                        
+                        if col_extra2.button("👤 Vai alla Scheda", use_container_width=True):
+                            st.session_state.cliente_selezionato = cliente_extra
+                            st.session_state.active_tab = "👤 Anagrafica"
+                            st.rerun()
+                
+                # Riepilogo finale
+                st.divider()
+                tot_visitati = len(st.session_state.visitati_oggi)
+                tot_giro = len(tappe_oggi)
+                tot_fuori = len(visitati_fuori_giro)
+                
+                st.markdown(f"""
+                ### 📊 Riepilogo Giornata
+                | | |
+                |---|---|
+                | ✅ **Visitati totali** | **{tot_visitati}** |
+                | 🚗 Nel giro | {tot_visitati - tot_fuori} / {tot_giro} |
+                | ➕ Fuori giro | {tot_fuori} |
+                """)
+                
             else:
                 st.info("📭 Nessuna visita pianificata per oggi")
+                
+                # Anche senza giro, permetti visite fuori giro
+                st.divider()
+                st.subheader("➕ Registra visita")
+                
+                if st.session_state.visitati_oggi:
+                    st.success(f"✅ Hai visitato {len(st.session_state.visitati_oggi)} clienti oggi")
+                    for nome_v in st.session_state.visitati_oggi:
+                        st.write(f"✅ {nome_v}")
+                
+                clienti_non_visitati = [c for c in df['nome_cliente'].tolist() if c not in st.session_state.visitati_oggi]
+                cliente_extra = st.selectbox("Seleziona cliente da visitare:", [""] + sorted(clienti_non_visitati), key="cliente_no_giro")
+                
+                if cliente_extra:
+                    if st.button("✅ Registra Visita", type="primary"):
+                        cliente_row = df[df['nome_cliente'] == cliente_extra].iloc[0]
+                        update_cliente(cliente_row['id'], {
+                            'ultima_visita': ora_italiana.date().isoformat()
+                        })
+                        st.session_state.visitati_oggi.append(cliente_extra)
+                        st.session_state.reload_data = True
+                        st.success(f"✅ Visita a {cliente_extra} registrata!")
+                        st.rerun()
         else:
             st.warning(f"🏖️ Oggi è {giorni_nomi[idx_g]} - non lavorativo")
     
@@ -1255,13 +1359,48 @@ def main_app():
         st.header("👤 Anagrafica Cliente")
         
         if not df.empty:
-            nomi = [""] + sorted(df['nome_cliente'].tolist())
+            # Filtri
+            col_filtro1, col_filtro2 = st.columns(2)
+            
+            with col_filtro1:
+                # Filtro per stato cliente
+                stati_filtro = ["Tutti", "CLIENTE ATTIVO", "CLIENTE NUOVO", "CLIENTE POSSIBILE", "CLIENTE PROBABILE"]
+                filtro_stato = st.selectbox("📊 Filtra per stato:", stati_filtro, key="filtro_stato_anagrafica")
+            
+            with col_filtro2:
+                # Filtro per incluso nel giro
+                filtro_giro = st.selectbox("🚗 Filtra per giro:", ["Tutti", "Nel giro (SI)", "Fuori giro (NO)"], key="filtro_giro_anagrafica")
+            
+            # Applica filtri
+            df_filtrato = df.copy()
+            if filtro_stato != "Tutti":
+                df_filtrato = df_filtrato[df_filtrato['stato_cliente'] == filtro_stato]
+            if filtro_giro == "Nel giro (SI)":
+                df_filtrato = df_filtrato[df_filtrato['visitare'] == 'SI']
+            elif filtro_giro == "Fuori giro (NO)":
+                df_filtrato = df_filtrato[df_filtrato['visitare'] != 'SI']
+            
+            st.caption(f"📋 {len(df_filtrato)} clienti trovati")
+            
+            nomi = [""] + sorted(df_filtrato['nome_cliente'].tolist())
             idx = nomi.index(st.session_state.cliente_selezionato) if st.session_state.cliente_selezionato in nomi else 0
             scelto = st.selectbox("Seleziona cliente:", nomi, index=idx)
             
             if scelto:
                 st.session_state.cliente_selezionato = scelto
                 cliente = df[df['nome_cliente'] == scelto].iloc[0]
+                
+                # Badge stato cliente
+                stato = cliente.get('stato_cliente', 'CLIENTE ATTIVO')
+                colori_stato = {
+                    'CLIENTE ATTIVO': '🟢',
+                    'CLIENTE NUOVO': '🔵',
+                    'CLIENTE POSSIBILE': '🟡',
+                    'CLIENTE PROBABILE': '🟠'
+                }
+                icona_stato = colori_stato.get(stato, '⚪')
+                
+                st.markdown(f"### {icona_stato} {stato}")
                 
                 # Azioni rapide
                 ca = st.columns(5)
@@ -1388,7 +1527,16 @@ def main_app():
                     cap = c1.text_input("CAP", cliente.get('cap', ''))
                     provincia = c1.text_input("Provincia", cliente.get('provincia', ''))
                     frequenza = c1.number_input("Frequenza (gg)", value=int(cliente.get('frequenza_giorni', 30)))
-                    visitare = c1.selectbox("Attivo?", ["SI", "NO"], index=0 if cliente.get('visitare') == 'SI' else 1)
+                    
+                    # Stato cliente
+                    stati_cliente = ["CLIENTE ATTIVO", "CLIENTE NUOVO", "CLIENTE POSSIBILE", "CLIENTE PROBABILE"]
+                    stato_attuale = cliente.get('stato_cliente', 'CLIENTE ATTIVO')
+                    if stato_attuale not in stati_cliente:
+                        stato_attuale = 'CLIENTE ATTIVO'
+                    stato_cliente = c1.selectbox("📊 Stato Cliente", stati_cliente, index=stati_cliente.index(stato_attuale))
+                    
+                    # Da visitare (attivo nel giro)
+                    visitare = c1.selectbox("🚗 Includi nel Giro?", ["SI", "NO"], index=0 if cliente.get('visitare') == 'SI' else 1)
                     
                     telefono = c2.text_input("Telefono", cliente.get('telefono', ''))
                     cellulare = c2.text_input("Cellulare", cliente.get('cellulare', ''))
@@ -1419,6 +1567,7 @@ def main_app():
                             'cap': cap,
                             'provincia': provincia,
                             'frequenza_giorni': frequenza,
+                            'stato_cliente': stato_cliente,
                             'visitare': visitare,
                             'telefono': telefono,
                             'cellulare': cellulare,
@@ -1908,7 +2057,7 @@ def main_app():
     
     # Footer
     st.divider()
-    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 2.3")
+    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 2.4")
 
 # --- RUN APP ---
 init_auth_state()
