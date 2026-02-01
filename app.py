@@ -383,7 +383,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0):
     Calcola l'agenda ottimizzata per un'intera settimana.
     DISTRIBUISCE i clienti urgenti su tutti i giorni lavorativi.
     Per ogni giorno ottimizza il percorso con Nearest Neighbor.
-    Considera: orari lavoro, pausa pranzo, tempo viaggio, ritorno a casa.
+    Considera: orari lavoro, pausa pranzo, tempo viaggio, ritorno a casa, FERIE.
     """
     if df.empty:
         return {}
@@ -396,6 +396,44 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0):
     
     if isinstance(giorni_lavorativi, str):
         giorni_lavorativi = [int(x) for x in giorni_lavorativi.strip('{}').split(',')]
+    
+    # Gestione FERIE
+    attiva_ferie = config.get('attiva_ferie', False)
+    ferie_inizio = None
+    ferie_fine = None
+    
+    if attiva_ferie:
+        fi = config.get('ferie_inizio')
+        ff = config.get('ferie_fine')
+        
+        # Converti date ferie
+        if fi:
+            if isinstance(fi, str):
+                try:
+                    ferie_inizio = datetime.strptime(fi[:10], '%Y-%m-%d').date()
+                except:
+                    pass
+            elif hasattr(fi, 'date'):
+                ferie_inizio = fi.date()
+            elif hasattr(fi, 'year'):
+                ferie_inizio = fi
+        
+        if ff:
+            if isinstance(ff, str):
+                try:
+                    ferie_fine = datetime.strptime(ff[:10], '%Y-%m-%d').date()
+                except:
+                    pass
+            elif hasattr(ff, 'date'):
+                ferie_fine = ff.date()
+            elif hasattr(ff, 'year'):
+                ferie_fine = ff
+    
+    def is_giorno_ferie(data):
+        """Verifica se una data cade nel periodo ferie"""
+        if not attiva_ferie or not ferie_inizio or not ferie_fine:
+            return False
+        return ferie_inizio <= data <= ferie_fine
     
     # Orari lavoro
     def parse_time_config(val, default):
@@ -474,11 +512,12 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0):
             'frequenza': int(row.get('frequenza_giorni', 30))
         })
     
-    # Filtra solo giorni lavorativi futuri (o oggi)
+    # Filtra solo giorni lavorativi futuri (o oggi) ESCLUDENDO FERIE
     giorni_disponibili = []
     for giorno_idx in giorni_lavorativi:
         data_giorno = lunedi_settimana + timedelta(days=giorno_idx)
-        if settimana_offset > 0 or data_giorno >= oggi:
+        # Escludi giorni passati (tranne oggi) e giorni di ferie
+        if (settimana_offset > 0 or data_giorno >= oggi) and not is_giorno_ferie(data_giorno):
             giorni_disponibili.append(giorno_idx)
     
     if not giorni_disponibili or not clienti_urgenti:
@@ -697,7 +736,48 @@ def main_app():
         idx_g = ora_italiana.weekday()
         giorni_nomi = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"]
         
-        if idx_g in giorni_lavorativi:
+        # Controlla se oggi è giorno di ferie
+        oggi_date = ora_italiana.date()
+        is_ferie_oggi = False
+        
+        attiva_ferie = config.get('attiva_ferie', False)
+        if attiva_ferie:
+            fi = config.get('ferie_inizio')
+            ff = config.get('ferie_fine')
+            
+            ferie_inizio = None
+            ferie_fine = None
+            
+            if fi:
+                if isinstance(fi, str):
+                    try:
+                        ferie_inizio = datetime.strptime(fi[:10], '%Y-%m-%d').date()
+                    except:
+                        pass
+                elif hasattr(fi, 'date'):
+                    ferie_inizio = fi.date()
+                elif hasattr(fi, 'year'):
+                    ferie_inizio = fi
+            
+            if ff:
+                if isinstance(ff, str):
+                    try:
+                        ferie_fine = datetime.strptime(ff[:10], '%Y-%m-%d').date()
+                    except:
+                        pass
+                elif hasattr(ff, 'date'):
+                    ferie_fine = ff.date()
+                elif hasattr(ff, 'year'):
+                    ferie_fine = ff
+            
+            if ferie_inizio and ferie_fine:
+                is_ferie_oggi = ferie_inizio <= oggi_date <= ferie_fine
+        
+        # Mostra messaggio appropriato
+        if is_ferie_oggi:
+            st.warning(f"🏖️ **Oggi sei in FERIE!** (dal {ferie_inizio.strftime('%d/%m/%Y')} al {ferie_fine.strftime('%d/%m/%Y')})")
+            st.info("Per disattivare le ferie, vai su ⚙️ Config → Ferie")
+        elif idx_g in giorni_lavorativi:
             # Alert critici
             critici = [c for c in get_clienti_trascurati(df) if c['livello'] == 'critico']
             if critici:
@@ -909,16 +989,64 @@ def main_app():
             totale_visite_settimana = 0
             totale_km_settimana = 0
             
+            # Funzione per verificare se un giorno è in ferie
+            def is_giorno_ferie_agenda(data):
+                attiva_ferie = config.get('attiva_ferie', False)
+                if not attiva_ferie:
+                    return False
+                
+                fi = config.get('ferie_inizio')
+                ff = config.get('ferie_fine')
+                
+                ferie_inizio = None
+                ferie_fine = None
+                
+                if fi:
+                    if isinstance(fi, str):
+                        try:
+                            ferie_inizio = datetime.strptime(fi[:10], '%Y-%m-%d').date()
+                        except:
+                            pass
+                    elif hasattr(fi, 'date'):
+                        ferie_inizio = fi.date()
+                    elif hasattr(fi, 'year'):
+                        ferie_inizio = fi
+                
+                if ff:
+                    if isinstance(ff, str):
+                        try:
+                            ferie_fine = datetime.strptime(ff[:10], '%Y-%m-%d').date()
+                        except:
+                            pass
+                    elif hasattr(ff, 'date'):
+                        ferie_fine = ff.date()
+                    elif hasattr(ff, 'year'):
+                        ferie_fine = ff
+                
+                if ferie_inizio and ferie_fine:
+                    return ferie_inizio <= data <= ferie_fine
+                return False
+            
             for col_idx, giorno_idx in enumerate(giorni_attivi):
                 data_giorno = lunedi_selezionato + timedelta(days=giorno_idx)
                 tappe_giorno = agenda_settimana.get(giorno_idx, [])
+                is_ferie = is_giorno_ferie_agenda(data_giorno)
                 
                 with cols_giorni[col_idx]:
                     # Header giorno
                     is_oggi = data_giorno == oggi
                     giorno_label = f"**{giorni_nomi_full[giorno_idx][:3]}**" if is_oggi else giorni_nomi_full[giorno_idx][:3]
-                    st.subheader(f"{'📍 ' if is_oggi else ''}{giorno_label}")
+                    
+                    if is_ferie:
+                        st.subheader(f"🏖️ {giorno_label}")
+                    else:
+                        st.subheader(f"{'📍 ' if is_oggi else ''}{giorno_label}")
                     st.caption(f"{data_giorno.strftime('%d/%m')}")
+                    
+                    # Mostra FERIE se è giorno di ferie
+                    if is_ferie:
+                        st.warning("🏖️ **FERIE**")
+                        continue
                     
                     # Mostra tappe
                     if tappe_giorno:
@@ -1780,7 +1908,7 @@ def main_app():
     
     # Footer
     st.divider()
-    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 2.2")
+    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 2.3")
 
 # --- RUN APP ---
 init_auth_state()
