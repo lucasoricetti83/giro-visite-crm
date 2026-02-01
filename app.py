@@ -630,6 +630,44 @@ def reverse_geocode(lat, lon):
     except:
         return None
 
+@st.cache_data(ttl=3600)  # Cache per 1 ora
+def get_route_osrm(waypoints):
+    """
+    Ottiene il percorso stradale reale da OSRM (gratuito).
+    waypoints: lista di tuple (lat, lon)
+    Ritorna: lista di coordinate del percorso stradale
+    """
+    if len(waypoints) < 2:
+        return waypoints
+    
+    try:
+        # Formato OSRM: lon,lat;lon,lat;...
+        coords_str = ";".join([f"{lon},{lat}" for lat, lon in waypoints])
+        
+        url = f"http://router.project-osrm.org/route/v1/driving/{coords_str}"
+        params = {
+            'overview': 'full',
+            'geometries': 'geojson'
+        }
+        
+        response = requests.get(url, params=params, timeout=15)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('code') == 'Ok' and data.get('routes'):
+                # Estrai le coordinate dal percorso GeoJSON
+                geometry = data['routes'][0]['geometry']
+                coords = geometry['coordinates']
+                # GeoJSON è [lon, lat], convertiamo in [lat, lon] per Folium
+                route_points = [(lat, lon) for lon, lat in coords]
+                return route_points
+        
+        # Fallback: ritorna i waypoints originali (linee rette)
+        return waypoints
+    except Exception as e:
+        # In caso di errore, usa linee rette
+        return waypoints
+
 def batch_geocode(addresses, progress_callback=None):
     """Geocodifica multipla veloce"""
     results = []
@@ -1286,6 +1324,16 @@ def main_app():
                 # Mappa
                 if tappe_oggi:
                     st.subheader("🗺️ Percorso")
+                    
+                    # Costruisci lista waypoints
+                    waypoints = [(config.get('lat_base', 41.9028), config.get('lon_base', 12.4964))]
+                    for t in tappe_oggi:
+                        waypoints.append((t['latitude'], t['longitude']))
+                    
+                    # Ottieni percorso stradale reale
+                    with st.spinner("🛣️ Calcolo percorso stradale..."):
+                        route_stradale = get_route_osrm(waypoints)
+                    
                     m = folium.Map(location=[config.get('lat_base', 41.9028), config.get('lon_base', 12.4964)], zoom_start=10)
                     
                     # Marker partenza
@@ -1295,8 +1343,7 @@ def main_app():
                         icon=folium.Icon(color="blue", icon="home")
                     ).add_to(m)
                     
-                    route = [(config.get('lat_base', 41.9028), config.get('lon_base', 12.4964))]
-                    
+                    # Marker tappe
                     for i, t in enumerate(tappe_oggi, 1):
                         visitato = t['nome_cliente'] in st.session_state.visitati_oggi
                         color = "green" if visitato else ("red" if "APPUNTAMENTO" in t['tipo_tappa'] else "orange")
@@ -1306,10 +1353,18 @@ def main_app():
                             popup=f"{i}. {t['nome_cliente']}<br>⏰ {t['ora_arrivo']}",
                             icon=folium.Icon(color=color, icon="ok" if visitato else "user")
                         ).add_to(m)
-                        route.append((t['latitude'], t['longitude']))
                     
-                    folium.PolyLine(route, weight=3, color='#3498db', opacity=0.8).add_to(m)
-                    m.fit_bounds(route)
+                    # Disegna il percorso stradale
+                    if len(route_stradale) > 1:
+                        folium.PolyLine(
+                            route_stradale, 
+                            weight=4, 
+                            color='#3498db', 
+                            opacity=0.8,
+                            tooltip="Percorso ottimizzato"
+                        ).add_to(m)
+                    
+                    m.fit_bounds(waypoints)
                     st_folium(m, width="100%", height=350, key="map_oggi")
                 
                 st.divider()
