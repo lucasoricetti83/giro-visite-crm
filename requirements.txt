@@ -2,5 +2,6 @@ streamlit
 pandas
 folium
 streamlit-folium
-requests
 supabase
+requests
+openpyxl
