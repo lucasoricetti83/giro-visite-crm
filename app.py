@@ -643,6 +643,141 @@ def main_app():
                     st.session_state.active_tab = "👤 Anagrafica"
                     st.rerun()
     
+    # --- TAB: AGENDA ---
+    elif st.session_state.active_tab == "📅 Agenda":
+        st.header("📅 Agenda Settimanale")
+        
+        # Navigazione settimane
+        if 'current_week_index' not in st.session_state:
+            st.session_state.current_week_index = 0  # 0 = settimana corrente
+        
+        col_nav1, col_nav2, col_nav3 = st.columns([1, 3, 1])
+        
+        with col_nav1:
+            if st.button("⬅️ Sett. Prec.", use_container_width=True):
+                st.session_state.current_week_index -= 1
+                st.rerun()
+        
+        with col_nav3:
+            if st.button("Sett. Succ. ➡️", use_container_width=True):
+                st.session_state.current_week_index += 1
+                st.rerun()
+        
+        # Calcola date della settimana selezionata
+        oggi = ora_italiana.date()
+        lunedi_corrente = oggi - timedelta(days=oggi.weekday())
+        lunedi_selezionato = lunedi_corrente + timedelta(weeks=st.session_state.current_week_index)
+        domenica_selezionata = lunedi_selezionato + timedelta(days=6)
+        
+        with col_nav2:
+            if st.session_state.current_week_index == 0:
+                st.markdown(f"### 📆 Settimana Corrente")
+            elif st.session_state.current_week_index > 0:
+                st.markdown(f"### 📆 +{st.session_state.current_week_index} Settimana/e")
+            else:
+                st.markdown(f"### 📆 {st.session_state.current_week_index} Settimana/e")
+            st.caption(f"Dal {lunedi_selezionato.strftime('%d/%m/%Y')} al {domenica_selezionata.strftime('%d/%m/%Y')}")
+        
+        st.divider()
+        
+        # Giorni lavorativi configurati
+        giorni_nomi_full = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"]
+        giorni_attivi = config.get('giorni_lavorativi', [0, 1, 2, 3, 4])
+        if isinstance(giorni_attivi, str):
+            giorni_attivi = [int(x) for x in giorni_attivi.strip('{}').split(',')]
+        
+        # Crea colonne per i giorni lavorativi
+        if giorni_attivi:
+            cols_giorni = st.columns(len(giorni_attivi))
+            
+            totale_visite_settimana = 0
+            
+            for col_idx, giorno_idx in enumerate(giorni_attivi):
+                data_giorno = lunedi_selezionato + timedelta(days=giorno_idx)
+                
+                with cols_giorni[col_idx]:
+                    st.subheader(f"{giorni_nomi_full[giorno_idx][:3]}")
+                    st.caption(f"{data_giorno.strftime('%d/%m')}")
+                    
+                    # Calcola visite per questo giorno
+                    tappe_giorno = []
+                    
+                    if not df.empty:
+                        # Appuntamenti del giorno
+                        for _, row in df.iterrows():
+                            if pd.notnull(row.get('appuntamento')):
+                                if hasattr(row['appuntamento'], 'date'):
+                                    if row['appuntamento'].date() == data_giorno:
+                                        tappe_giorno.append({
+                                            'nome': row['nome_cliente'],
+                                            'tipo': '📌',
+                                            'ora': row['appuntamento'].strftime('%H:%M')
+                                        })
+                        
+                        # Clienti scaduti (solo per settimana corrente e future)
+                        if st.session_state.current_week_index >= 0:
+                            for _, row in df.iterrows():
+                                if row.get('visitare') == 'SI':
+                                    ultima = row.get('ultima_visita')
+                                    freq = int(row.get('frequenza_giorni', 30))
+                                    
+                                    if pd.isnull(ultima) or (hasattr(ultima, 'year') and ultima.year < 2001):
+                                        # Mai visitato - aggiungi se non già in lista
+                                        if len(tappe_giorno) < 8 and row['nome_cliente'] not in [t['nome'] for t in tappe_giorno]:
+                                            tappe_giorno.append({
+                                                'nome': row['nome_cliente'],
+                                                'tipo': '🚗',
+                                                'ora': '--:--'
+                                            })
+                                    else:
+                                        prossima_visita = ultima.date() + timedelta(days=freq) if hasattr(ultima, 'date') else ultima + timedelta(days=freq)
+                                        if prossima_visita <= data_giorno:
+                                            if len(tappe_giorno) < 8 and row['nome_cliente'] not in [t['nome'] for t in tappe_giorno]:
+                                                tappe_giorno.append({
+                                                    'nome': row['nome_cliente'],
+                                                    'tipo': '🚗',
+                                                    'ora': '--:--'
+                                                })
+                    
+                    # Mostra tappe
+                    if tappe_giorno:
+                        num_app = sum(1 for t in tappe_giorno if t['tipo'] == '📌')
+                        num_giro = len(tappe_giorno) - num_app
+                        
+                        if num_app > 0:
+                            st.info(f"📌 {num_app}")
+                        if num_giro > 0:
+                            st.success(f"🚗 {num_giro}")
+                        
+                        totale_visite_settimana += len(tappe_giorno)
+                        
+                        st.divider()
+                        
+                        for tappa in tappe_giorno[:6]:  # Max 6 per colonna
+                            with st.container(border=True):
+                                st.caption(f"{tappa['tipo']} {tappa['ora']}")
+                                if st.button(tappa['nome'][:15], key=f"ag_{data_giorno}_{tappa['nome']}", use_container_width=True):
+                                    st.session_state.cliente_selezionato = tappa['nome']
+                                    st.session_state.active_tab = "👤 Anagrafica"
+                                    st.rerun()
+                        
+                        if len(tappe_giorno) > 6:
+                            st.caption(f"... +{len(tappe_giorno) - 6} altre")
+                    else:
+                        st.info("📭 Nessuna visita")
+            
+            # Statistiche settimana
+            st.divider()
+            st.subheader("📊 Riepilogo Settimana")
+            
+            col_stat1, col_stat2, col_stat3 = st.columns(3)
+            col_stat1.metric("📊 Visite Totali", totale_visite_settimana)
+            col_stat2.metric("📅 Giorni Lavorativi", len(giorni_attivi))
+            media = totale_visite_settimana / len(giorni_attivi) if giorni_attivi else 0
+            col_stat3.metric("📈 Media/Giorno", f"{media:.1f}")
+        else:
+            st.warning("⚠️ Nessun giorno lavorativo configurato. Vai su ⚙️ Config per impostare i giorni.")
+    
     # --- TAB: MAPPA ---
     elif st.session_state.active_tab == "🗺️ Mappa":
         st.header("🗺️ Mappa Clienti")
@@ -868,20 +1003,28 @@ def main_app():
         
         col_orari1, col_orari2 = st.columns(2)
         
-        # Converti stringhe in oggetti time se necessario
-        h_inizio_default = config.get('h_inizio', '09:00')
-        h_fine_default = config.get('h_fine', '18:00')
-        pausa_inizio_default = config.get('pausa_inizio', '13:00')
-        pausa_fine_default = config.get('pausa_fine', '14:00')
+        # Funzione helper per convertire orari in vari formati
+        def parse_time(val, default='09:00'):
+            if val is None:
+                return datetime.strptime(default, '%H:%M').time()
+            if isinstance(val, time):
+                return val
+            if hasattr(val, 'time'):  # datetime object
+                return val.time()
+            try:
+                # Prova formato HH:MM:SS
+                return datetime.strptime(str(val)[:8], '%H:%M:%S').time()
+            except:
+                try:
+                    # Prova formato HH:MM
+                    return datetime.strptime(str(val)[:5], '%H:%M').time()
+                except:
+                    return datetime.strptime(default, '%H:%M').time()
         
-        if isinstance(h_inizio_default, str):
-            h_inizio_default = datetime.strptime(h_inizio_default, '%H:%M').time()
-        if isinstance(h_fine_default, str):
-            h_fine_default = datetime.strptime(h_fine_default, '%H:%M').time()
-        if isinstance(pausa_inizio_default, str):
-            pausa_inizio_default = datetime.strptime(pausa_inizio_default, '%H:%M').time()
-        if isinstance(pausa_fine_default, str):
-            pausa_fine_default = datetime.strptime(pausa_fine_default, '%H:%M').time()
+        h_inizio_default = parse_time(config.get('h_inizio'), '09:00')
+        h_fine_default = parse_time(config.get('h_fine'), '18:00')
+        pausa_inizio_default = parse_time(config.get('pausa_inizio'), '13:00')
+        pausa_fine_default = parse_time(config.get('pausa_fine'), '14:00')
         
         with col_orari1:
             h_inizio = st.time_input("🌅 Inizio Lavoro", value=h_inizio_default, key="h_inizio_input")
@@ -1111,7 +1254,7 @@ def main_app():
     
     # Footer
     st.divider()
-    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 1.3")
+    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 1.5")
 
 # --- RUN APP ---
 init_auth_state()
