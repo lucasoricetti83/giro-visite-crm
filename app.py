@@ -4,10 +4,10 @@ import folium
 from streamlit_folium import st_folium
 from datetime import datetime, timedelta, time
 from math import radians, cos, sin, asin, sqrt
-from geopy.geocoders import Nominatim
 import io
 import re
 import time as time_module
+import requests
 from supabase import create_client, Client
 
 # --- 1. CONFIGURAZIONE ---
@@ -16,6 +16,9 @@ st.set_page_config(page_title="Giro Visite CRM Pro", layout="wide", page_icon="�
 # Supabase credentials
 SUPABASE_URL = "https://ectezeclocjfbpbxdhyk.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVjdGV6ZWNsb2NqZmJwYnhkaHlrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk2Mzg4NzcsImV4cCI6MjA4NTIxNDg3N30.k_i6vZBmVXhQs6NFSi_IiH6HSiN7O6tG3WwGViw7PIs"
+
+# LocationIQ API Key
+LOCATIONIQ_KEY = "pk.eb703bb4dbacec20df9f83c1a6a807e3"
 
 @st.cache_resource
 def get_supabase_client():
@@ -264,31 +267,60 @@ def get_clienti_trascurati(df, soglia_warning_giorni=7, soglia_critico_giorni=14
     return clienti_alert
 
 def get_coords(address):
+    """Geocodifica indirizzo -> coordinate usando LocationIQ (veloce!)"""
     try:
-        geolocator = Nominatim(user_agent="giro_visite_crm_pro", timeout=10)
-        location = geolocator.geocode(f"{address}, Italia")
-        if location:
-            return (location.latitude, location.longitude)
+        url = "https://us1.locationiq.com/v1/search.php"
+        params = {
+            'key': LOCATIONIQ_KEY,
+            'q': f"{address}, Italia",
+            'format': 'json',
+            'limit': 1
+        }
+        response = requests.get(url, params=params, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if data:
+                return (float(data[0]['lat']), float(data[0]['lon']))
         return None
     except Exception as e:
         return None
 
 def reverse_geocode(lat, lon):
+    """Coordinate -> indirizzo usando LocationIQ (veloce!)"""
     try:
-        geolocator = Nominatim(user_agent="giro_visite_crm_pro", timeout=10)
-        location = geolocator.reverse(f"{lat}, {lon}", language='it')
-        if location and location.raw.get('address'):
-            addr = location.raw['address']
+        url = "https://us1.locationiq.com/v1/reverse.php"
+        params = {
+            'key': LOCATIONIQ_KEY,
+            'lat': lat,
+            'lon': lon,
+            'format': 'json',
+            'accept-language': 'it'
+        }
+        response = requests.get(url, params=params, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            addr = data.get('address', {})
             return {
                 'via': f"{addr.get('road', '')} {addr.get('house_number', '')}".strip(),
                 'cap': addr.get('postcode', ''),
                 'citta': addr.get('city') or addr.get('town') or addr.get('village', ''),
-                'provincia': addr.get('state', ''),
-                'indirizzo_completo': location.address
+                'provincia': addr.get('county', '') or addr.get('state', ''),
+                'indirizzo_completo': data.get('display_name', '')
             }
         return None
     except:
         return None
+
+def batch_geocode(addresses, progress_callback=None):
+    """Geocodifica multipla veloce"""
+    results = []
+    for i, addr in enumerate(addresses):
+        coords = get_coords(addr)
+        results.append(coords)
+        if progress_callback:
+            progress_callback(i + 1, len(addresses))
+        time_module.sleep(0.2)  # Rate limit LocationIQ free: 2 req/sec
+    return results
 
 # --- GPS COMPONENT ---
 def render_gps_button(button_id):
@@ -354,11 +386,23 @@ def calcola_piano_giornaliero(df, giorno_settimana, config, esclusi=[]):
     oggi = ora_italiana.date()
     tappe = []
     
-    # Filtra clienti da visitare
-    df_attivi = df[df['visitare'] == 'SI'].copy()
+    # Filtra clienti da visitare CON COORDINATE VALIDE
+    df_attivi = df[
+        (df['visitare'] == 'SI') & 
+        (df['latitude'].notna()) & 
+        (df['longitude'].notna()) &
+        (df['latitude'] != 0) &
+        (df['longitude'] != 0)
+    ].copy()
+    
+    if df_attivi.empty:
+        return []
     
     # Trova appuntamenti del giorno
-    appuntamenti = df_attivi[df_attivi['appuntamento'].dt.date == oggi].copy()
+    try:
+        appuntamenti = df_attivi[df_attivi['appuntamento'].dt.date == oggi].copy()
+    except:
+        appuntamenti = pd.DataFrame()
     
     # Calcola giorni passati dall'ultima visita
     df_attivi['giorni_passati'] = df_attivi['ultima_visita'].apply(
@@ -373,31 +417,54 @@ def calcola_piano_giornaliero(df, giorno_settimana, config, esclusi=[]):
     ].copy()
     
     # Aggiungi appuntamenti
-    for _, row in appuntamenti.iterrows():
-        if row['nome_cliente'] not in esclusi:
-            tappe.append({
-                'id': row['id'],
-                'nome_cliente': row['nome_cliente'],
-                'latitude': row['latitude'],
-                'longitude': row['longitude'],
-                'indirizzo': row.get('indirizzo', ''),
-                'cellulare': row.get('cellulare', ''),
-                'ora_arrivo': row['appuntamento'].strftime("%H:%M") if pd.notnull(row['appuntamento']) else "09:00",
-                'tipo_tappa': "📌 APPUNTAMENTO"
-            })
+    if not appuntamenti.empty:
+        for _, row in appuntamenti.iterrows():
+            if row['nome_cliente'] not in esclusi:
+                tappe.append({
+                    'id': row['id'],
+                    'nome_cliente': row['nome_cliente'],
+                    'latitude': float(row['latitude']),
+                    'longitude': float(row['longitude']),
+                    'indirizzo': row.get('indirizzo', ''),
+                    'cellulare': row.get('cellulare', ''),
+                    'ora_arrivo': row['appuntamento'].strftime("%H:%M") if pd.notnull(row['appuntamento']) else "09:00",
+                    'tipo_tappa': "📌 APPUNTAMENTO"
+                })
     
     # Aggiungi urgenti ordinati per distanza
-    start_lat = config.get('lat_base', 41.9028)
-    start_lon = config.get('lon_base', 12.4964)
+    start_lat = float(config.get('lat_base', 41.9028))
+    start_lon = float(config.get('lon_base', 12.4964))
     pos_corrente = (start_lat, start_lon)
     
-    urgenti_list = urgenti.to_dict('records')
+    # Converti urgenti in lista di dict con coordinate float valide
+    urgenti_list = []
+    for _, row in urgenti.iterrows():
+        try:
+            lat = float(row['latitude'])
+            lon = float(row['longitude'])
+            if lat != 0 and lon != 0:
+                urgenti_list.append({
+                    'id': row['id'],
+                    'nome_cliente': row['nome_cliente'],
+                    'latitude': lat,
+                    'longitude': lon,
+                    'indirizzo': row.get('indirizzo', ''),
+                    'cellulare': row.get('cellulare', ''),
+                    'frequenza_giorni': row['frequenza_giorni'],
+                    'giorni_passati': row['giorni_passati']
+                })
+        except:
+            continue
+    
     ora_corrente = datetime.combine(oggi, time(9, 0))
     durata_visita = config.get('durata_visita', 45)
     
     while urgenti_list and len(tappe) < 15:  # Max 15 visite al giorno
         # Trova il più vicino
-        piu_vicino = min(urgenti_list, key=lambda x: haversine(pos_corrente[0], pos_corrente[1], x['latitude'], x['longitude']))
+        try:
+            piu_vicino = min(urgenti_list, key=lambda x: haversine(pos_corrente[0], pos_corrente[1], x['latitude'], x['longitude']))
+        except Exception as e:
+            break
         
         dist = haversine(pos_corrente[0], pos_corrente[1], piu_vicino['latitude'], piu_vicino['longitude'])
         tempo_viaggio = (dist / 50) * 60  # minuti
@@ -426,6 +493,8 @@ def calcola_piano_giornaliero(df, giorno_settimana, config, esclusi=[]):
         pos_corrente = (piu_vicino['latitude'], piu_vicino['longitude'])
         ora_corrente = ora_arrivo + timedelta(minutes=durata_visita)
         urgenti_list.remove(piu_vicino)
+    
+    return tappe
     
     return tappe
 
@@ -783,15 +852,133 @@ def main_app():
         st.header("🗺️ Mappa Clienti")
         
         if not df.empty:
-            m = folium.Map(location=[df['latitude'].mean(), df['longitude'].mean()], zoom_start=8)
-            for _, row in df.iterrows():
-                color = "green" if row['visitare'] == "SI" else "red"
-                folium.Marker(
-                    [row['latitude'], row['longitude']],
-                    popup=row['nome_cliente'],
-                    icon=folium.Icon(color=color)
-                ).add_to(m)
-            st_folium(m, width="100%", height=500, key="mappa_clienti")
+            # Filtri
+            col_filtri1, col_filtri2, col_filtri3 = st.columns(3)
+            
+            with col_filtri1:
+                filtro_stato = st.selectbox("📊 Stato:", ["Tutti", "Solo Attivi", "Solo Inattivi"], key="filtro_stato_mappa")
+            
+            with col_filtri2:
+                usa_posizione = st.checkbox("📍 Filtra per distanza dalla mia posizione", key="usa_pos_mappa")
+            
+            with col_filtri3:
+                if usa_posizione:
+                    raggio_km = st.slider("🎯 Raggio (km)", 5, 100, 30, key="raggio_mappa")
+            
+            # Se usa posizione, mostra input coordinate
+            if usa_posizione:
+                st.divider()
+                col_pos1, col_pos2, col_pos3 = st.columns([2, 2, 1])
+                
+                # Default: usa punto di partenza
+                default_lat = config.get('lat_base', 41.9028)
+                default_lon = config.get('lon_base', 12.4964)
+                
+                with col_pos1:
+                    mia_lat = st.number_input("📍 Mia Latitudine", value=float(default_lat), format="%.6f", key="mia_lat_mappa")
+                with col_pos2:
+                    mia_lon = st.number_input("📍 Mia Longitudine", value=float(default_lon), format="%.6f", key="mia_lon_mappa")
+                with col_pos3:
+                    st.write("")
+                    st.write("")
+                    if st.button("🏠 Usa Partenza", key="usa_partenza_mappa"):
+                        st.session_state.mia_lat_mappa = default_lat
+                        st.session_state.mia_lon_mappa = default_lon
+                        st.rerun()
+                
+                st.caption("💡 Apri Google Maps sul telefono, tieni premuto sulla tua posizione, e copia le coordinate qui")
+            
+            st.divider()
+            
+            # Filtra dataframe
+            df_filtered = df.copy()
+            
+            # Filtra per stato
+            if filtro_stato == "Solo Attivi":
+                df_filtered = df_filtered[df_filtered['visitare'] == 'SI']
+            elif filtro_stato == "Solo Inattivi":
+                df_filtered = df_filtered[df_filtered['visitare'] != 'SI']
+            
+            # Filtra solo con coordinate valide
+            df_filtered = df_filtered[
+                (df_filtered['latitude'].notna()) & 
+                (df_filtered['longitude'].notna()) &
+                (df_filtered['latitude'] != 0) &
+                (df_filtered['longitude'] != 0)
+            ]
+            
+            # Se usa posizione, calcola distanza e filtra
+            if usa_posizione and mia_lat != 0 and mia_lon != 0:
+                df_filtered['distanza_km'] = df_filtered.apply(
+                    lambda row: haversine(mia_lat, mia_lon, row['latitude'], row['longitude']), axis=1
+                )
+                df_filtered = df_filtered[df_filtered['distanza_km'] <= raggio_km]
+                df_filtered = df_filtered.sort_values('distanza_km')
+                
+                st.success(f"🎯 **{len(df_filtered)} clienti** nel raggio di {raggio_km} km dalla tua posizione")
+            
+            if not df_filtered.empty:
+                # Centro mappa
+                if usa_posizione and mia_lat != 0:
+                    center_lat, center_lon = mia_lat, mia_lon
+                    zoom = 10
+                else:
+                    center_lat = df_filtered['latitude'].mean()
+                    center_lon = df_filtered['longitude'].mean()
+                    zoom = 8
+                
+                m = folium.Map(location=[center_lat, center_lon], zoom_start=zoom)
+                
+                # Marker posizione utente
+                if usa_posizione and mia_lat != 0:
+                    folium.Marker(
+                        [mia_lat, mia_lon],
+                        popup="📍 La mia posizione",
+                        icon=folium.Icon(color="blue", icon="user")
+                    ).add_to(m)
+                    
+                    # Cerchio del raggio
+                    folium.Circle(
+                        [mia_lat, mia_lon],
+                        radius=raggio_km * 1000,
+                        color='blue',
+                        fill=True,
+                        fillOpacity=0.1
+                    ).add_to(m)
+                
+                # Marker clienti
+                for _, row in df_filtered.iterrows():
+                    color = "green" if row['visitare'] == "SI" else "red"
+                    
+                    popup_text = f"<b>{row['nome_cliente']}</b><br>"
+                    if row.get('indirizzo'):
+                        popup_text += f"📍 {row['indirizzo']}<br>"
+                    if usa_posizione and 'distanza_km' in row:
+                        popup_text += f"🚗 {row['distanza_km']:.1f} km"
+                    
+                    folium.Marker(
+                        [row['latitude'], row['longitude']],
+                        popup=popup_text,
+                        icon=folium.Icon(color=color)
+                    ).add_to(m)
+                
+                st_folium(m, width="100%", height=450, key="mappa_clienti")
+                
+                # Lista clienti vicini
+                if usa_posizione and 'distanza_km' in df_filtered.columns:
+                    st.divider()
+                    st.subheader(f"📋 Clienti più vicini ({len(df_filtered)})")
+                    
+                    for _, row in df_filtered.head(10).iterrows():
+                        col1, col2, col3 = st.columns([3, 1, 1])
+                        col1.write(f"**{row['nome_cliente']}** - {row['distanza_km']:.1f} km")
+                        col2.link_button("🚗", f"https://www.google.com/maps/dir/?api=1&destination={row['latitude']},{row['longitude']}", use_container_width=True)
+                        if col3.button("👤", key=f"mappa_cliente_{row['id']}"):
+                            st.session_state.cliente_selezionato = row['nome_cliente']
+                            st.session_state.active_tab = "👤 Anagrafica"
+                            st.rerun()
+            else:
+                st.warning("⚠️ Nessun cliente trovato con i filtri selezionati")
         else:
             st.info("Nessun cliente da mostrare")
     
@@ -809,12 +996,50 @@ def main_app():
                 cliente = df[df['nome_cliente'] == scelto].iloc[0]
                 
                 # Azioni rapide
-                ca = st.columns(4)
-                ca[0].link_button("🚗 Naviga", f"https://www.google.com/maps/dir/?api=1&destination={cliente['latitude']},{cliente['longitude']}")
+                ca = st.columns(5)
+                if pd.notnull(cliente.get('latitude')) and cliente.get('latitude') != 0:
+                    ca[0].link_button("🚗 Naviga", f"https://www.google.com/maps/dir/?api=1&destination={cliente['latitude']},{cliente['longitude']}")
                 if cliente.get('cellulare'):
                     ca[1].link_button("📱 Chiama", f"tel:{cliente['cellulare']}")
                 if cliente.get('mail'):
                     ca[2].link_button("📧 Email", f"mailto:{cliente['mail']}")
+                
+                st.divider()
+                
+                # Sezione GPS - Sono qui dal cliente
+                with st.container(border=True):
+                    st.subheader("📍 Aggiorna Posizione Cliente")
+                    st.caption("Usa questa funzione quando sei fisicamente dal cliente per salvare la posizione esatta")
+                    
+                    # Input manuale coordinate (nascosto di default)
+                    with st.expander("🎯 Inserisci coordinate GPS manualmente"):
+                        col_gps1, col_gps2 = st.columns(2)
+                        new_lat = col_gps1.number_input("Latitudine", value=0.0, format="%.6f", key="new_lat_input")
+                        new_lon = col_gps2.number_input("Longitudine", value=0.0, format="%.6f", key="new_lon_input")
+                        
+                        if st.button("📍 SALVA QUESTA POSIZIONE", type="primary", use_container_width=True):
+                            if new_lat != 0 and new_lon != 0:
+                                # Ottieni indirizzo dalle coordinate
+                                addr_info = reverse_geocode(new_lat, new_lon)
+                                update_data = {
+                                    'latitude': new_lat,
+                                    'longitude': new_lon
+                                }
+                                if addr_info:
+                                    update_data['indirizzo'] = addr_info['indirizzo_completo']
+                                    if addr_info['cap']:
+                                        update_data['cap'] = addr_info['cap']
+                                    if addr_info['provincia']:
+                                        update_data['provincia'] = addr_info['provincia']
+                                
+                                update_cliente(cliente['id'], update_data)
+                                st.session_state.reload_data = True
+                                st.success(f"✅ Posizione aggiornata! ({new_lat:.6f}, {new_lon:.6f})")
+                                st.rerun()
+                            else:
+                                st.error("❌ Inserisci coordinate valide")
+                    
+                    st.info("💡 **Suggerimento:** Apri Google Maps sul telefono, tieni premuto sulla tua posizione, e copia le coordinate")
                 
                 st.divider()
                 
@@ -870,10 +1095,24 @@ def main_app():
                     mail = c2.text_input("Email", cliente.get('mail', ''))
                     contatto = c2.text_input("Referente", cliente.get('contatto', ''))
                     
+                    # Coordinate GPS
+                    st.divider()
+                    st.write("**📍 Coordinate GPS**")
+                    coord_c1, coord_c2 = st.columns(2)
+                    lat_attuale = cliente.get('latitude') if pd.notnull(cliente.get('latitude')) else 0.0
+                    lon_attuale = cliente.get('longitude') if pd.notnull(cliente.get('longitude')) else 0.0
+                    latitudine = coord_c1.number_input("Latitudine", value=float(lat_attuale), format="%.6f")
+                    longitudine = coord_c2.number_input("Longitudine", value=float(lon_attuale), format="%.6f")
+                    
+                    if lat_attuale == 0 or lon_attuale == 0:
+                        st.warning("⚠️ Coordinate mancanti! Il cliente non apparirà nel giro ottimizzato.")
+                    
                     note = st.text_area("Note", cliente.get('note', ''), height=100)
                     storico = st.text_area("Storico Report", cliente.get('storico_report', ''), height=150)
                     
-                    if st.form_submit_button("💾 Salva Modifiche", use_container_width=True):
+                    col_save1, col_save2 = st.columns(2)
+                    
+                    if col_save1.form_submit_button("💾 Salva Modifiche", use_container_width=True):
                         update_cliente(cliente['id'], {
                             'nome_cliente': nome,
                             'indirizzo': indirizzo,
@@ -885,12 +1124,30 @@ def main_app():
                             'cellulare': cellulare,
                             'mail': mail,
                             'contatto': contatto,
+                            'latitude': latitudine,
+                            'longitude': longitudine,
                             'note': note,
                             'storico_report': storico
                         })
                         st.session_state.reload_data = True
                         st.success("✅ Salvato!")
                         st.rerun()
+                    
+                    if col_save2.form_submit_button("🌍 Rigenera Coordinate da Indirizzo", use_container_width=True):
+                        if indirizzo:
+                            new_coords = get_coords(indirizzo)
+                            if new_coords:
+                                update_cliente(cliente['id'], {
+                                    'latitude': new_coords[0],
+                                    'longitude': new_coords[1]
+                                })
+                                st.session_state.reload_data = True
+                                st.success(f"✅ Coordinate aggiornate: {new_coords[0]:.6f}, {new_coords[1]:.6f}")
+                                st.rerun()
+                            else:
+                                st.error("❌ Impossibile trovare le coordinate per questo indirizzo")
+                        else:
+                            st.error("❌ Inserisci un indirizzo prima")
                 
                 # Elimina
                 with st.expander("🗑️ Elimina Cliente"):
@@ -963,17 +1220,54 @@ def main_app():
         st.header("⚙️ Configurazione")
         
         st.subheader("📍 Punto di Partenza")
-        citta = st.text_input("Città base:", config.get('citta_base', 'Roma'))
+        st.caption("Questo è il punto da cui parti ogni mattina (casa, ufficio, ecc.)")
         
-        if citta != config.get('citta_base'):
-            coords = get_coords(citta)
-            if coords:
-                config['citta_base'] = citta
-                config['lat_base'] = coords[0]
-                config['lon_base'] = coords[1]
-                save_config(config)
-                st.session_state.config = config
-                st.success("✅ Salvato!")
+        # Mostra coordinate attuali
+        lat_attuale = config.get('lat_base', 41.9028)
+        lon_attuale = config.get('lon_base', 12.4964)
+        citta_attuale = config.get('citta_base', 'Roma')
+        
+        st.info(f"📍 **Posizione attuale:** {citta_attuale} ({lat_attuale:.6f}, {lon_attuale:.6f})")
+        
+        # Opzione 1: Inserisci città
+        col_part1, col_part2 = st.columns(2)
+        with col_part1:
+            citta = st.text_input("🏙️ Cerca per città:", value=citta_attuale, key="citta_partenza")
+            if st.button("🔍 Cerca", use_container_width=True):
+                if citta:
+                    coords = get_coords(citta)
+                    if coords:
+                        config['citta_base'] = citta
+                        config['lat_base'] = coords[0]
+                        config['lon_base'] = coords[1]
+                        save_config(config)
+                        st.session_state.config = config
+                        st.success(f"✅ Posizione aggiornata: {coords[0]:.6f}, {coords[1]:.6f}")
+                        st.rerun()
+                    else:
+                        st.error("❌ Città non trovata")
+        
+        # Opzione 2: Inserisci coordinate manualmente
+        with col_part2:
+            st.write("**🎯 Oppure inserisci coordinate:**")
+            new_lat_base = st.number_input("Latitudine", value=float(lat_attuale), format="%.6f", key="lat_base_input")
+            new_lon_base = st.number_input("Longitudine", value=float(lon_attuale), format="%.6f", key="lon_base_input")
+            
+            if st.button("📍 Salva Coordinate", use_container_width=True):
+                if new_lat_base != 0 and new_lon_base != 0:
+                    # Ottieni nome città dalle coordinate
+                    addr_info = reverse_geocode(new_lat_base, new_lon_base)
+                    citta_nome = addr_info['citta'] if addr_info and addr_info.get('citta') else "Posizione GPS"
+                    
+                    config['citta_base'] = citta_nome
+                    config['lat_base'] = new_lat_base
+                    config['lon_base'] = new_lon_base
+                    save_config(config)
+                    st.session_state.config = config
+                    st.success(f"✅ Posizione salvata: {citta_nome}")
+                    st.rerun()
+        
+        st.caption("💡 **Suggerimento:** Apri Google Maps, tieni premuto sulla tua posizione, e copia le coordinate")
         
         st.divider()
         st.subheader("📅 Giorni Lavorativi")
@@ -1093,8 +1387,68 @@ def main_app():
         st.write(f"**Clienti totali:** {len(df)}")
         if not df.empty and 'visitare' in df.columns:
             st.write(f"**Clienti attivi:** {len(df[df['visitare'] == 'SI'])}")
+            # Conta clienti senza coordinate
+            senza_coord = df[(df['latitude'].isna()) | (df['longitude'].isna()) | (df['latitude'] == 0) | (df['longitude'] == 0)]
+            if len(senza_coord) > 0:
+                st.warning(f"⚠️ **{len(senza_coord)} clienti senza coordinate GPS!**")
         else:
             st.write(f"**Clienti attivi:** 0")
+        
+        st.divider()
+        st.subheader("🌍 Rigenera Coordinate GPS")
+        st.info("Se le coordinate non sono state importate correttamente, puoi rigenerarle dagli indirizzi.")
+        
+        if not df.empty:
+            # Mostra clienti senza coordinate
+            senza_coord = df[(df['latitude'].isna()) | (df['longitude'].isna()) | (df['latitude'] == 0) | (df['longitude'] == 0)]
+            
+            if len(senza_coord) > 0:
+                st.error(f"🚨 **{len(senza_coord)} clienti** non hanno coordinate valide!")
+                
+                with st.expander(f"👀 Vedi clienti senza coordinate ({len(senza_coord)})"):
+                    for _, row in senza_coord.head(20).iterrows():
+                        st.write(f"- **{row['nome_cliente']}**: {row.get('indirizzo', 'N/A')}")
+                    if len(senza_coord) > 20:
+                        st.write(f"... e altri {len(senza_coord) - 20}")
+                
+                if st.button("🌍 RIGENERA TUTTE LE COORDINATE", type="primary", use_container_width=True):
+                    progress = st.progress(0)
+                    status = st.empty()
+                    
+                    successi = 0
+                    errori = 0
+                    
+                    for idx, (_, row) in enumerate(senza_coord.iterrows()):
+                        indirizzo = row.get('indirizzo', '')
+                        if indirizzo:
+                            status.text(f"Geocoding: {row['nome_cliente']}...")
+                            coords = get_coords(indirizzo)
+                            
+                            if coords:
+                                # Aggiorna nel database
+                                update_cliente(row['id'], {
+                                    'latitude': coords[0],
+                                    'longitude': coords[1]
+                                })
+                                successi += 1
+                            else:
+                                errori += 1
+                            
+                            # Rate limiting LocationIQ (2 req/sec)
+                            time_module.sleep(0.5)
+                        else:
+                            errori += 1
+                        
+                        progress.progress((idx + 1) / len(senza_coord))
+                    
+                    progress.empty()
+                    status.empty()
+                    
+                    st.success(f"✅ Completato! {successi} coordinate rigenerate, {errori} errori")
+                    st.session_state.reload_data = True
+                    st.rerun()
+            else:
+                st.success("✅ Tutti i clienti hanno coordinate valide!")
         
         st.divider()
         st.subheader("📥 Importa Clienti da CSV")
@@ -1254,7 +1608,7 @@ def main_app():
     
     # Footer
     st.divider()
-    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 1.5")
+    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 2.0")
 
 # --- RUN APP ---
 init_auth_state()
