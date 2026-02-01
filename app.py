@@ -1034,6 +1034,124 @@ def main_app():
                     st.session_state.cliente_selezionato = c['nome']
                     st.session_state.active_tab = "👤 Anagrafica"
                     st.rerun()
+        
+        # === STORICO VISITE ===
+        st.divider()
+        st.subheader("📅 Storico Visite")
+        
+        col_data1, col_data2, col_data3 = st.columns([1, 1, 2])
+        
+        with col_data1:
+            # Selezione tipo filtro
+            tipo_filtro = st.radio("Periodo:", ["Giorno singolo", "Range date"], horizontal=True)
+        
+        with col_data2:
+            if tipo_filtro == "Giorno singolo":
+                data_filtro = st.date_input("📆 Seleziona data:", value=ora_italiana.date(), key="data_storico")
+                data_inizio = data_filtro
+                data_fine = data_filtro
+            else:
+                data_inizio = st.date_input("📆 Da:", value=ora_italiana.date() - timedelta(days=7), key="data_inizio_storico")
+                data_fine = st.date_input("📆 A:", value=ora_italiana.date(), key="data_fine_storico")
+        
+        # Filtra clienti visitati nel periodo
+        if not df.empty and 'ultima_visita' in df.columns:
+            df_storico = df[df['ultima_visita'].notna()].copy()
+            
+            if not df_storico.empty:
+                # Filtra per data
+                df_storico['data_visita'] = df_storico['ultima_visita'].dt.date
+                df_visitati = df_storico[
+                    (df_storico['data_visita'] >= data_inizio) & 
+                    (df_storico['data_visita'] <= data_fine)
+                ].sort_values('ultima_visita', ascending=False)
+                
+                with col_data3:
+                    if tipo_filtro == "Giorno singolo":
+                        st.metric("📊 Visite del giorno", len(df_visitati))
+                    else:
+                        giorni_periodo = (data_fine - data_inizio).days + 1
+                        media = len(df_visitati) / giorni_periodo if giorni_periodo > 0 else 0
+                        m1, m2 = st.columns(2)
+                        m1.metric("📊 Visite totali", len(df_visitati))
+                        m2.metric("📈 Media/giorno", f"{media:.1f}")
+                
+                if not df_visitati.empty:
+                    st.divider()
+                    
+                    # Raggruppa per data se range
+                    if tipo_filtro == "Range date" and len(df_visitati) > 0:
+                        # Mostra grafico visite per giorno
+                        visite_per_giorno = df_visitati.groupby('data_visita').size().reset_index(name='visite')
+                        visite_per_giorno['data_visita'] = pd.to_datetime(visite_per_giorno['data_visita'])
+                        visite_per_giorno = visite_per_giorno.sort_values('data_visita')
+                        
+                        st.bar_chart(visite_per_giorno.set_index('data_visita')['visite'])
+                    
+                    # Lista clienti visitati
+                    st.subheader(f"📋 Clienti visitati ({len(df_visitati)})")
+                    
+                    for _, row in df_visitati.iterrows():
+                        with st.container(border=True):
+                            col_st1, col_st2, col_st3 = st.columns([3, 2, 1])
+                            
+                            # Info cliente
+                            col_st1.markdown(f"**{row['nome_cliente']}**")
+                            col_st1.caption(f"📍 {row.get('indirizzo', 'N/D')}")
+                            
+                            # Stato e data
+                            stato = row.get('stato_cliente', 'CLIENTE ATTIVO')
+                            colori_stato = {
+                                'CLIENTE ATTIVO': '🟢',
+                                'CLIENTE NUOVO': '🔵',
+                                'CLIENTE POSSIBILE': '🟡',
+                                'CLIENTE PROBABILE': '🟠'
+                            }
+                            icona = colori_stato.get(stato, '⚪')
+                            col_st2.write(f"{icona} {stato}")
+                            col_st2.caption(f"📅 {row['ultima_visita'].strftime('%d/%m/%Y %H:%M') if pd.notnull(row['ultima_visita']) else 'N/D'}")
+                            
+                            # Pulsante scheda
+                            if col_st3.button("👤", key=f"storico_{row['id']}", help="Apri scheda"):
+                                st.session_state.cliente_selezionato = row['nome_cliente']
+                                st.session_state.active_tab = "👤 Anagrafica"
+                                st.rerun()
+                else:
+                    if tipo_filtro == "Giorno singolo":
+                        st.info(f"📭 Nessuna visita registrata il {data_filtro.strftime('%d/%m/%Y')}")
+                    else:
+                        st.info(f"📭 Nessuna visita registrata dal {data_inizio.strftime('%d/%m/%Y')} al {data_fine.strftime('%d/%m/%Y')}")
+            else:
+                st.info("📭 Nessuna visita registrata")
+        
+        # === STATISTICHE PER STATO ===
+        st.divider()
+        st.subheader("📈 Statistiche per Stato Cliente")
+        
+        if not df.empty and 'stato_cliente' in df.columns:
+            # Conta per stato
+            stats_stato = df['stato_cliente'].value_counts()
+            
+            col_stat1, col_stat2 = st.columns([1, 2])
+            
+            with col_stat1:
+                for stato, count in stats_stato.items():
+                    colori_stato = {
+                        'CLIENTE ATTIVO': '🟢',
+                        'CLIENTE NUOVO': '🔵',
+                        'CLIENTE POSSIBILE': '🟡',
+                        'CLIENTE PROBABILE': '🟠'
+                    }
+                    icona = colori_stato.get(stato, '⚪')
+                    st.write(f"{icona} **{stato}**: {count}")
+            
+            with col_stat2:
+                # Grafico a barre
+                chart_data = pd.DataFrame({
+                    'Stato': stats_stato.index,
+                    'Clienti': stats_stato.values
+                })
+                st.bar_chart(chart_data.set_index('Stato'))
     
     # --- TAB: AGENDA ---
     elif st.session_state.active_tab == "📅 Agenda":
@@ -2057,7 +2175,7 @@ def main_app():
     
     # Footer
     st.divider()
-    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 2.4")
+    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 2.5")
 
 # --- RUN APP ---
 init_auth_state()
