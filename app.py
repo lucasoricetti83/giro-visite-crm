@@ -377,126 +377,243 @@ def render_gps_button(button_id):
     """
     return st.components.v1.html(html_code, height=100)
 
-# --- 5. CALCOLO GIRO ---
-def calcola_piano_giornaliero(df, giorno_settimana, config, esclusi=[]):
-    """Calcola il piano visite per un giorno specifico"""
+# --- 5. CALCOLO GIRO OTTIMIZZATO ---
+def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0):
+    """
+    Calcola l'agenda ottimizzata per un'intera settimana.
+    DISTRIBUISCE i clienti urgenti su tutti i giorni lavorativi.
+    Per ogni giorno ottimizza il percorso con Nearest Neighbor.
+    Considera: orari lavoro, pausa pranzo, tempo viaggio, ritorno a casa.
+    """
     if df.empty:
-        return []
+        return {}
     
+    # Parametri configurazione
+    start_lat = float(config.get('lat_base', 41.9028))
+    start_lon = float(config.get('lon_base', 12.4964))
+    durata_visita = int(config.get('durata_visita', 45))
+    giorni_lavorativi = config.get('giorni_lavorativi', [0, 1, 2, 3, 4])
+    
+    if isinstance(giorni_lavorativi, str):
+        giorni_lavorativi = [int(x) for x in giorni_lavorativi.strip('{}').split(',')]
+    
+    # Orari lavoro
+    def parse_time_config(val, default):
+        if val is None:
+            return default
+        if isinstance(val, str):
+            try:
+                return datetime.strptime(str(val)[:5], '%H:%M').time()
+            except:
+                return default
+        if hasattr(val, 'hour'):
+            return val
+        return default
+    
+    h_inizio = parse_time_config(config.get('h_inizio'), time(9, 0))
+    h_fine = parse_time_config(config.get('h_fine'), time(18, 0))
+    pausa_inizio = parse_time_config(config.get('pausa_inizio'), time(13, 0))
+    pausa_fine = parse_time_config(config.get('pausa_fine'), time(14, 0))
+    
+    # Calcola date della settimana
     oggi = ora_italiana.date()
-    tappe = []
+    lunedi_corrente = oggi - timedelta(days=oggi.weekday())
+    lunedi_settimana = lunedi_corrente + timedelta(weeks=settimana_offset)
     
-    # Filtra clienti da visitare CON COORDINATE VALIDE
-    df_attivi = df[
+    # Inizializza agenda
+    agenda = {g: [] for g in range(7)}
+    
+    # Filtra clienti con coordinate valide e attivi
+    df_validi = df[
         (df['visitare'] == 'SI') & 
         (df['latitude'].notna()) & 
         (df['longitude'].notna()) &
         (df['latitude'] != 0) &
-        (df['longitude'] != 0)
+        (df['longitude'] != 0) &
+        (~df['nome_cliente'].isin(esclusi))
     ].copy()
     
-    if df_attivi.empty:
-        return []
+    if df_validi.empty:
+        return agenda
     
-    # Trova appuntamenti del giorno
-    try:
-        appuntamenti = df_attivi[df_attivi['appuntamento'].dt.date == oggi].copy()
-    except:
-        appuntamenti = pd.DataFrame()
+    # Converti coordinate a float
+    df_validi['latitude'] = df_validi['latitude'].astype(float)
+    df_validi['longitude'] = df_validi['longitude'].astype(float)
     
-    # Calcola giorni passati dall'ultima visita
-    df_attivi['giorni_passati'] = df_attivi['ultima_visita'].apply(
-        lambda x: (oggi - x.date()).days if pd.notnull(x) and hasattr(x, 'date') else 999
-    )
+    # Calcola priorità (giorni di ritardo dalla frequenza)
+    def calcola_giorni_ritardo(row):
+        ultima = row.get('ultima_visita')
+        freq = int(row.get('frequenza_giorni', 30))
+        
+        if pd.isnull(ultima) or (hasattr(ultima, 'year') and ultima.year < 2001):
+            return 999  # Mai visitato
+        
+        ultima_date = ultima.date() if hasattr(ultima, 'date') else ultima
+        prossima = ultima_date + timedelta(days=freq)
+        return (oggi - prossima).days
     
-    # Clienti urgenti (scaduti)
-    urgenti = df_attivi[
-        (df_attivi['giorni_passati'] >= df_attivi['frequenza_giorni']) &
-        (~df_attivi['nome_cliente'].isin(esclusi)) &
-        (~df_attivi['nome_cliente'].isin(appuntamenti['nome_cliente'].tolist() if not appuntamenti.empty else []))
-    ].copy()
+    df_validi['ritardo'] = df_validi.apply(calcola_giorni_ritardo, axis=1)
     
-    # Aggiungi appuntamenti
-    if not appuntamenti.empty:
-        for _, row in appuntamenti.iterrows():
-            if row['nome_cliente'] not in esclusi:
-                tappe.append({
-                    'id': row['id'],
-                    'nome_cliente': row['nome_cliente'],
-                    'latitude': float(row['latitude']),
-                    'longitude': float(row['longitude']),
-                    'indirizzo': row.get('indirizzo', ''),
-                    'cellulare': row.get('cellulare', ''),
-                    'ora_arrivo': row['appuntamento'].strftime("%H:%M") if pd.notnull(row['appuntamento']) else "09:00",
-                    'tipo_tappa': "📌 APPUNTAMENTO"
-                })
+    # Prendi TUTTI i clienti urgenti (ritardo >= 0, cioè scaduti)
+    urgenti = df_validi[df_validi['ritardo'] >= 0].copy()
     
-    # Aggiungi urgenti ordinati per distanza
-    start_lat = float(config.get('lat_base', 41.9028))
-    start_lon = float(config.get('lon_base', 12.4964))
-    pos_corrente = (start_lat, start_lon)
+    # Ordina per ritardo (più scaduti prima)
+    urgenti = urgenti.sort_values('ritardo', ascending=False)
     
-    # Converti urgenti in lista di dict con coordinate float valide
-    urgenti_list = []
+    # Converti in lista di dizionari
+    clienti_urgenti = []
     for _, row in urgenti.iterrows():
-        try:
-            lat = float(row['latitude'])
-            lon = float(row['longitude'])
-            if lat != 0 and lon != 0:
-                urgenti_list.append({
-                    'id': row['id'],
-                    'nome_cliente': row['nome_cliente'],
-                    'latitude': lat,
-                    'longitude': lon,
-                    'indirizzo': row.get('indirizzo', ''),
-                    'cellulare': row.get('cellulare', ''),
-                    'frequenza_giorni': row['frequenza_giorni'],
-                    'giorni_passati': row['giorni_passati']
-                })
-        except:
-            continue
-    
-    ora_corrente = datetime.combine(oggi, time(9, 0))
-    durata_visita = config.get('durata_visita', 45)
-    
-    while urgenti_list and len(tappe) < 15:  # Max 15 visite al giorno
-        # Trova il più vicino
-        try:
-            piu_vicino = min(urgenti_list, key=lambda x: haversine(pos_corrente[0], pos_corrente[1], x['latitude'], x['longitude']))
-        except Exception as e:
-            break
-        
-        dist = haversine(pos_corrente[0], pos_corrente[1], piu_vicino['latitude'], piu_vicino['longitude'])
-        tempo_viaggio = (dist / 50) * 60  # minuti
-        ora_arrivo = ora_corrente + timedelta(minutes=tempo_viaggio)
-        
-        # Pausa pranzo
-        if ora_arrivo.hour >= 13 and ora_arrivo.hour < 14:
-            ora_corrente = datetime.combine(oggi, time(14, 0))
-            continue
-        
-        # Fine giornata
-        if ora_arrivo.hour >= 18:
-            break
-        
-        tappe.append({
-            'id': piu_vicino['id'],
-            'nome_cliente': piu_vicino['nome_cliente'],
-            'latitude': piu_vicino['latitude'],
-            'longitude': piu_vicino['longitude'],
-            'indirizzo': piu_vicino.get('indirizzo', ''),
-            'cellulare': piu_vicino.get('cellulare', ''),
-            'ora_arrivo': ora_arrivo.strftime("%H:%M"),
-            'tipo_tappa': "🚗 Giro"
+        clienti_urgenti.append({
+            'id': row['id'],
+            'nome_cliente': row['nome_cliente'],
+            'latitude': row['latitude'],
+            'longitude': row['longitude'],
+            'indirizzo': row.get('indirizzo', ''),
+            'cellulare': str(row.get('cellulare', '')),
+            'ritardo': row['ritardo'],
+            'frequenza': int(row.get('frequenza_giorni', 30))
         })
+    
+    # Filtra solo giorni lavorativi futuri (o oggi)
+    giorni_disponibili = []
+    for giorno_idx in giorni_lavorativi:
+        data_giorno = lunedi_settimana + timedelta(days=giorno_idx)
+        if settimana_offset > 0 or data_giorno >= oggi:
+            giorni_disponibili.append(giorno_idx)
+    
+    if not giorni_disponibili or not clienti_urgenti:
+        return agenda
+    
+    # ========================================
+    # DISTRIBUZIONE CLIENTI SUI GIORNI
+    # ========================================
+    
+    # Per ogni giorno, calcola quante visite possiamo fare
+    # (basato su ore disponibili e durata visita media + viaggio)
+    ore_lavoro_giorno = (datetime.combine(oggi, h_fine) - datetime.combine(oggi, h_inizio)).seconds / 3600
+    ore_pausa = (datetime.combine(oggi, pausa_fine) - datetime.combine(oggi, pausa_inizio)).seconds / 3600
+    ore_effettive = ore_lavoro_giorno - ore_pausa
+    
+    # Stima: visita + viaggio medio = durata_visita + 20 min
+    tempo_medio_per_visita = (durata_visita + 20) / 60  # in ore
+    max_visite_per_giorno = int(ore_effettive / tempo_medio_per_visita)
+    max_visite_per_giorno = min(max_visite_per_giorno, 12)  # Cap a 12
+    
+    # Clienti ancora da assegnare
+    clienti_da_assegnare = clienti_urgenti.copy()
+    
+    # Per ogni giorno disponibile
+    for giorno_idx in giorni_disponibili:
+        if not clienti_da_assegnare:
+            break
+            
+        data_giorno = lunedi_settimana + timedelta(days=giorno_idx)
         
-        pos_corrente = (piu_vicino['latitude'], piu_vicino['longitude'])
-        ora_corrente = ora_arrivo + timedelta(minutes=durata_visita)
-        urgenti_list.remove(piu_vicino)
+        # Prima: prendi gli APPUNTAMENTI del giorno
+        tappe_giorno = []
+        try:
+            for _, row in df_validi.iterrows():
+                if pd.notnull(row.get('appuntamento')):
+                    app_date = row['appuntamento'].date() if hasattr(row['appuntamento'], 'date') else None
+                    if app_date == data_giorno:
+                        tappe_giorno.append({
+                            'id': row['id'],
+                            'nome_cliente': row['nome_cliente'],
+                            'latitude': float(row['latitude']),
+                            'longitude': float(row['longitude']),
+                            'indirizzo': row.get('indirizzo', ''),
+                            'cellulare': str(row.get('cellulare', '')),
+                            'ora_arrivo': row['appuntamento'].strftime('%H:%M'),
+                            'tipo_tappa': '📌 APPUNTAMENTO',
+                            'distanza_km': 0
+                        })
+                        # Rimuovi dai clienti da assegnare
+                        clienti_da_assegnare = [c for c in clienti_da_assegnare if c['nome_cliente'] != row['nome_cliente']]
+        except:
+            pass
+        
+        # Slot rimanenti per visite normali
+        slot_disponibili = max_visite_per_giorno - len(tappe_giorno)
+        
+        if slot_disponibili <= 0 or not clienti_da_assegnare:
+            agenda[giorno_idx] = tappe_giorno
+            continue
+        
+        # ========================================
+        # NEAREST NEIGHBOR per questo giorno
+        # ========================================
+        
+        pos_corrente = (start_lat, start_lon)
+        ora_corrente = datetime.combine(data_giorno, h_inizio)
+        ora_fine_lavoro = datetime.combine(data_giorno, h_fine)
+        ora_pausa_inizio = datetime.combine(data_giorno, pausa_inizio)
+        ora_pausa_fine = datetime.combine(data_giorno, pausa_fine)
+        
+        clienti_per_oggi = []
+        visite_aggiunte = 0
+        
+        while clienti_da_assegnare and visite_aggiunte < slot_disponibili:
+            # Trova il cliente più vicino
+            migliore = None
+            dist_min = float('inf')
+            
+            for c in clienti_da_assegnare:
+                d = haversine(pos_corrente[0], pos_corrente[1], c['latitude'], c['longitude'])
+                if d < dist_min:
+                    dist_min = d
+                    migliore = c
+            
+            if not migliore:
+                break
+            
+            # Calcola tempi
+            tempo_viaggio = (dist_min / 50) * 60  # minuti (50 km/h media)
+            ora_arrivo = ora_corrente + timedelta(minutes=tempo_viaggio)
+            
+            # Gestisci pausa pranzo
+            if ora_arrivo.time() >= pausa_inizio and ora_arrivo.time() < pausa_fine:
+                ora_corrente = datetime.combine(data_giorno, pausa_fine)
+                ora_arrivo = ora_corrente + timedelta(minutes=tempo_viaggio)
+            
+            ora_fine_visita = ora_arrivo + timedelta(minutes=durata_visita)
+            
+            # Calcola ritorno a casa
+            dist_ritorno = haversine(migliore['latitude'], migliore['longitude'], start_lat, start_lon)
+            tempo_ritorno = (dist_ritorno / 50) * 60
+            ora_rientro = ora_fine_visita + timedelta(minutes=tempo_ritorno)
+            
+            # Se non c'è tempo di tornare a casa, passa al giorno dopo
+            if ora_rientro.time() > h_fine:
+                break
+            
+            # Aggiungi la visita
+            tappe_giorno.append({
+                'id': migliore['id'],
+                'nome_cliente': migliore['nome_cliente'],
+                'latitude': migliore['latitude'],
+                'longitude': migliore['longitude'],
+                'indirizzo': migliore.get('indirizzo', ''),
+                'cellulare': migliore.get('cellulare', ''),
+                'ora_arrivo': ora_arrivo.strftime('%H:%M'),
+                'tipo_tappa': '🚗 Giro',
+                'distanza_km': round(dist_min, 1),
+                'ritardo': migliore['ritardo']
+            })
+            
+            # Aggiorna stato
+            clienti_da_assegnare.remove(migliore)
+            pos_corrente = (migliore['latitude'], migliore['longitude'])
+            ora_corrente = ora_fine_visita
+            visite_aggiunte += 1
+        
+        agenda[giorno_idx] = tappe_giorno
     
-    return tappe
-    
-    return tappe
+    return agenda
+
+def calcola_piano_giornaliero(df, giorno_settimana, config, esclusi=[]):
+    """Restituisce il piano per il giorno corrente"""
+    agenda = calcola_agenda_settimanale(df, config, esclusi, settimana_offset=0)
+    return agenda.get(giorno_settimana, [])
 
 # --- 6. MAIN APP ---
 def main_app():
@@ -714,7 +831,7 @@ def main_app():
     
     # --- TAB: AGENDA ---
     elif st.session_state.active_tab == "📅 Agenda":
-        st.header("📅 Agenda Settimanale")
+        st.header("📅 Agenda Settimanale Ottimizzata")
         
         # Navigazione settimane
         if 'current_week_index' not in st.session_state:
@@ -755,95 +872,96 @@ def main_app():
         if isinstance(giorni_attivi, str):
             giorni_attivi = [int(x) for x in giorni_attivi.strip('{}').split(',')]
         
+        # CALCOLA AGENDA OTTIMIZZATA
+        agenda_settimana = calcola_agenda_settimanale(
+            df, 
+            config, 
+            st.session_state.esclusi_oggi if st.session_state.current_week_index == 0 else [],
+            st.session_state.current_week_index
+        )
+        
         # Crea colonne per i giorni lavorativi
         if giorni_attivi:
             cols_giorni = st.columns(len(giorni_attivi))
             
             totale_visite_settimana = 0
+            totale_km_settimana = 0
             
             for col_idx, giorno_idx in enumerate(giorni_attivi):
                 data_giorno = lunedi_selezionato + timedelta(days=giorno_idx)
+                tappe_giorno = agenda_settimana.get(giorno_idx, [])
                 
                 with cols_giorni[col_idx]:
-                    st.subheader(f"{giorni_nomi_full[giorno_idx][:3]}")
+                    # Header giorno
+                    is_oggi = data_giorno == oggi
+                    giorno_label = f"**{giorni_nomi_full[giorno_idx][:3]}**" if is_oggi else giorni_nomi_full[giorno_idx][:3]
+                    st.subheader(f"{'📍 ' if is_oggi else ''}{giorno_label}")
                     st.caption(f"{data_giorno.strftime('%d/%m')}")
-                    
-                    # Calcola visite per questo giorno
-                    tappe_giorno = []
-                    
-                    if not df.empty:
-                        # Appuntamenti del giorno
-                        for _, row in df.iterrows():
-                            if pd.notnull(row.get('appuntamento')):
-                                if hasattr(row['appuntamento'], 'date'):
-                                    if row['appuntamento'].date() == data_giorno:
-                                        tappe_giorno.append({
-                                            'nome': row['nome_cliente'],
-                                            'tipo': '📌',
-                                            'ora': row['appuntamento'].strftime('%H:%M')
-                                        })
-                        
-                        # Clienti scaduti (solo per settimana corrente e future)
-                        if st.session_state.current_week_index >= 0:
-                            for _, row in df.iterrows():
-                                if row.get('visitare') == 'SI':
-                                    ultima = row.get('ultima_visita')
-                                    freq = int(row.get('frequenza_giorni', 30))
-                                    
-                                    if pd.isnull(ultima) or (hasattr(ultima, 'year') and ultima.year < 2001):
-                                        # Mai visitato - aggiungi se non già in lista
-                                        if len(tappe_giorno) < 8 and row['nome_cliente'] not in [t['nome'] for t in tappe_giorno]:
-                                            tappe_giorno.append({
-                                                'nome': row['nome_cliente'],
-                                                'tipo': '🚗',
-                                                'ora': '--:--'
-                                            })
-                                    else:
-                                        prossima_visita = ultima.date() + timedelta(days=freq) if hasattr(ultima, 'date') else ultima + timedelta(days=freq)
-                                        if prossima_visita <= data_giorno:
-                                            if len(tappe_giorno) < 8 and row['nome_cliente'] not in [t['nome'] for t in tappe_giorno]:
-                                                tappe_giorno.append({
-                                                    'nome': row['nome_cliente'],
-                                                    'tipo': '🚗',
-                                                    'ora': '--:--'
-                                                })
                     
                     # Mostra tappe
                     if tappe_giorno:
-                        num_app = sum(1 for t in tappe_giorno if t['tipo'] == '📌')
+                        num_app = sum(1 for t in tappe_giorno if '📌' in t.get('tipo_tappa', ''))
                         num_giro = len(tappe_giorno) - num_app
+                        km_giorno = sum(t.get('distanza_km', 0) for t in tappe_giorno)
                         
                         if num_app > 0:
-                            st.info(f"📌 {num_app}")
+                            st.info(f"📌 {num_app} appuntamenti")
                         if num_giro > 0:
-                            st.success(f"🚗 {num_giro}")
+                            st.success(f"🚗 {num_giro} visite")
+                        if km_giorno > 0:
+                            st.caption(f"🛣️ ~{km_giorno:.0f} km")
                         
                         totale_visite_settimana += len(tappe_giorno)
+                        totale_km_settimana += km_giorno
                         
                         st.divider()
                         
-                        for tappa in tappe_giorno[:6]:  # Max 6 per colonna
+                        for tappa in tappe_giorno[:8]:  # Max 8 per colonna
                             with st.container(border=True):
-                                st.caption(f"{tappa['tipo']} {tappa['ora']}")
-                                if st.button(tappa['nome'][:15], key=f"ag_{data_giorno}_{tappa['nome']}", use_container_width=True):
-                                    st.session_state.cliente_selezionato = tappa['nome']
+                                icona = "📌" if "📌" in tappa.get('tipo_tappa', '') else "🚗"
+                                st.caption(f"{icona} {tappa.get('ora_arrivo', '--:--')}")
+                                
+                                nome_display = tappa['nome_cliente'][:15] + "..." if len(tappa['nome_cliente']) > 15 else tappa['nome_cliente']
+                                if st.button(nome_display, key=f"ag_{data_giorno}_{tappa['nome_cliente']}", use_container_width=True):
+                                    st.session_state.cliente_selezionato = tappa['nome_cliente']
                                     st.session_state.active_tab = "👤 Anagrafica"
                                     st.rerun()
+                                
+                                if tappa.get('distanza_km'):
+                                    st.caption(f"📍 {tappa['distanza_km']} km")
                         
-                        if len(tappe_giorno) > 6:
-                            st.caption(f"... +{len(tappe_giorno) - 6} altre")
+                        if len(tappe_giorno) > 8:
+                            st.caption(f"... +{len(tappe_giorno) - 8} altre")
                     else:
-                        st.info("📭 Nessuna visita")
+                        if data_giorno < oggi:
+                            st.info("📅 Passato")
+                        else:
+                            st.info("📭 Nessuna visita")
             
             # Statistiche settimana
             st.divider()
             st.subheader("📊 Riepilogo Settimana")
             
-            col_stat1, col_stat2, col_stat3 = st.columns(3)
+            col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
             col_stat1.metric("📊 Visite Totali", totale_visite_settimana)
-            col_stat2.metric("📅 Giorni Lavorativi", len(giorni_attivi))
+            col_stat2.metric("🛣️ Km Totali", f"~{totale_km_settimana:.0f}")
+            col_stat3.metric("📅 Giorni Lavorativi", len(giorni_attivi))
             media = totale_visite_settimana / len(giorni_attivi) if giorni_attivi else 0
-            col_stat3.metric("📈 Media/Giorno", f"{media:.1f}")
+            col_stat4.metric("📈 Media/Giorno", f"{media:.1f}")
+            
+            # Info algoritmo
+            with st.expander("ℹ️ Come funziona l'ottimizzazione"):
+                st.markdown("""
+                **L'algoritmo considera:**
+                - 📍 **Distanza dal punto di partenza** e tra clienti
+                - ⏰ **Orari di lavoro** configurati
+                - 🍽️ **Pausa pranzo** automatica
+                - 🏠 **Tempo di ritorno** a casa prima della fine lavoro
+                - 🚨 **Priorità clienti** (scaduti da più tempo = visitati prima)
+                - 🚗 **Percorso ottimizzato** con algoritmo Nearest Neighbor
+                
+                Ogni cliente appare **una sola volta** nella settimana!
+                """)
         else:
             st.warning("⚠️ Nessun giorno lavorativo configurato. Vai su ⚙️ Config per impostare i giorni.")
     
@@ -1608,7 +1726,7 @@ def main_app():
     
     # Footer
     st.divider()
-    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 2.0")
+    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 2.1")
 
 # --- RUN APP ---
 init_auth_state()
