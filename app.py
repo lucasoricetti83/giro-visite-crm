@@ -762,8 +762,11 @@ def main_app():
                 for i, t in enumerate(tappe_oggi, 1):
                     visitato = t['nome_cliente'] in st.session_state.visitati_oggi
                     
+                    # Trova dati completi del cliente per promemoria e email
+                    cliente_row = df[df['nome_cliente'] == t['nome_cliente']].iloc[0] if not df[df['nome_cliente'] == t['nome_cliente']].empty else None
+                    
                     with st.container(border=True):
-                        c1, c2, c3 = st.columns([3, 2, 1])
+                        c1, c2 = st.columns([3, 2])
                         
                         with c1:
                             if visitato:
@@ -771,16 +774,35 @@ def main_app():
                             else:
                                 st.markdown(f"### {t['tipo_tappa'].split()[0]} {i}. {t['nome_cliente']}")
                                 st.caption(f"⏰ {t['ora_arrivo']}")
+                            
                             if t.get('indirizzo'):
                                 st.caption(f"📍 {t['indirizzo']}")
+                            
+                            # Mostra promemoria se presente
+                            if cliente_row is not None and pd.notnull(cliente_row.get('promemoria')) and str(cliente_row.get('promemoria')).strip():
+                                st.warning(f"📝 **Promemoria:** {cliente_row['promemoria']}")
                         
                         with c2:
-                            st.link_button("🚗 Naviga", f"https://www.google.com/maps/dir/?api=1&destination={t['latitude']},{t['longitude']}", use_container_width=True)
-                            if t.get('cellulare'):
-                                st.link_button(f"📱 Chiama", f"tel:{t['cellulare']}", use_container_width=True)
-                        
-                        with c3:
-                            if st.button("👤", key=f"scheda_{t['id']}", help="Scheda"):
+                            # Pulsanti azione
+                            btn_cols = st.columns(4)
+                            
+                            # Naviga
+                            btn_cols[0].link_button("🚗", f"https://www.google.com/maps/dir/?api=1&destination={t['latitude']},{t['longitude']}", use_container_width=True, help="Naviga")
+                            
+                            # Chiama
+                            if t.get('cellulare') and str(t.get('cellulare')).strip():
+                                btn_cols[1].link_button("📱", f"tel:{t['cellulare']}", use_container_width=True, help="Chiama")
+                            else:
+                                btn_cols[1].button("📱", disabled=True, use_container_width=True, key=f"tel_dis_{t['id']}")
+                            
+                            # Email
+                            if cliente_row is not None and pd.notnull(cliente_row.get('mail')) and str(cliente_row.get('mail')).strip():
+                                btn_cols[2].link_button("📧", f"mailto:{cliente_row['mail']}", use_container_width=True, help="Email")
+                            else:
+                                btn_cols[2].button("📧", disabled=True, use_container_width=True, key=f"mail_dis_{t['id']}")
+                            
+                            # Scheda cliente
+                            if btn_cols[3].button("👤", key=f"scheda_{t['id']}", help="Scheda", use_container_width=True):
                                 st.session_state.cliente_selezionato = t['nome_cliente']
                                 st.session_state.active_tab = "👤 Anagrafica"
                                 st.rerun()
@@ -1193,6 +1215,38 @@ def main_app():
                         if c2.button("❌ Annulla", use_container_width=True):
                             st.session_state.show_report = False
                             st.rerun()
+                
+                st.divider()
+                
+                # Sezione Promemoria
+                with st.container(border=True):
+                    st.subheader("📝 Promemoria per prossima visita")
+                    
+                    promemoria_attuale = cliente.get('promemoria', '') if pd.notnull(cliente.get('promemoria')) else ''
+                    
+                    if promemoria_attuale:
+                        st.info(f"**Promemoria attuale:** {promemoria_attuale}")
+                    
+                    nuovo_promemoria = st.text_area(
+                        "Inserisci promemoria:",
+                        value=promemoria_attuale,
+                        placeholder="Es: Portare catalogo nuovo, Chiedere feedback prodotto X, Ricordare sconto...",
+                        key="input_promemoria"
+                    )
+                    
+                    col_prom1, col_prom2 = st.columns(2)
+                    
+                    if col_prom1.button("💾 Salva Promemoria", use_container_width=True, type="primary"):
+                        update_cliente(cliente['id'], {'promemoria': nuovo_promemoria})
+                        st.session_state.reload_data = True
+                        st.success("✅ Promemoria salvato!")
+                        st.rerun()
+                    
+                    if col_prom2.button("🗑️ Cancella Promemoria", use_container_width=True):
+                        update_cliente(cliente['id'], {'promemoria': ''})
+                        st.session_state.reload_data = True
+                        st.success("✅ Promemoria cancellato!")
+                        st.rerun()
                 
                 st.divider()
                 
@@ -1726,7 +1780,7 @@ def main_app():
     
     # Footer
     st.divider()
-    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 2.1")
+    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 2.2")
 
 # --- RUN APP ---
 init_auth_state()
