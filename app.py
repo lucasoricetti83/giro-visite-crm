@@ -145,12 +145,39 @@ def get_all_users():
 
 # --- 3. AUTENTICAZIONE ---
 def init_auth_state():
+    """Inizializza e recupera lo stato di autenticazione"""
     if 'user' not in st.session_state:
         st.session_state.user = None
     if 'session' not in st.session_state:
         st.session_state.session = None
     if 'subscription' not in st.session_state:
         st.session_state.subscription = None
+    if 'auth_checked' not in st.session_state:
+        st.session_state.auth_checked = False
+    
+    # Se non abbiamo un utente, proviamo a recuperare la sessione esistente
+    if st.session_state.user is None and not st.session_state.auth_checked:
+        try:
+            # Prova a recuperare la sessione da Supabase
+            session_response = supabase.auth.get_session()
+            
+            if session_response and session_response.session:
+                user = session_response.session.user
+                if user:
+                    # Sessione valida trovata! Recuperiamo i dati
+                    subscription = get_user_subscription(user.id, user.email)
+                    
+                    if subscription:
+                        can_access, message = check_subscription_status(subscription)
+                        if can_access:
+                            st.session_state.user = user
+                            st.session_state.session = session_response.session
+                            st.session_state.subscription = subscription
+        except Exception as e:
+            # Ignora errori di recupero sessione
+            pass
+        
+        st.session_state.auth_checked = True
 
 def login_page():
     st.title("🚀 Giro Visite CRM Pro")
@@ -1120,6 +1147,26 @@ def calcola_piano_giornaliero(df, giorno_settimana, config, esclusi=[]):
 
 # --- 6. MAIN APP ---
 def main_app():
+    # Verifica che l'utente sia ancora valido
+    if not st.session_state.user:
+        st.session_state.auth_checked = False
+        st.rerun()
+        return
+    
+    # Refresh periodico della sessione (ogni 10 minuti circa)
+    if 'last_session_check' not in st.session_state:
+        st.session_state.last_session_check = datetime.now()
+    
+    time_since_check = (datetime.now() - st.session_state.last_session_check).seconds
+    if time_since_check > 600:  # 10 minuti
+        try:
+            session_response = supabase.auth.get_session()
+            if session_response and session_response.session:
+                st.session_state.session = session_response.session
+            st.session_state.last_session_check = datetime.now()
+        except:
+            pass
+    
     # Verifica abbonamento
     subscription = st.session_state.get('subscription')
     user_is_admin = is_admin(st.session_state.user.id) if st.session_state.user else False
@@ -3022,4 +3069,11 @@ init_auth_state()
 if st.session_state.user is None:
     login_page()
 else:
-    main_app()
+    try:
+        main_app()
+    except Exception as e:
+        st.error(f"⚠️ Si è verificato un errore. Ricarica la pagina.")
+        with st.expander("Dettagli errore (per supporto)"):
+            st.code(str(e))
+        if st.button("🔄 Ricarica App"):
+            st.rerun()
