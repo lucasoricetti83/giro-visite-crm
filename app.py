@@ -2578,6 +2578,258 @@ def main_app():
             except Exception as e:
                 st.error(f"❌ Errore lettura file: {str(e)}")
         
+        # =============================================
+        # === NUOVA SEZIONE: ESPORTAZIONE DATI ===
+        # =============================================
+        st.divider()
+        st.subheader("📤 Esporta Dati")
+        
+        tab_exp1, tab_exp2, tab_exp3 = st.tabs(["👥 Clienti", "📅 Agenda", "📊 Report Visite"])
+        
+        # --- TAB ESPORTA CLIENTI ---
+        with tab_exp1:
+            st.write("**Esporta l'elenco dei clienti in formato CSV o Excel**")
+            
+            col_filt1, col_filt2 = st.columns(2)
+            
+            with col_filt1:
+                exp_stato = st.selectbox(
+                    "Filtra per stato:",
+                    ["Tutti", "CLIENTE ATTIVO", "CLIENTE NUOVO", "CLIENTE POSSIBILE", "CLIENTE PROBABILE"],
+                    key="exp_stato_cliente"
+                )
+            
+            with col_filt2:
+                exp_giro = st.selectbox(
+                    "Filtra per giro:",
+                    ["Tutti", "Solo nel giro (SI)", "Solo fuori giro (NO)"],
+                    key="exp_giro_cliente"
+                )
+            
+            # Applica filtri
+            df_export = df.copy()
+            if exp_stato != "Tutti":
+                df_export = df_export[df_export['stato_cliente'] == exp_stato]
+            if exp_giro == "Solo nel giro (SI)":
+                df_export = df_export[df_export['visitare'] == 'SI']
+            elif exp_giro == "Solo fuori giro (NO)":
+                df_export = df_export[df_export['visitare'] != 'SI']
+            
+            # Seleziona colonne da esportare
+            with st.expander("⚙️ Seleziona colonne"):
+                colonne_disponibili = ['nome_cliente', 'indirizzo', 'cap', 'provincia', 'telefono', 
+                                      'cellulare', 'mail', 'contatto', 'frequenza_giorni', 
+                                      'ultima_visita', 'visitare', 'stato_cliente', 'latitude', 
+                                      'longitude', 'note', 'promemoria']
+                
+                colonne_default = ['nome_cliente', 'indirizzo', 'cap', 'provincia', 'telefono', 
+                                  'cellulare', 'mail', 'frequenza_giorni', 'ultima_visita', 'stato_cliente']
+                
+                colonne_sel = st.multiselect(
+                    "Colonne da includere:",
+                    [c for c in colonne_disponibili if c in df_export.columns],
+                    default=[c for c in colonne_default if c in df_export.columns],
+                    key="colonne_export_clienti"
+                )
+            
+            st.info(f"📊 **{len(df_export)} clienti** pronti per l'esportazione")
+            
+            col_btn1, col_btn2 = st.columns(2)
+            
+            with col_btn1:
+                if not df_export.empty and colonne_sel:
+                    df_to_export = df_export[colonne_sel].copy()
+                    # Formatta date
+                    if 'ultima_visita' in df_to_export.columns:
+                        df_to_export['ultima_visita'] = pd.to_datetime(df_to_export['ultima_visita']).dt.strftime('%d/%m/%Y')
+                    
+                    csv = df_to_export.to_csv(index=False)
+                    st.download_button(
+                        "📥 Scarica CSV",
+                        csv,
+                        f"clienti_export_{ora_italiana.strftime('%Y%m%d')}.csv",
+                        "text/csv",
+                        use_container_width=True
+                    )
+            
+            with col_btn2:
+                if not df_export.empty and colonne_sel:
+                    df_to_export = df_export[colonne_sel].copy()
+                    if 'ultima_visita' in df_to_export.columns:
+                        df_to_export['ultima_visita'] = pd.to_datetime(df_to_export['ultima_visita']).dt.strftime('%d/%m/%Y')
+                    
+                    # Crea Excel in memoria
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        df_to_export.to_excel(writer, index=False, sheet_name='Clienti')
+                    output.seek(0)
+                    
+                    st.download_button(
+                        "📥 Scarica Excel",
+                        output,
+                        f"clienti_export_{ora_italiana.strftime('%Y%m%d')}.xlsx",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+        
+        # --- TAB ESPORTA AGENDA ---
+        with tab_exp2:
+            st.write("**Esporta l'agenda settimanale ottimizzata**")
+            
+            # Selezione settimana
+            col_sett1, col_sett2 = st.columns(2)
+            with col_sett1:
+                settimana_exp = st.selectbox(
+                    "Seleziona settimana:",
+                    ["Settimana corrente", "Prossima settimana", "Tra 2 settimane"],
+                    key="settimana_export"
+                )
+            
+            offset_map = {"Settimana corrente": 0, "Prossima settimana": 1, "Tra 2 settimane": 2}
+            offset = offset_map.get(settimana_exp, 0)
+            
+            # Calcola agenda
+            agenda_exp = calcola_agenda_settimanale(df, config, [], offset)
+            
+            # Prepara dati per export
+            righe_agenda = []
+            giorni_nomi_full = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"]
+            
+            oggi = ora_italiana.date()
+            lunedi = oggi - timedelta(days=oggi.weekday()) + timedelta(weeks=offset)
+            
+            for giorno_idx, tappe in agenda_exp.items():
+                data_giorno = lunedi + timedelta(days=giorno_idx)
+                for i, tappa in enumerate(tappe, 1):
+                    righe_agenda.append({
+                        'Giorno': giorni_nomi_full[giorno_idx],
+                        'Data': data_giorno.strftime('%d/%m/%Y'),
+                        'Ordine': i,
+                        'Ora Arrivo': tappa.get('ora_arrivo', ''),
+                        'Cliente': tappa.get('nome_cliente', ''),
+                        'Indirizzo': tappa.get('indirizzo', ''),
+                        'Tipo': 'Appuntamento' if '📌' in tappa.get('tipo_tappa', '') else 'Giro',
+                        'Distanza (km)': round(tappa.get('distanza_km', 0), 1)
+                    })
+            
+            df_agenda_exp = pd.DataFrame(righe_agenda)
+            
+            tot_visite = len(df_agenda_exp)
+            tot_km = df_agenda_exp['Distanza (km)'].sum() if not df_agenda_exp.empty else 0
+            
+            st.info(f"📊 **{tot_visite} visite** programmate | ~{tot_km:.0f} km totali")
+            
+            if not df_agenda_exp.empty:
+                with st.expander("👀 Anteprima agenda"):
+                    st.dataframe(df_agenda_exp, use_container_width=True)
+                
+                col_ag1, col_ag2 = st.columns(2)
+                
+                with col_ag1:
+                    csv_agenda = df_agenda_exp.to_csv(index=False)
+                    st.download_button(
+                        "📥 Scarica CSV",
+                        csv_agenda,
+                        f"agenda_{lunedi.strftime('%Y%m%d')}.csv",
+                        "text/csv",
+                        use_container_width=True
+                    )
+                
+                with col_ag2:
+                    output_ag = io.BytesIO()
+                    with pd.ExcelWriter(output_ag, engine='openpyxl') as writer:
+                        df_agenda_exp.to_excel(writer, index=False, sheet_name='Agenda')
+                    output_ag.seek(0)
+                    
+                    st.download_button(
+                        "📥 Scarica Excel",
+                        output_ag,
+                        f"agenda_{lunedi.strftime('%Y%m%d')}.xlsx",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+            else:
+                st.warning("📭 Nessuna visita programmata per questa settimana")
+        
+        # --- TAB ESPORTA REPORT VISITE ---
+        with tab_exp3:
+            st.write("**Esporta lo storico delle visite effettuate**")
+            
+            col_date1, col_date2 = st.columns(2)
+            with col_date1:
+                data_inizio_exp = st.date_input(
+                    "📅 Da:",
+                    value=ora_italiana.date() - timedelta(days=30),
+                    key="exp_data_inizio"
+                )
+            with col_date2:
+                data_fine_exp = st.date_input(
+                    "📅 A:",
+                    value=ora_italiana.date(),
+                    key="exp_data_fine"
+                )
+            
+            # Filtra visite nel periodo
+            if not df.empty and 'ultima_visita' in df.columns:
+                df_report = df[df['ultima_visita'].notna()].copy()
+                
+                if not df_report.empty:
+                    df_report['data_visita'] = df_report['ultima_visita'].dt.date
+                    df_report_filtered = df_report[
+                        (df_report['data_visita'] >= data_inizio_exp) & 
+                        (df_report['data_visita'] <= data_fine_exp)
+                    ].sort_values('ultima_visita', ascending=False)
+                    
+                    # Prepara dati per export
+                    cols_report = ['nome_cliente', 'indirizzo', 'provincia', 'ultima_visita', 'stato_cliente', 'storico_report']
+                    cols_presenti = [c for c in cols_report if c in df_report_filtered.columns]
+                    df_report_exp = df_report_filtered[cols_presenti].copy()
+                    df_report_exp.columns = ['Cliente', 'Indirizzo', 'Provincia', 'Data Visita', 'Stato', 'Report'][:len(cols_presenti)]
+                    if 'Data Visita' in df_report_exp.columns:
+                        df_report_exp['Data Visita'] = pd.to_datetime(df_report_exp['Data Visita']).dt.strftime('%d/%m/%Y')
+                    
+                    st.info(f"📊 **{len(df_report_exp)} visite** nel periodo selezionato")
+                    
+                    if not df_report_exp.empty:
+                        with st.expander("👀 Anteprima report"):
+                            st.dataframe(df_report_exp.head(20), use_container_width=True)
+                        
+                        col_rep1, col_rep2 = st.columns(2)
+                        
+                        with col_rep1:
+                            csv_report = df_report_exp.to_csv(index=False)
+                            st.download_button(
+                                "📥 Scarica CSV",
+                                csv_report,
+                                f"report_visite_{data_inizio_exp.strftime('%Y%m%d')}_{data_fine_exp.strftime('%Y%m%d')}.csv",
+                                "text/csv",
+                                use_container_width=True
+                            )
+                        
+                        with col_rep2:
+                            output_rep = io.BytesIO()
+                            with pd.ExcelWriter(output_rep, engine='openpyxl') as writer:
+                                df_report_exp.to_excel(writer, index=False, sheet_name='Report Visite')
+                            output_rep.seek(0)
+                            
+                            st.download_button(
+                                "📥 Scarica Excel",
+                                output_rep,
+                                f"report_visite_{data_inizio_exp.strftime('%Y%m%d')}_{data_fine_exp.strftime('%Y%m%d')}.xlsx",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                use_container_width=True
+                            )
+                    else:
+                        st.warning("📭 Nessuna visita nel periodo selezionato")
+                else:
+                    st.warning("📭 Nessuna visita registrata")
+            else:
+                st.warning("📭 Nessun dato disponibile")
+        
+        # =============================================
+        # === FINE SEZIONE ESPORTAZIONE ===
+        # =============================================
+        
         st.divider()
         st.subheader("🗑️ Elimina Tutti i Dati")
         st.warning("⚠️ Questa azione è **IRREVERSIBILE**!")
@@ -2595,7 +2847,7 @@ def main_app():
     
     # Footer
     st.divider()
-    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 3.0")
+    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 3.1")
 
 # --- RUN APP ---
 init_auth_state()
