@@ -13,16 +13,21 @@ from supabase import create_client, Client
 # --- 1. CONFIGURAZIONE ---
 st.set_page_config(page_title="Giro Visite CRM Pro", layout="wide", page_icon="🚀")
 
-# Supabase credentials
-SUPABASE_URL = "https://ectezeclocjfbpbxdhyk.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVjdGV6ZWNsb2NqZmJwYnhkaHlrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk2Mzg4NzcsImV4cCI6MjA4NTIxNDg3N30.k_i6vZBmVXhQs6NFSi_IiH6HSiN7O6tG3WwGViw7PIs"
+# ============================================
+# 🔐 CREDENZIALI DA STREAMLIT SECRETS
+# ============================================
+# Le chiavi sono ora protette in Streamlit Cloud → Settings → Secrets
+# Questo rende il codice sicuro anche se il repo è pubblico!
 
-# LocationIQ API Key
-LOCATIONIQ_KEY = "pk.eb703bb4dbacec20df9f83c1a6a807e3"
+SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
+SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
+LOCATIONIQ_KEY = st.secrets.get("LOCATIONIQ_KEY", "")
+ADMIN_EMAIL = st.secrets.get("ADMIN_EMAIL", "")
 
-# Admin email (IL TUO ACCOUNT - CAMBIA CON LA TUA EMAIL!)
-# ⚠️ IMPORTANTE: Sostituisci con la tua email per avere accesso admin
-ADMIN_EMAIL = "lucasoricetti@gmail.com"  # <-- CAMBIA QUESTA RIGA!
+# Verifica che i secrets siano configurati
+if not SUPABASE_URL or not SUPABASE_KEY:
+    st.error("⚠️ **Configurazione mancante!** Vai su Streamlit Cloud → Settings → Secrets e aggiungi le credenziali.")
+    st.stop()
 
 # Durata trial in giorni
 TRIAL_DAYS = 14
