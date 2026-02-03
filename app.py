@@ -1962,16 +1962,26 @@ def main_app():
         if 'current_week_index' not in st.session_state:
             st.session_state.current_week_index = 0  # 0 = settimana corrente
         
+        # Inizializza giorni in ferie (lista di date)
+        if 'giorni_ferie_singoli' not in st.session_state:
+            st.session_state.giorni_ferie_singoli = []
+        
+        # Inizializza stato per scambio giorni
+        if 'giorno_da_scambiare' not in st.session_state:
+            st.session_state.giorno_da_scambiare = None
+        
         col_nav1, col_nav2, col_nav3 = st.columns([1, 3, 1])
         
         with col_nav1:
             if st.button("⬅️ Sett. Prec.", use_container_width=True):
                 st.session_state.current_week_index -= 1
+                st.session_state.giorno_da_scambiare = None
                 st.rerun()
         
         with col_nav3:
             if st.button("Sett. Succ. ➡️", use_container_width=True):
                 st.session_state.current_week_index += 1
+                st.session_state.giorno_da_scambiare = None
                 st.rerun()
         
         # Calcola date della settimana selezionata
@@ -1989,6 +1999,36 @@ def main_app():
                 st.markdown(f"### 📆 {st.session_state.current_week_index} Settimana/e")
             st.caption(f"Dal {lunedi_selezionato.strftime('%d/%m/%Y')} al {domenica_selezionata.strftime('%d/%m/%Y')}")
         
+        # === PANNELLO GESTIONE AGENDA ===
+        with st.expander("⚙️ Gestisci Agenda", expanded=st.session_state.giorno_da_scambiare is not None):
+            col_gest1, col_gest2 = st.columns(2)
+            
+            with col_gest1:
+                st.write("**🔄 Scambia Giorni**")
+                if st.session_state.giorno_da_scambiare:
+                    st.info(f"📅 Selezionato: **{st.session_state.giorno_da_scambiare.strftime('%A %d/%m')}**")
+                    st.caption("Ora clicca su un altro giorno per scambiare le visite")
+                    if st.button("❌ Annulla Scambio"):
+                        st.session_state.giorno_da_scambiare = None
+                        st.rerun()
+                else:
+                    st.caption("Clicca '🔄' su un giorno per iniziare lo scambio")
+            
+            with col_gest2:
+                st.write("**🏖️ Giorni in Ferie**")
+                # Mostra giorni in ferie di questa settimana
+                ferie_settimana = [d for d in st.session_state.giorni_ferie_singoli 
+                                  if lunedi_selezionato <= d <= domenica_selezionata]
+                if ferie_settimana:
+                    for d in ferie_settimana:
+                        col_f1, col_f2 = st.columns([3, 1])
+                        col_f1.write(f"🏖️ {d.strftime('%A %d/%m')}")
+                        if col_f2.button("🗑️", key=f"del_ferie_{d}"):
+                            st.session_state.giorni_ferie_singoli.remove(d)
+                            st.rerun()
+                else:
+                    st.caption("Nessun giorno in ferie. Clicca '🏖️' su un giorno per metterlo in ferie.")
+        
         st.divider()
         
         # Giorni lavorativi configurati
@@ -1997,7 +2037,7 @@ def main_app():
         if isinstance(giorni_attivi, str):
             giorni_attivi = [int(x) for x in giorni_attivi.strip('{}').split(',')]
         
-        # CALCOLA AGENDA OTTIMIZZATA
+        # CALCOLA AGENDA OTTIMIZZATA (escludendo giorni in ferie singoli)
         agenda_settimana = calcola_agenda_settimanale(
             df, 
             config, 
@@ -2005,50 +2045,55 @@ def main_app():
             st.session_state.current_week_index
         )
         
+        # Funzione per verificare se un giorno è in ferie (range O singolo)
+        def is_giorno_ferie_agenda(data):
+            # Prima controlla ferie singole
+            if data in st.session_state.giorni_ferie_singoli:
+                return True
+            
+            # Poi controlla range ferie
+            attiva_ferie = config.get('attiva_ferie', False)
+            if not attiva_ferie:
+                return False
+            
+            fi = config.get('ferie_inizio')
+            ff = config.get('ferie_fine')
+            
+            ferie_inizio = None
+            ferie_fine = None
+            
+            if fi:
+                if isinstance(fi, str):
+                    try:
+                        ferie_inizio = datetime.strptime(fi[:10], '%Y-%m-%d').date()
+                    except:
+                        pass
+                elif hasattr(fi, 'date'):
+                    ferie_inizio = fi.date()
+                elif hasattr(fi, 'year'):
+                    ferie_inizio = fi
+            
+            if ff:
+                if isinstance(ff, str):
+                    try:
+                        ferie_fine = datetime.strptime(ff[:10], '%Y-%m-%d').date()
+                    except:
+                        pass
+                elif hasattr(ff, 'date'):
+                    ferie_fine = ff.date()
+                elif hasattr(ff, 'year'):
+                    ferie_fine = ff
+            
+            if ferie_inizio and ferie_fine:
+                return ferie_inizio <= data <= ferie_fine
+            return False
+        
         # Crea colonne per i giorni lavorativi
         if giorni_attivi:
             cols_giorni = st.columns(len(giorni_attivi))
             
             totale_visite_settimana = 0
             totale_km_settimana = 0
-            
-            # Funzione per verificare se un giorno è in ferie
-            def is_giorno_ferie_agenda(data):
-                attiva_ferie = config.get('attiva_ferie', False)
-                if not attiva_ferie:
-                    return False
-                
-                fi = config.get('ferie_inizio')
-                ff = config.get('ferie_fine')
-                
-                ferie_inizio = None
-                ferie_fine = None
-                
-                if fi:
-                    if isinstance(fi, str):
-                        try:
-                            ferie_inizio = datetime.strptime(fi[:10], '%Y-%m-%d').date()
-                        except:
-                            pass
-                    elif hasattr(fi, 'date'):
-                        ferie_inizio = fi.date()
-                    elif hasattr(fi, 'year'):
-                        ferie_inizio = fi
-                
-                if ff:
-                    if isinstance(ff, str):
-                        try:
-                            ferie_fine = datetime.strptime(ff[:10], '%Y-%m-%d').date()
-                        except:
-                            pass
-                    elif hasattr(ff, 'date'):
-                        ferie_fine = ff.date()
-                    elif hasattr(ff, 'year'):
-                        ferie_fine = ff
-                
-                if ferie_inizio and ferie_fine:
-                    return ferie_inizio <= data <= ferie_fine
-                return False
             
             for col_idx, giorno_idx in enumerate(giorni_attivi):
                 data_giorno = lunedi_selezionato + timedelta(days=giorno_idx)
@@ -2065,6 +2110,58 @@ def main_app():
                     else:
                         st.subheader(f"{'📍 ' if is_oggi else ''}{giorno_label}")
                     st.caption(f"{data_giorno.strftime('%d/%m')}")
+                    
+                    # === PULSANTI AZIONE GIORNO ===
+                    col_btn1, col_btn2 = st.columns(2)
+                    
+                    with col_btn1:
+                        # Pulsante SCAMBIA
+                        if st.session_state.giorno_da_scambiare is None:
+                            # Modalità selezione primo giorno
+                            if st.button("🔄", key=f"swap_{data_giorno}", help="Scambia visite", use_container_width=True):
+                                st.session_state.giorno_da_scambiare = data_giorno
+                                st.rerun()
+                        elif st.session_state.giorno_da_scambiare == data_giorno:
+                            # Questo è il giorno selezionato
+                            st.button("✅", key=f"swap_{data_giorno}", disabled=True, use_container_width=True)
+                        else:
+                            # Modalità selezione secondo giorno
+                            if st.button("🔄➡️", key=f"swap_{data_giorno}", help=f"Scambia con {st.session_state.giorno_da_scambiare.strftime('%d/%m')}", use_container_width=True, type="primary"):
+                                # Esegui scambio
+                                giorno1 = st.session_state.giorno_da_scambiare
+                                giorno2 = data_giorno
+                                
+                                # Calcola indici giorni
+                                idx1 = giorno1.weekday()
+                                idx2 = giorno2.weekday()
+                                
+                                # Scambia le tappe nell'agenda
+                                tappe1 = agenda_settimana.get(idx1, [])
+                                tappe2 = agenda_settimana.get(idx2, [])
+                                agenda_settimana[idx1] = tappe2
+                                agenda_settimana[idx2] = tappe1
+                                
+                                st.session_state.giorno_da_scambiare = None
+                                st.success(f"✅ Scambiate visite tra {giorno1.strftime('%d/%m')} e {giorno2.strftime('%d/%m')}")
+                                st.rerun()
+                    
+                    with col_btn2:
+                        # Pulsante FERIE
+                        if is_ferie and data_giorno in st.session_state.giorni_ferie_singoli:
+                            # È in ferie singolo - mostra pulsante per togliere
+                            if st.button("🔙", key=f"ferie_{data_giorno}", help="Togli ferie", use_container_width=True):
+                                st.session_state.giorni_ferie_singoli.remove(data_giorno)
+                                st.rerun()
+                        elif not is_ferie:
+                            # Non è in ferie - mostra pulsante per mettere
+                            if st.button("🏖️", key=f"ferie_{data_giorno}", help="Metti in ferie", use_container_width=True):
+                                st.session_state.giorni_ferie_singoli.append(data_giorno)
+                                st.rerun()
+                        else:
+                            # È in ferie da range - pulsante disabilitato
+                            st.button("🏖️", key=f"ferie_{data_giorno}", disabled=True, use_container_width=True, help="In ferie (range)")
+                    
+                    st.divider()
                     
                     # Mostra FERIE se è giorno di ferie
                     if is_ferie:
@@ -2100,8 +2197,14 @@ def main_app():
                                     st.session_state.active_tab = "👤 Anagrafica"
                                     st.rerun()
                                 
-                                if tappa.get('distanza_km'):
-                                    st.caption(f"📍 {tappa['distanza_km']} km")
+                                # Mostra ritardo
+                                ritardo = tappa.get('ritardo', 0)
+                                if ritardo >= 14:
+                                    st.caption(f"🔴 +{ritardo}gg")
+                                elif ritardo >= 0:
+                                    st.caption(f"🟡 +{ritardo}gg")
+                                else:
+                                    st.caption(f"🟢 {ritardo}gg")
                         
                         if len(tappe_giorno) > 8:
                             st.caption(f"... +{len(tappe_giorno) - 8} altre")
