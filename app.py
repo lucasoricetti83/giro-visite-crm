@@ -1495,62 +1495,135 @@ def main_app():
                     # Trova dati completi del cliente per promemoria e email
                     cliente_row = df[df['nome_cliente'] == t['nome_cliente']].iloc[0] if not df[df['nome_cliente'] == t['nome_cliente']].empty else None
                     
+                    # Inizializza stato per form report
+                    if 'cliente_report_aperto' not in st.session_state:
+                        st.session_state.cliente_report_aperto = None
+                    
                     # Stile diverso se visitato
                     if visitato:
                         with st.container(border=True):
-                            col_vis = st.columns([1, 4])
-                            col_vis[0].markdown("### ✅")
-                            col_vis[1].markdown(f"### ~~{i}. {t['nome_cliente']}~~")
-                            col_vis[1].caption(f"📍 {t.get('indirizzo', '')}")
+                            st.markdown(f"""
+                            <div style="background: linear-gradient(90deg, #d4edda 0%, #c3e6cb 100%); 
+                                        padding: 15px; border-radius: 10px; border-left: 5px solid #28a745;">
+                                <span style="font-size: 24px;">✅</span>
+                                <span style="font-size: 18px; margin-left: 10px; text-decoration: line-through; color: #155724;">
+                                    {i}. {t['nome_cliente']}
+                                </span>
+                                <span style="float: right; color: #155724; font-weight: bold;">VISITATO</span>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            st.caption(f"📍 {t.get('indirizzo', '')}")
                     else:
                         with st.container(border=True):
-                            c1, c2 = st.columns([3, 2])
+                            # Controlla se il form report è aperto per questo cliente
+                            form_aperto = st.session_state.cliente_report_aperto == t['id']
                             
-                            with c1:
-                                st.markdown(f"### {t['tipo_tappa'].split()[0]} {i}. {t['nome_cliente']}")
-                                st.caption(f"⏰ {t['ora_arrivo']}")
+                            if not form_aperto:
+                                # Vista normale
+                                c1, c2 = st.columns([3, 2])
                                 
-                                if t.get('indirizzo'):
-                                    st.caption(f"📍 {t['indirizzo']}")
+                                with c1:
+                                    st.markdown(f"### {t['tipo_tappa'].split()[0]} {i}. {t['nome_cliente']}")
+                                    st.caption(f"⏰ {t['ora_arrivo']}")
+                                    
+                                    if t.get('indirizzo'):
+                                        st.caption(f"📍 {t['indirizzo']}")
+                                    
+                                    # Mostra promemoria se presente
+                                    if cliente_row is not None and pd.notnull(cliente_row.get('promemoria')) and str(cliente_row.get('promemoria')).strip():
+                                        st.warning(f"📝 **Promemoria:** {cliente_row['promemoria']}")
                                 
-                                # Mostra promemoria se presente
-                                if cliente_row is not None and pd.notnull(cliente_row.get('promemoria')) and str(cliente_row.get('promemoria')).strip():
-                                    st.warning(f"📝 **Promemoria:** {cliente_row['promemoria']}")
+                                with c2:
+                                    # PULSANTE APRE FORM REPORT
+                                    if st.button(f"✅ REGISTRA VISITA", key=f"visita_{t['id']}", type="primary", use_container_width=True):
+                                        st.session_state.cliente_report_aperto = t['id']
+                                        st.rerun()
+                                    
+                                    # Pulsanti azione
+                                    btn_cols = st.columns(4)
+                                    
+                                    # Naviga
+                                    btn_cols[0].link_button("🚗", f"https://www.google.com/maps/dir/?api=1&destination={t['latitude']},{t['longitude']}", use_container_width=True, help="Naviga")
+                                    
+                                    # Chiama
+                                    if t.get('cellulare') and str(t.get('cellulare')).strip():
+                                        btn_cols[1].link_button("📱", f"tel:{t['cellulare']}", use_container_width=True, help="Chiama")
+                                    else:
+                                        btn_cols[1].button("📱", disabled=True, use_container_width=True, key=f"tel_dis_{t['id']}")
+                                    
+                                    # Email
+                                    if cliente_row is not None and pd.notnull(cliente_row.get('mail')) and str(cliente_row.get('mail')).strip():
+                                        btn_cols[2].link_button("📧", f"mailto:{cliente_row['mail']}", use_container_width=True, help="Email")
+                                    else:
+                                        btn_cols[2].button("📧", disabled=True, use_container_width=True, key=f"mail_dis_{t['id']}")
+                                    
+                                    # Scheda cliente
+                                    if btn_cols[3].button("👤", key=f"scheda_{t['id']}", help="Scheda", use_container_width=True):
+                                        st.session_state.cliente_selezionato = t['nome_cliente']
+                                        st.session_state.active_tab = "👤 Anagrafica"
+                                        st.rerun()
                             
-                            with c2:
-                                # PULSANTE REGISTRA VISITA
-                                if st.button(f"✅ VISITATO", key=f"visita_{t['id']}", type="primary", use_container_width=True):
-                                    # Aggiorna database
-                                    update_cliente(t['id'], {
-                                        'ultima_visita': ora_italiana.date().isoformat()
-                                    })
-                                    st.session_state.visitati_oggi.append(t['nome_cliente'])
-                                    st.session_state.reload_data = True
-                                    st.rerun()
+                            else:
+                                # FORM REPORT APERTO
+                                st.markdown(f"### 📝 Report Visita: {t['nome_cliente']}")
+                                st.caption(f"📍 {t.get('indirizzo', '')}")
                                 
-                                # Pulsanti azione
-                                btn_cols = st.columns(4)
+                                # Mostra storico precedente se presente
+                                storico_attuale = ""
+                                if cliente_row is not None and pd.notnull(cliente_row.get('storico_report')):
+                                    storico_attuale = str(cliente_row.get('storico_report', ''))
+                                    if storico_attuale.strip():
+                                        with st.expander("📜 Storico report precedenti"):
+                                            st.text(storico_attuale)
                                 
-                                # Naviga
-                                btn_cols[0].link_button("🚗", f"https://www.google.com/maps/dir/?api=1&destination={t['latitude']},{t['longitude']}", use_container_width=True, help="Naviga")
+                                # Form per nuovo report
+                                nuovo_report = st.text_area(
+                                    "✍️ Scrivi il report della visita:",
+                                    placeholder="Es: Incontrato Mario Rossi, discusso nuovo ordine, richiesta preventivo per...",
+                                    height=120,
+                                    key=f"report_text_{t['id']}"
+                                )
                                 
-                                # Chiama
-                                if t.get('cellulare') and str(t.get('cellulare')).strip():
-                                    btn_cols[1].link_button("📱", f"tel:{t['cellulare']}", use_container_width=True, help="Chiama")
-                                else:
-                                    btn_cols[1].button("📱", disabled=True, use_container_width=True, key=f"tel_dis_{t['id']}")
+                                col_save, col_skip, col_cancel = st.columns(3)
                                 
-                                # Email
-                                if cliente_row is not None and pd.notnull(cliente_row.get('mail')) and str(cliente_row.get('mail')).strip():
-                                    btn_cols[2].link_button("📧", f"mailto:{cliente_row['mail']}", use_container_width=True, help="Email")
-                                else:
-                                    btn_cols[2].button("📧", disabled=True, use_container_width=True, key=f"mail_dis_{t['id']}")
+                                with col_save:
+                                    if st.button("💾 Salva e Completa", key=f"save_report_{t['id']}", type="primary", use_container_width=True):
+                                        # Prepara nuovo storico con data
+                                        data_oggi = ora_italiana.strftime('%d/%m/%Y')
+                                        if nuovo_report.strip():
+                                            nuovo_storico = f"[{data_oggi}] {nuovo_report.strip()}"
+                                            if storico_attuale.strip():
+                                                nuovo_storico = f"{nuovo_storico}\n\n{storico_attuale}"
+                                        else:
+                                            nuovo_storico = storico_attuale
+                                        
+                                        # Aggiorna database
+                                        update_cliente(t['id'], {
+                                            'ultima_visita': ora_italiana.date().isoformat(),
+                                            'storico_report': nuovo_storico
+                                        })
+                                        st.session_state.visitati_oggi.append(t['nome_cliente'])
+                                        st.session_state.cliente_report_aperto = None
+                                        st.session_state.reload_data = True
+                                        st.success("✅ Visita registrata con report!")
+                                        time_module.sleep(0.5)
+                                        st.rerun()
                                 
-                                # Scheda cliente
-                                if btn_cols[3].button("👤", key=f"scheda_{t['id']}", help="Scheda", use_container_width=True):
-                                    st.session_state.cliente_selezionato = t['nome_cliente']
-                                    st.session_state.active_tab = "👤 Anagrafica"
-                                    st.rerun()
+                                with col_skip:
+                                    if st.button("⏭️ Salta Report", key=f"skip_report_{t['id']}", use_container_width=True):
+                                        # Salva senza report
+                                        update_cliente(t['id'], {
+                                            'ultima_visita': ora_italiana.date().isoformat()
+                                        })
+                                        st.session_state.visitati_oggi.append(t['nome_cliente'])
+                                        st.session_state.cliente_report_aperto = None
+                                        st.session_state.reload_data = True
+                                        st.rerun()
+                                
+                                with col_cancel:
+                                    if st.button("❌ Annulla", key=f"cancel_report_{t['id']}", use_container_width=True):
+                                        st.session_state.cliente_report_aperto = None
+                                        st.rerun()
                 
                 # Navigazione completa
                 if tappe_oggi:
