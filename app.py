@@ -1,4 +1,4 @@
- import streamlit as st
+import streamlit as st
 import pandas as pd
 import folium
 from streamlit_folium import st_folium
@@ -2205,7 +2205,24 @@ def main_app():
                         col_vis1.metric("📅 Ultima visita", "Mai")
                     
                     col_vis2.metric("🔄 Frequenza", f"{cliente.get('frequenza_giorni', 30)} giorni")
-                    col_vis3.metric("🚗 Nel giro", "✅ SI" if cliente.get('visitare') == 'SI' else "❌ NO")
+                    
+                    # Toggle rapido per Nel Giro
+                    visitare_attuale = str(cliente.get('visitare', 'SI')).upper().strip()
+                    is_nel_giro = visitare_attuale == 'SI'
+                    
+                    with col_vis3:
+                        st.metric("🚗 Nel giro", "✅ SI" if is_nel_giro else "❌ NO")
+                        # Pulsante toggle
+                        if is_nel_giro:
+                            if st.button("❌ Togli dal giro", key=f"toggle_giro_{cliente['id']}", use_container_width=True):
+                                update_cliente(cliente['id'], {'visitare': 'NO'})
+                                st.session_state.reload_data = True
+                                st.rerun()
+                        else:
+                            if st.button("✅ Metti nel giro", key=f"toggle_giro_{cliente['id']}", use_container_width=True, type="primary"):
+                                update_cliente(cliente['id'], {'visitare': 'SI'})
+                                st.session_state.reload_data = True
+                                st.rerun()
                     
                     # Pulsanti azione rapida
                     st.divider()
@@ -2372,35 +2389,40 @@ def main_app():
                 
                 # === 5. MODIFICA DATI (in expander) ===
                 with st.expander("✏️ Modifica tutti i dati"):
-                    with st.form("edit_cliente"):
+                    with st.form(f"edit_cliente_{cliente['id']}"):
                         c1, c2 = st.columns(2)
                         
-                        nome = c1.text_input("Nome", cliente['nome_cliente'])
-                        indirizzo = c1.text_input("Indirizzo", cliente.get('indirizzo', ''))
-                        cap = c1.text_input("CAP", cliente.get('cap', ''))
-                        provincia = c1.text_input("Provincia", cliente.get('provincia', ''))
-                        frequenza = c1.number_input("Frequenza (gg)", value=int(cliente.get('frequenza_giorni', 30)))
+                        nome = c1.text_input("Nome", cliente['nome_cliente'], key=f"nome_{cliente['id']}")
+                        indirizzo = c1.text_input("Indirizzo", cliente.get('indirizzo', ''), key=f"indirizzo_{cliente['id']}")
+                        cap = c1.text_input("CAP", cliente.get('cap', ''), key=f"cap_{cliente['id']}")
+                        provincia = c1.text_input("Provincia", cliente.get('provincia', ''), key=f"provincia_{cliente['id']}")
+                        frequenza = c1.number_input("Frequenza (gg)", value=int(cliente.get('frequenza_giorni', 30)), key=f"freq_{cliente['id']}")
                         
                         stati_cliente = ["CLIENTE ATTIVO", "CLIENTE NUOVO", "CLIENTE POSSIBILE", "CLIENTE PROBABILE"]
                         stato_attuale = cliente.get('stato_cliente', 'CLIENTE ATTIVO')
                         if stato_attuale not in stati_cliente:
                             stato_attuale = 'CLIENTE ATTIVO'
-                        stato_cliente = c1.selectbox("📊 Stato", stati_cliente, index=stati_cliente.index(stato_attuale))
-                        visitare = c1.selectbox("🚗 Nel Giro?", ["SI", "NO"], index=0 if cliente.get('visitare') == 'SI' else 1)
+                        stato_cliente = c1.selectbox("📊 Stato", stati_cliente, index=stati_cliente.index(stato_attuale), key=f"stato_{cliente['id']}")
                         
-                        telefono = c2.text_input("Telefono", cliente.get('telefono', ''))
-                        cellulare = c2.text_input("Cellulare", cliente.get('cellulare', ''))
-                        mail = c2.text_input("Email", cliente.get('mail', ''))
-                        contatto = c2.text_input("Referente", cliente.get('contatto', ''))
+                        # Fix: normalizza il valore visitare
+                        visitare_attuale = str(cliente.get('visitare', 'SI')).upper().strip()
+                        visitare_index = 0 if visitare_attuale == 'SI' else 1
+                        visitare = c1.selectbox("🚗 Nel Giro?", ["SI", "NO"], index=visitare_index, key=f"visitare_{cliente['id']}")
                         
-                        latitudine = c2.number_input("Latitudine", value=float(lat_attuale), format="%.6f")
-                        longitudine = c2.number_input("Longitudine", value=float(lon_attuale), format="%.6f")
+                        telefono = c2.text_input("Telefono", cliente.get('telefono', ''), key=f"tel_{cliente['id']}")
+                        cellulare = c2.text_input("Cellulare", cliente.get('cellulare', ''), key=f"cell_{cliente['id']}")
+                        mail = c2.text_input("Email", cliente.get('mail', ''), key=f"mail_{cliente['id']}")
+                        contatto = c2.text_input("Referente", cliente.get('contatto', ''), key=f"contatto_{cliente['id']}")
                         
-                        note = st.text_area("Note", cliente.get('note', ''), height=80)
-                        storico = st.text_area("Storico Report", cliente.get('storico_report', ''), height=120)
+                        latitudine = c2.number_input("Latitudine", value=float(lat_attuale), format="%.6f", key=f"lat_{cliente['id']}")
+                        longitudine = c2.number_input("Longitudine", value=float(lon_attuale), format="%.6f", key=f"lon_{cliente['id']}")
+                        
+                        note = st.text_area("Note", cliente.get('note', ''), height=80, key=f"note_{cliente['id']}")
+                        storico = st.text_area("Storico Report", cliente.get('storico_report', ''), height=120, key=f"storico_{cliente['id']}")
                         
                         if st.form_submit_button("💾 Salva Modifiche", use_container_width=True, type="primary"):
-                            update_cliente(cliente['id'], {
+                            # Debug: mostra cosa stiamo salvando
+                            update_data = {
                                 'nome_cliente': nome,
                                 'indirizzo': indirizzo,
                                 'cap': cap,
@@ -2416,10 +2438,15 @@ def main_app():
                                 'longitude': longitudine,
                                 'note': note,
                                 'storico_report': storico
-                            })
-                            st.session_state.reload_data = True
-                            st.success("✅ Salvato!")
-                            st.rerun()
+                            }
+                            
+                            if update_cliente(cliente['id'], update_data):
+                                st.session_state.reload_data = True
+                                st.success(f"✅ Salvato! Nel giro: {visitare}")
+                                time_module.sleep(0.5)
+                                st.rerun()
+                            else:
+                                st.error("❌ Errore nel salvataggio")
                 
                 # === 6. ELIMINA CLIENTE ===
                 with st.expander("🗑️ Elimina Cliente"):
