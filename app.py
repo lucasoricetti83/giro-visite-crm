@@ -1,4 +1,4 @@
-import streamlit as st
+ import streamlit as st
 import pandas as pd
 import folium
 from streamlit_folium import st_folium
@@ -762,7 +762,7 @@ def render_gps_button(button_id):
     return st.components.v1.html(html_code, height=100)
 
 # --- 5. CALCOLO GIRO OTTIMIZZATO ---
-def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0):
+def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, variante=0):
     """
     Calcola l'agenda ottimizzata per un'intera settimana.
     DISTRIBUISCE i clienti urgenti su tutti i giorni lavorativi.
@@ -1036,10 +1036,15 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0):
             return percorso if km_normale <= km_invertito else percorso_inv
         
         # FASE 1: Calcola angolo di ogni cliente rispetto al punto di partenza
-        for c in clienti_da_assegnare:
-            c['angolo'] = calcola_angolo_da_base(c['latitude'], c['longitude'], start_lat, start_lon)
+        # La variante ruota l'angolo di partenza (0°, 90°, 180°, 270°)
+        angolo_offset = variante * 90  # 0, 90, 180, 270 gradi
         
-        # FASE 2: Ordina per angolo (percorso circolare in senso orario)
+        for c in clienti_da_assegnare:
+            angolo_base = calcola_angolo_da_base(c['latitude'], c['longitude'], start_lat, start_lon)
+            # Applica l'offset e normalizza a 0-360
+            c['angolo'] = (angolo_base + angolo_offset) % 360
+        
+        # FASE 2: Ordina per angolo (percorso circolare)
         clienti_ordinati = sorted(clienti_da_assegnare, key=lambda x: x['angolo'])
         
         # FASE 3: Prendi i primi N clienti che stanno negli slot
@@ -1128,9 +1133,9 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0):
     
     return agenda
 
-def calcola_piano_giornaliero(df, giorno_settimana, config, esclusi=[]):
+def calcola_piano_giornaliero(df, giorno_settimana, config, esclusi=[], variante=0):
     """Restituisce il piano per il giorno corrente"""
-    agenda = calcola_agenda_settimanale(df, config, esclusi, settimana_offset=0)
+    agenda = calcola_agenda_settimanale(df, config, esclusi, settimana_offset=0, variante=variante)
     return agenda.get(giorno_settimana, [])
 
 # --- 6. MAIN APP ---
@@ -1278,12 +1283,86 @@ def main_app():
         with col_header:
             st.header(f"📍 Giro di Oggi ({ora_italiana.strftime('%d/%m/%Y')})")
         with col_refresh:
-            if st.button("🔄", use_container_width=True, help="Aggiorna"):
+            if st.button("🔄", use_container_width=True, help="Ricarica dati"):
                 st.session_state.reload_data = True
                 st.rerun()
         
         idx_g = ora_italiana.weekday()
         giorni_nomi = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"]
+        
+        # Inizializza esclusi_oggi se non esiste
+        if 'esclusi_oggi' not in st.session_state:
+            st.session_state.esclusi_oggi = []
+        if 'variante_percorso' not in st.session_state:
+            st.session_state.variante_percorso = 0
+        
+        # === PANNELLO GESTIONE GIRO ===
+        with st.expander("⚙️ Gestisci Giro", expanded=False):
+            
+            # --- SEZIONE 1: Varianti Percorso ---
+            st.write("**🔄 Prova percorsi alternativi:**")
+            
+            col_var1, col_var2, col_var3, col_var4 = st.columns(4)
+            
+            with col_var1:
+                if st.button("🔀 Percorso A", use_container_width=True, 
+                           type="primary" if st.session_state.variante_percorso == 0 else "secondary"):
+                    st.session_state.variante_percorso = 0
+                    st.rerun()
+            
+            with col_var2:
+                if st.button("🔀 Percorso B", use_container_width=True,
+                           type="primary" if st.session_state.variante_percorso == 1 else "secondary"):
+                    st.session_state.variante_percorso = 1
+                    st.rerun()
+            
+            with col_var3:
+                if st.button("🔀 Percorso C", use_container_width=True,
+                           type="primary" if st.session_state.variante_percorso == 2 else "secondary"):
+                    st.session_state.variante_percorso = 2
+                    st.rerun()
+            
+            with col_var4:
+                if st.button("🔀 Percorso D", use_container_width=True,
+                           type="primary" if st.session_state.variante_percorso == 3 else "secondary"):
+                    st.session_state.variante_percorso = 3
+                    st.rerun()
+            
+            st.caption("💡 Ogni variante parte da una direzione diversa. Prova per trovare il percorso migliore!")
+            
+            st.divider()
+            
+            # --- SEZIONE 2: Escludi Clienti ---
+            st.write("**🚫 Escludi clienti dal giro di oggi:**")
+            
+            # Lista clienti attivi (da poter escludere)
+            clienti_attivi = df[df['visitare'] == 'SI']['nome_cliente'].tolist() if not df.empty and 'visitare' in df.columns else []
+            
+            if clienti_attivi:
+                # Multiselect per escludere clienti
+                esclusi_selezionati = st.multiselect(
+                    "Seleziona clienti da escludere:",
+                    sorted(clienti_attivi),
+                    default=st.session_state.esclusi_oggi,
+                    key="escludi_clienti_select"
+                )
+                
+                col_esc1, col_esc2 = st.columns(2)
+                
+                with col_esc1:
+                    if st.button("🔄 Ricalcola Giro", type="primary", use_container_width=True):
+                        st.session_state.esclusi_oggi = esclusi_selezionati
+                        st.rerun()
+                
+                with col_esc2:
+                    if st.button("🗑️ Rimuovi Esclusioni", use_container_width=True):
+                        st.session_state.esclusi_oggi = []
+                        st.rerun()
+                
+                if st.session_state.esclusi_oggi:
+                    st.warning(f"⚠️ **{len(st.session_state.esclusi_oggi)} clienti esclusi** dal giro di oggi")
+            else:
+                st.info("Nessun cliente attivo da escludere")
         
         # Controlla se oggi è giorno di ferie
         oggi_date = ora_italiana.date()
@@ -1332,8 +1411,13 @@ def main_app():
             if critici:
                 st.error(f"🚨 **{len(critici)} clienti critici** da visitare urgentemente!")
             
-            # Calcola tappe
-            tappe_oggi = calcola_piano_giornaliero(df, idx_g, config, st.session_state.esclusi_oggi)
+            # Calcola tappe (con variante percorso)
+            variante = st.session_state.get('variante_percorso', 0)
+            tappe_oggi = calcola_piano_giornaliero(df, idx_g, config, st.session_state.esclusi_oggi, variante=variante)
+            
+            # Mostra quale variante è attiva
+            variante_nomi = ["A (Nord)", "B (Est)", "C (Sud)", "D (Ovest)"]
+            st.caption(f"🔀 Percorso attivo: **{variante_nomi[variante]}** - Usa ⚙️ Gestisci Giro per provare alternative")
             
             # Trova visitati fuori giro
             nomi_nel_giro = [t['nome_cliente'] for t in tappe_oggi]
