@@ -963,151 +963,139 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0):
             continue
         
         # ========================================
-        # ALGORITMO OTTIMIZZATO: Direzione + 2-opt
+        # ALGORITMO SWEEP + 2-OPT (Percorso Circolare)
         # ========================================
-        
+        # 
+        # 1. Ordina i clienti per angolo rispetto al punto di partenza
+        # 2. Questo crea un percorso "circolare" senza tornare indietro
+        # 3. Ottimizza con 2-opt aggressivo
+        #
         import math
         
-        def calcola_angolo(lat1, lon1, lat2, lon2):
-            """Calcola l'angolo (bearing) tra due punti in gradi (0-360)"""
-            lat1_r, lat2_r = math.radians(lat1), math.radians(lat2)
-            diff_lon = math.radians(lon2 - lon1)
-            x = math.sin(diff_lon) * math.cos(lat2_r)
-            y = math.cos(lat1_r) * math.sin(lat2_r) - math.sin(lat1_r) * math.cos(lat2_r) * math.cos(diff_lon)
-            angolo = math.atan2(x, y)
+        def calcola_angolo_da_base(lat, lon, base_lat, base_lon):
+            """Calcola l'angolo (0-360°) di un punto rispetto alla base"""
+            delta_lat = lat - base_lat
+            delta_lon = lon - base_lon
+            # atan2 restituisce angolo in radianti (-π, π)
+            angolo = math.atan2(delta_lon, delta_lat)
+            # Converti in gradi (0-360)
             return (math.degrees(angolo) + 360) % 360
         
-        def differenza_angolare(angolo1, angolo2):
-            """Differenza minima tra due angoli (0-180)"""
-            diff = abs(angolo1 - angolo2) % 360
-            return min(diff, 360 - diff)
-        
         def calcola_km_totale(percorso, start_lat, start_lon):
-            """Calcola km totali di un percorso"""
+            """Calcola km totali: partenza -> tappe -> ritorno"""
             if not percorso:
                 return 0
             km = haversine(start_lat, start_lon, percorso[0]['latitude'], percorso[0]['longitude'])
             for i in range(len(percorso) - 1):
                 km += haversine(percorso[i]['latitude'], percorso[i]['longitude'],
                                percorso[i+1]['latitude'], percorso[i+1]['longitude'])
+            # Ritorno a casa
             km += haversine(percorso[-1]['latitude'], percorso[-1]['longitude'], start_lat, start_lon)
             return km
         
-        def ottimizza_2opt(percorso, start_lat, start_lon):
-            """Migliora il percorso scambiando segmenti (2-opt)"""
+        def ottimizza_2opt_aggressivo(percorso, start_lat, start_lon, max_iterazioni=100):
+            """2-opt aggressivo: prova TUTTE le combinazioni fino a convergenza"""
             if len(percorso) < 3:
                 return percorso
             
-            migliorato = True
-            while migliorato:
+            percorso = list(percorso)  # Copia
+            iterazione = 0
+            
+            while iterazione < max_iterazioni:
+                km_iniziale = calcola_km_totale(percorso, start_lat, start_lon)
                 migliorato = False
-                km_attuale = calcola_km_totale(percorso, start_lat, start_lon)
                 
                 for i in range(len(percorso) - 1):
+                    if migliorato:
+                        break
                     for j in range(i + 2, len(percorso)):
-                        # Prova a invertire il segmento tra i e j
+                        # Inverti il segmento tra i+1 e j
                         nuovo_percorso = percorso[:i+1] + percorso[i+1:j+1][::-1] + percorso[j+1:]
                         km_nuovo = calcola_km_totale(nuovo_percorso, start_lat, start_lon)
                         
-                        if km_nuovo < km_attuale - 0.1:  # Migliora di almeno 100m
+                        if km_nuovo < km_iniziale - 0.05:  # Migliora di almeno 50m
                             percorso = nuovo_percorso
                             migliorato = True
                             break
-                    if migliorato:
-                        break
+                
+                if not migliorato:
+                    break
+                iterazione += 1
             
             return percorso
         
-        pos_corrente = (start_lat, start_lon)
-        direzione_corrente = None  # Non abbiamo ancora una direzione
+        def prova_entrambe_direzioni(percorso, start_lat, start_lon):
+            """Prova il percorso normale e invertito, ritorna il migliore"""
+            if len(percorso) < 2:
+                return percorso
+            
+            km_normale = calcola_km_totale(percorso, start_lat, start_lon)
+            percorso_inv = list(reversed(percorso))
+            km_invertito = calcola_km_totale(percorso_inv, start_lat, start_lon)
+            
+            return percorso if km_normale <= km_invertito else percorso_inv
+        
+        # FASE 1: Calcola angolo di ogni cliente rispetto al punto di partenza
+        for c in clienti_da_assegnare:
+            c['angolo'] = calcola_angolo_da_base(c['latitude'], c['longitude'], start_lat, start_lon)
+        
+        # FASE 2: Ordina per angolo (percorso circolare in senso orario)
+        clienti_ordinati = sorted(clienti_da_assegnare, key=lambda x: x['angolo'])
+        
+        # FASE 3: Prendi i primi N clienti che stanno negli slot
         ora_corrente = datetime.combine(data_giorno, h_inizio)
-        ora_fine_lavoro = datetime.combine(data_giorno, h_fine)
-        ora_pausa_inizio = datetime.combine(data_giorno, pausa_inizio)
-        ora_pausa_fine = datetime.combine(data_giorno, pausa_fine)
-        
         clienti_per_oggi = []
-        visite_aggiunte = 0
         
-        # FASE 1: Costruisci percorso con direzione privilegiata
-        while clienti_da_assegnare and visite_aggiunte < slot_disponibili:
-            migliore = None
-            score_min = float('inf')
-            angolo_migliore = None
-            dist_migliore = 0
-            
-            for c in clienti_da_assegnare:
-                distanza = haversine(pos_corrente[0], pos_corrente[1], c['latitude'], c['longitude'])
-                
-                # Calcola l'angolo verso questo cliente
-                if distanza > 0.1:  # Evita divisione per zero
-                    angolo_cliente = calcola_angolo(pos_corrente[0], pos_corrente[1], c['latitude'], c['longitude'])
-                else:
-                    angolo_cliente = direzione_corrente if direzione_corrente else 0
-                
-                # Penalità se dobbiamo tornare indietro
-                if direzione_corrente is not None:
-                    deviazione = differenza_angolare(direzione_corrente, angolo_cliente)
-                    # Penalità: 0 se dritto, 1 se torno completamente indietro (180°)
-                    penalita = deviazione / 180.0
-                else:
-                    penalita = 0
-                
-                # BONUS per clienti con alto ritardo (urgenti)
-                urgenza_bonus = min(c['ritardo'] / 100, 0.3) if c['ritardo'] > 0 else 0
-                
-                # Score finale: distanza * (1 + penalità * peso) - bonus urgenza
-                # peso = 0.6 = tornare indietro costa come fare 60% km in più
-                score = distanza * (1 + penalita * 0.6) - (urgenza_bonus * distanza)
-                
-                if score < score_min:
-                    score_min = score
-                    migliore = c
-                    angolo_migliore = angolo_cliente
-                    dist_migliore = distanza
-            
-            if not migliore:
+        for cliente in clienti_ordinati:
+            if len(clienti_per_oggi) >= slot_disponibili:
                 break
             
-            # Verifica tempo
-            tempo_viaggio = (dist_migliore / 50) * 60
-            ora_arrivo = ora_corrente + timedelta(minutes=tempo_viaggio)
+            # Calcola tempo stimato per questa visita
+            if clienti_per_oggi:
+                dist_precedente = haversine(
+                    clienti_per_oggi[-1]['latitude'], clienti_per_oggi[-1]['longitude'],
+                    cliente['latitude'], cliente['longitude']
+                )
+            else:
+                dist_precedente = haversine(start_lat, start_lon, cliente['latitude'], cliente['longitude'])
             
-            if ora_arrivo.time() >= pausa_inizio and ora_arrivo.time() < pausa_fine:
+            tempo_viaggio = (dist_precedente / 50) * 60
+            ora_arrivo_stimata = ora_corrente + timedelta(minutes=tempo_viaggio)
+            
+            # Gestisci pausa pranzo
+            if ora_arrivo_stimata.time() >= pausa_inizio and ora_arrivo_stimata.time() < pausa_fine:
                 ora_corrente = datetime.combine(data_giorno, pausa_fine)
-                ora_arrivo = ora_corrente + timedelta(minutes=tempo_viaggio)
+                ora_arrivo_stimata = ora_corrente + timedelta(minutes=tempo_viaggio)
             
-            ora_fine_visita = ora_arrivo + timedelta(minutes=durata_visita)
+            ora_fine_visita = ora_arrivo_stimata + timedelta(minutes=durata_visita)
             
-            dist_ritorno = haversine(migliore['latitude'], migliore['longitude'], start_lat, start_lon)
+            # Verifica se c'è tempo per tornare a casa
+            dist_ritorno = haversine(cliente['latitude'], cliente['longitude'], start_lat, start_lon)
             tempo_ritorno = (dist_ritorno / 50) * 60
             ora_rientro = ora_fine_visita + timedelta(minutes=tempo_ritorno)
             
-            if ora_rientro.time() > h_fine:
-                break
-            
-            # Aggiungi cliente alla lista
-            clienti_per_oggi.append({
-                'id': migliore['id'],
-                'nome_cliente': migliore['nome_cliente'],
-                'latitude': migliore['latitude'],
-                'longitude': migliore['longitude'],
-                'indirizzo': migliore.get('indirizzo', ''),
-                'cellulare': migliore.get('cellulare', ''),
-                'ritardo': migliore['ritardo']
-            })
-            
-            # Aggiorna stato
-            clienti_da_assegnare.remove(migliore)
-            pos_corrente = (migliore['latitude'], migliore['longitude'])
-            direzione_corrente = angolo_migliore
-            ora_corrente = ora_fine_visita
-            visite_aggiunte += 1
+            if ora_rientro.time() <= h_fine:
+                clienti_per_oggi.append({
+                    'id': cliente['id'],
+                    'nome_cliente': cliente['nome_cliente'],
+                    'latitude': cliente['latitude'],
+                    'longitude': cliente['longitude'],
+                    'indirizzo': cliente.get('indirizzo', ''),
+                    'cellulare': cliente.get('cellulare', ''),
+                    'ritardo': cliente['ritardo']
+                })
+                ora_corrente = ora_fine_visita
+                clienti_da_assegnare.remove(cliente)
         
-        # FASE 2: Ottimizza con 2-opt
+        # FASE 4: Prova entrambe le direzioni (orario/antiorario)
+        if len(clienti_per_oggi) >= 2:
+            clienti_per_oggi = prova_entrambe_direzioni(clienti_per_oggi, start_lat, start_lon)
+        
+        # FASE 5: Ottimizza con 2-opt aggressivo
         if len(clienti_per_oggi) >= 3:
-            clienti_per_oggi = ottimizza_2opt(clienti_per_oggi, start_lat, start_lon)
+            clienti_per_oggi = ottimizza_2opt_aggressivo(clienti_per_oggi, start_lat, start_lon)
         
-        # FASE 3: Ricalcola orari e distanze per il percorso ottimizzato
+        # FASE 6: Ricalcola orari e distanze per il percorso finale
         pos_corrente = (start_lat, start_lon)
         ora_corrente = datetime.combine(data_giorno, h_inizio)
         
