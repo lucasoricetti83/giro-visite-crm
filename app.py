@@ -2538,18 +2538,113 @@ def main_app():
     elif st.session_state.active_tab == "➕ Nuovo":
         st.header("➕ Nuovo Cliente")
         
-        render_gps_button("nuovo_cliente")
+        # Inizializza campi in session_state se non esistono
+        if 'nuovo_cliente_indirizzo' not in st.session_state:
+            st.session_state.nuovo_cliente_indirizzo = ''
+        if 'nuovo_cliente_cap' not in st.session_state:
+            st.session_state.nuovo_cliente_cap = ''
+        if 'nuovo_cliente_citta' not in st.session_state:
+            st.session_state.nuovo_cliente_citta = ''
+        if 'nuovo_cliente_provincia' not in st.session_state:
+            st.session_state.nuovo_cliente_provincia = ''
+        if 'nuovo_cliente_lat' not in st.session_state:
+            st.session_state.nuovo_cliente_lat = None
+        if 'nuovo_cliente_lon' not in st.session_state:
+            st.session_state.nuovo_cliente_lon = None
+        
+        # === SEZIONE GPS ===
+        st.subheader("📍 Posizione GPS")
+        st.caption("Usa il GPS per compilare automaticamente l'indirizzo del cliente")
+        
+        col_gps1, col_gps2 = st.columns([2, 1])
+        
+        with col_gps1:
+            # Input manuale coordinate (può essere compilato da GPS o manualmente)
+            coords_input = st.text_input(
+                "📍 Coordinate (lat, lon):",
+                placeholder="Es: 45.4642, 9.1900 - Incolla da Google Maps o usa GPS",
+                key="coords_input_nuovo"
+            )
+        
+        with col_gps2:
+            st.write("")  # Spacer
+            if st.button("🔍 Cerca Indirizzo", use_container_width=True, type="primary"):
+                if coords_input:
+                    try:
+                        # Parse delle coordinate
+                        parts = coords_input.replace(" ", "").split(",")
+                        lat = float(parts[0])
+                        lon = float(parts[1])
+                        
+                        # Reverse geocoding
+                        with st.spinner("🔄 Ricerca indirizzo..."):
+                            addr = reverse_geocode(lat, lon)
+                        
+                        if addr:
+                            st.session_state.nuovo_cliente_indirizzo = addr.get('via', '')
+                            st.session_state.nuovo_cliente_cap = addr.get('cap', '')
+                            st.session_state.nuovo_cliente_citta = addr.get('citta', '')
+                            st.session_state.nuovo_cliente_provincia = addr.get('provincia', '')
+                            st.session_state.nuovo_cliente_lat = lat
+                            st.session_state.nuovo_cliente_lon = lon
+                            st.success(f"✅ Indirizzo trovato!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Indirizzo non trovato")
+                    except:
+                        st.error("❌ Formato coordinate non valido. Usa: lat, lon")
+                else:
+                    st.warning("⚠️ Inserisci le coordinate")
+        
+        # Istruzioni per ottenere coordinate
+        with st.expander("💡 Come ottenere le coordinate"):
+            st.markdown("""
+            **Da smartphone (sul posto):**
+            1. Apri **Google Maps**
+            2. Tieni premuto sulla posizione esatta
+            3. Tocca le coordinate che appaiono in basso
+            4. Incollale qui sopra
+            
+            **Da PC:**
+            1. Vai su [Google Maps](https://maps.google.com)
+            2. Clicca con il destro sul punto
+            3. Clicca sulle coordinate per copiarle
+            4. Incollale qui sopra
+            """)
+        
+        # Mostra indirizzo trovato
+        if st.session_state.nuovo_cliente_lat:
+            st.success(f"""
+            📍 **Posizione acquisita:**
+            - Via: {st.session_state.nuovo_cliente_indirizzo}
+            - Città: {st.session_state.nuovo_cliente_citta}
+            - CAP: {st.session_state.nuovo_cliente_cap}
+            - Provincia: {st.session_state.nuovo_cliente_provincia}
+            - Coordinate: {st.session_state.nuovo_cliente_lat:.6f}, {st.session_state.nuovo_cliente_lon:.6f}
+            """)
+            
+            if st.button("🗑️ Cancella posizione"):
+                st.session_state.nuovo_cliente_indirizzo = ''
+                st.session_state.nuovo_cliente_cap = ''
+                st.session_state.nuovo_cliente_citta = ''
+                st.session_state.nuovo_cliente_provincia = ''
+                st.session_state.nuovo_cliente_lat = None
+                st.session_state.nuovo_cliente_lon = None
+                st.rerun()
         
         st.divider()
+        
+        # === FORM DATI CLIENTE ===
+        st.subheader("📝 Dati Cliente")
         
         with st.form("nuovo_cliente_form"):
             c1, c2 = st.columns(2)
             
             nome = c1.text_input("Nome Cliente *")
-            indirizzo = c1.text_input("Indirizzo")
-            cap = c1.text_input("CAP")
-            citta = c1.text_input("Città *")
-            provincia = c1.text_input("Provincia")
+            indirizzo = c1.text_input("Indirizzo", value=st.session_state.nuovo_cliente_indirizzo)
+            cap = c1.text_input("CAP", value=st.session_state.nuovo_cliente_cap)
+            citta = c1.text_input("Città *", value=st.session_state.nuovo_cliente_citta)
+            provincia = c1.text_input("Provincia", value=st.session_state.nuovo_cliente_provincia)
             frequenza = c1.number_input("Frequenza visite (gg)", value=30)
             
             telefono = c2.text_input("Telefono")
@@ -2558,11 +2653,19 @@ def main_app():
             contatto = c2.text_input("Referente")
             note = c2.text_area("Note")
             
+            # Mostra coordinate se acquisite da GPS
+            if st.session_state.nuovo_cliente_lat:
+                c2.info(f"📍 Coordinate GPS: {st.session_state.nuovo_cliente_lat:.6f}, {st.session_state.nuovo_cliente_lon:.6f}")
+            
             if st.form_submit_button("✅ Crea Cliente", use_container_width=True, type="primary"):
                 if nome and citta:
-                    coords = get_coords(f"{indirizzo}, {citta}, {provincia}")
-                    if not coords:
-                        coords = get_coords(citta)
+                    # Usa coordinate GPS se disponibili, altrimenti geocoding
+                    if st.session_state.nuovo_cliente_lat and st.session_state.nuovo_cliente_lon:
+                        coords = (st.session_state.nuovo_cliente_lat, st.session_state.nuovo_cliente_lon)
+                    else:
+                        coords = get_coords(f"{indirizzo}, {citta}, {provincia}")
+                        if not coords:
+                            coords = get_coords(citta)
                     
                     if coords:
                         save_cliente({
@@ -2578,13 +2681,24 @@ def main_app():
                             'frequenza_giorni': frequenza,
                             'latitude': coords[0],
                             'longitude': coords[1],
-                            'visitare': 'SI'
+                            'visitare': 'SI',
+                            'stato_cliente': 'CLIENTE NUOVO'
                         })
+                        
+                        # Reset campi GPS
+                        st.session_state.nuovo_cliente_indirizzo = ''
+                        st.session_state.nuovo_cliente_cap = ''
+                        st.session_state.nuovo_cliente_citta = ''
+                        st.session_state.nuovo_cliente_provincia = ''
+                        st.session_state.nuovo_cliente_lat = None
+                        st.session_state.nuovo_cliente_lon = None
+                        
                         st.session_state.reload_data = True
                         st.success(f"✅ Cliente {nome} creato!")
+                        time_module.sleep(1)
                         st.rerun()
                     else:
-                        st.error("❌ Impossibile trovare le coordinate")
+                        st.error("❌ Impossibile trovare le coordinate. Usa il GPS o verifica l'indirizzo.")
                 else:
                     st.error("❌ Nome e Città sono obbligatori")
     
