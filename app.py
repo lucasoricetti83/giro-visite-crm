@@ -863,28 +863,39 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     df_validi['longitude'] = df_validi['longitude'].astype(float)
     
     # Calcola priorità (giorni di ritardo dalla frequenza)
+    # POSITIVO = già scaduto, da visitare urgentemente
+    # NEGATIVO = mancano ancora giorni alla scadenza
+    # ZERO = scade oggi
     def calcola_giorni_ritardo(row):
         ultima = row.get('ultima_visita')
         freq = int(row.get('frequenza_giorni', 30))
         
         if pd.isnull(ultima) or (hasattr(ultima, 'year') and ultima.year < 2001):
-            return 999  # Mai visitato
+            return 999  # Mai visitato = massima priorità
         
         ultima_date = ultima.date() if hasattr(ultima, 'date') else ultima
-        prossima = ultima_date + timedelta(days=freq)
-        return (oggi - prossima).days
+        prossima_visita = ultima_date + timedelta(days=freq)
+        ritardo = (oggi - prossima_visita).days
+        return ritardo
     
     df_validi['ritardo'] = df_validi.apply(calcola_giorni_ritardo, axis=1)
     
-    # Prendi TUTTI i clienti urgenti (ritardo >= 0, cioè scaduti)
-    urgenti = df_validi[df_validi['ritardo'] >= 0].copy()
+    # ========================================
+    # NUOVA LOGICA: Prendi clienti da visitare questa settimana
+    # ========================================
+    # Include:
+    # 1. Clienti già scaduti (ritardo >= 0)
+    # 2. Clienti che scadranno entro 7 giorni (ritardo >= -7)
+    # Questo permette di pianificare PRIMA che scadano
     
-    # Ordina per ritardo (più scaduti prima)
-    urgenti = urgenti.sort_values('ritardo', ascending=False)
+    clienti_settimana = df_validi[df_validi['ritardo'] >= -7].copy()
+    
+    # Ordina per ritardo (più scaduti/urgenti prima)
+    clienti_settimana = clienti_settimana.sort_values('ritardo', ascending=False)
     
     # Converti in lista di dizionari
     clienti_urgenti = []
-    for _, row in urgenti.iterrows():
+    for _, row in clienti_settimana.iterrows():
         clienti_urgenti.append({
             'id': row['id'],
             'nome_cliente': row['nome_cliente'],
@@ -893,7 +904,8 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             'indirizzo': row.get('indirizzo', ''),
             'cellulare': str(row.get('cellulare', '')),
             'ritardo': row['ritardo'],
-            'frequenza': int(row.get('frequenza_giorni', 30))
+            'frequenza': int(row.get('frequenza_giorni', 30)),
+            'ultima_visita': row.get('ultima_visita')
         })
     
     # Filtra solo giorni lavorativi futuri (o oggi) ESCLUDENDO FERIE
@@ -1523,8 +1535,27 @@ def main_app():
                                 c1, c2 = st.columns([3, 2])
                                 
                                 with c1:
+                                    # Badge urgenza
+                                    ritardo = t.get('ritardo', 0)
+                                    if ritardo >= 14:
+                                        urgenza_badge = "🔴 CRITICO"
+                                        urgenza_color = "#ffebee"
+                                    elif ritardo >= 7:
+                                        urgenza_badge = "🟠 In ritardo"
+                                        urgenza_color = "#fff3e0"
+                                    elif ritardo >= 0:
+                                        urgenza_badge = "🟡 Scaduto"
+                                        urgenza_color = "#fffde7"
+                                    else:
+                                        urgenza_badge = "🟢 Preventivo"
+                                        urgenza_color = "#e8f5e9"
+                                    
                                     st.markdown(f"### {t['tipo_tappa'].split()[0]} {i}. {t['nome_cliente']}")
-                                    st.caption(f"⏰ {t['ora_arrivo']}")
+                                    
+                                    # Info orario e urgenza
+                                    col_info1, col_info2 = st.columns(2)
+                                    col_info1.caption(f"⏰ {t['ora_arrivo']}")
+                                    col_info2.caption(f"{urgenza_badge} ({ritardo:+d} gg)")
                                     
                                     if t.get('indirizzo'):
                                         st.caption(f"📍 {t['indirizzo']}")
@@ -1738,9 +1769,61 @@ def main_app():
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("👥 Totale Clienti", len(df))
         clienti_attivi = len(df[df['visitare'] == 'SI']) if not df.empty and 'visitare' in df.columns else 0
-        c2.metric("✅ Attivi", clienti_attivi)
+        c2.metric("✅ Nel Giro", clienti_attivi)
         c3.metric("🔴 Critici", len(critici))
         c4.metric("🟠 Warning", len(warning))
+        
+        # === STATO VISITE CLIENTI ===
+        st.divider()
+        st.subheader("📊 Stato Visite Clienti")
+        
+        if not df.empty and 'visitare' in df.columns:
+            df_attivi = df[df['visitare'] == 'SI'].copy()
+            
+            if not df_attivi.empty:
+                oggi = ora_italiana.date()
+                
+                # Calcola ritardo per ogni cliente
+                def calc_ritardo(row):
+                    ultima = row.get('ultima_visita')
+                    freq = int(row.get('frequenza_giorni', 30))
+                    if pd.isnull(ultima):
+                        return 999
+                    ultima_date = ultima.date() if hasattr(ultima, 'date') else ultima
+                    prossima = ultima_date + timedelta(days=freq)
+                    return (oggi - prossima).days
+                
+                df_attivi['ritardo'] = df_attivi.apply(calc_ritardo, axis=1)
+                
+                # Conta per categoria
+                mai_visitati = len(df_attivi[df_attivi['ritardo'] == 999])
+                critici_count = len(df_attivi[(df_attivi['ritardo'] >= 14) & (df_attivi['ritardo'] != 999)])
+                in_ritardo = len(df_attivi[(df_attivi['ritardo'] >= 1) & (df_attivi['ritardo'] < 14)])
+                scadono_oggi = len(df_attivi[df_attivi['ritardo'] == 0])
+                in_scadenza_7gg = len(df_attivi[(df_attivi['ritardo'] >= -7) & (df_attivi['ritardo'] < 0)])
+                ok = len(df_attivi[df_attivi['ritardo'] < -7])
+                
+                # Mostra metriche
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.markdown("**🚨 Da visitare SUBITO:**")
+                    st.error(f"🆕 Mai visitati: **{mai_visitati}**")
+                    st.error(f"🔴 Critici (+14gg): **{critici_count}**")
+                    st.warning(f"🟠 In ritardo (1-14gg): **{in_ritardo}**")
+                
+                with col2:
+                    st.markdown("**📅 Questa settimana:**")
+                    st.warning(f"🟡 Scadono oggi: **{scadono_oggi}**")
+                    st.info(f"🔵 Scadono entro 7gg: **{in_scadenza_7gg}**")
+                
+                with col3:
+                    st.markdown("**✅ OK:**")
+                    st.success(f"🟢 Regolari: **{ok}**")
+                    
+                    # Totale da visitare questa settimana
+                    totale_settimana = mai_visitati + critici_count + in_ritardo + scadono_oggi + in_scadenza_7gg
+                    st.metric("📊 Da visitare questa settimana", totale_settimana)
         
         if critici:
             st.divider()
