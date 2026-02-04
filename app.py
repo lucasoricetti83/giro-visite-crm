@@ -2036,6 +2036,10 @@ def main_app():
         if 'giorno_da_scambiare' not in st.session_state:
             st.session_state.giorno_da_scambiare = None
         
+        # Inizializza scambi salvati (dizionario: chiave=settimana, valore=lista di scambi)
+        if 'scambi_giorni' not in st.session_state:
+            st.session_state.scambi_giorni = {}
+        
         col_nav1, col_nav2, col_nav3 = st.columns([1, 3, 1])
         
         with col_nav1:
@@ -2065,6 +2069,12 @@ def main_app():
                 st.markdown(f"### 📆 {st.session_state.current_week_index} Settimana/e")
             st.caption(f"Dal {lunedi_selezionato.strftime('%d/%m/%Y')} al {domenica_selezionata.strftime('%d/%m/%Y')}")
         
+        # Giorni lavorativi configurati (definiti prima per poterli usare nell'expander)
+        giorni_nomi_full = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"]
+        giorni_attivi = config.get('giorni_lavorativi', [0, 1, 2, 3, 4])
+        if isinstance(giorni_attivi, str):
+            giorni_attivi = [int(x) for x in giorni_attivi.strip('{}').split(',')]
+        
         # === PANNELLO GESTIONE AGENDA ===
         with st.expander("⚙️ Gestisci Agenda", expanded=st.session_state.giorno_da_scambiare is not None):
             col_gest1, col_gest2 = st.columns(2)
@@ -2079,6 +2089,17 @@ def main_app():
                         st.rerun()
                 else:
                     st.caption("Clicca '🔄' su un giorno per iniziare lo scambio")
+                
+                # Mostra scambi attivi per questa settimana
+                chiave_settimana = lunedi_selezionato.isoformat()
+                if chiave_settimana in st.session_state.scambi_giorni and st.session_state.scambi_giorni[chiave_settimana]:
+                    st.divider()
+                    st.write("**📋 Scambi attivi:**")
+                    for idx1, idx2 in st.session_state.scambi_giorni[chiave_settimana]:
+                        st.caption(f"🔄 {giorni_nomi_full[idx1][:3]} ↔️ {giorni_nomi_full[idx2][:3]}")
+                    if st.button("🗑️ Annulla tutti gli scambi"):
+                        st.session_state.scambi_giorni[chiave_settimana] = []
+                        st.rerun()
             
             with col_gest2:
                 st.write("**🏖️ Giorni in Ferie**")
@@ -2097,12 +2118,6 @@ def main_app():
         
         st.divider()
         
-        # Giorni lavorativi configurati
-        giorni_nomi_full = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"]
-        giorni_attivi = config.get('giorni_lavorativi', [0, 1, 2, 3, 4])
-        if isinstance(giorni_attivi, str):
-            giorni_attivi = [int(x) for x in giorni_attivi.strip('{}').split(',')]
-        
         # CALCOLA AGENDA OTTIMIZZATA (escludendo giorni in ferie singoli)
         agenda_settimana = calcola_agenda_settimanale(
             df, 
@@ -2110,6 +2125,23 @@ def main_app():
             st.session_state.esclusi_oggi if st.session_state.current_week_index == 0 else [],
             st.session_state.current_week_index
         )
+        
+        # APPLICA SCAMBI SALVATI per questa settimana
+        chiave_settimana = lunedi_selezionato.isoformat()
+        if chiave_settimana in st.session_state.scambi_giorni:
+            # Crea una copia dell'agenda originale
+            agenda_originale = {k: list(v) for k, v in agenda_settimana.items()}
+            
+            # Applica tutti gli scambi
+            for idx1, idx2 in st.session_state.scambi_giorni[chiave_settimana]:
+                # Scambia usando i valori originali
+                tappe1 = agenda_originale.get(idx1, [])
+                tappe2 = agenda_originale.get(idx2, [])
+                agenda_settimana[idx1] = tappe2
+                agenda_settimana[idx2] = tappe1
+                # Aggiorna anche l'originale per scambi successivi
+                agenda_originale[idx1] = tappe2
+                agenda_originale[idx2] = tappe1
         
         # Funzione per verificare se un giorno è in ferie (range O singolo)
         def is_giorno_ferie_agenda(data):
@@ -2201,14 +2233,17 @@ def main_app():
                                 idx1 = giorno1.weekday()
                                 idx2 = giorno2.weekday()
                                 
-                                # Scambia le tappe nell'agenda
-                                tappe1 = agenda_settimana.get(idx1, [])
-                                tappe2 = agenda_settimana.get(idx2, [])
-                                agenda_settimana[idx1] = tappe2
-                                agenda_settimana[idx2] = tappe1
+                                # SALVA lo scambio in session_state
+                                chiave_settimana = lunedi_selezionato.isoformat()
+                                if chiave_settimana not in st.session_state.scambi_giorni:
+                                    st.session_state.scambi_giorni[chiave_settimana] = []
+                                
+                                # Aggiungi lo scambio
+                                st.session_state.scambi_giorni[chiave_settimana].append((idx1, idx2))
                                 
                                 st.session_state.giorno_da_scambiare = None
-                                st.success(f"✅ Scambiate visite tra {giorno1.strftime('%d/%m')} e {giorno2.strftime('%d/%m')}")
+                                st.toast(f"✅ Scambio salvato: {giorni_nomi_full[idx1][:3]} ↔️ {giorni_nomi_full[idx2][:3]}")
+                                time_module.sleep(0.3)
                                 st.rerun()
                     
                     with col_btn2:
