@@ -630,23 +630,53 @@ def fetch_clienti():
         
         if response.data:
             df = pd.DataFrame(response.data)
-            # Converti colonne
-            df['ultima_visita'] = pd.to_datetime(df['ultima_visita'], errors='coerce')
-            df['appuntamento'] = pd.to_datetime(df['appuntamento'], errors='coerce')
-            df['latitude'] = pd.to_numeric(df['latitude'], errors='coerce')
-            df['longitude'] = pd.to_numeric(df['longitude'], errors='coerce')
-            df['frequenza_giorni'] = pd.to_numeric(df['frequenza_giorni'], errors='coerce').fillna(30).astype(int)
-            df['visitare'] = df['visitare'].fillna('SI').str.upper()
-            # Default per stato_cliente se non esiste
-            if 'stato_cliente' not in df.columns:
-                df['stato_cliente'] = 'CLIENTE ATTIVO'
+            
+            # Converti colonne datetime
+            if 'ultima_visita' in df.columns:
+                df['ultima_visita'] = pd.to_datetime(df['ultima_visita'], errors='coerce')
             else:
+                df['ultima_visita'] = pd.NaT
+                
+            if 'appuntamento' in df.columns:
+                df['appuntamento'] = pd.to_datetime(df['appuntamento'], errors='coerce')
+            else:
+                df['appuntamento'] = pd.NaT
+            
+            # Converti coordinate
+            if 'latitude' in df.columns:
+                df['latitude'] = pd.to_numeric(df['latitude'], errors='coerce')
+            else:
+                df['latitude'] = 0.0
+                
+            if 'longitude' in df.columns:
+                df['longitude'] = pd.to_numeric(df['longitude'], errors='coerce')
+            else:
+                df['longitude'] = 0.0
+            
+            # Frequenza giorni
+            if 'frequenza_giorni' in df.columns:
+                df['frequenza_giorni'] = pd.to_numeric(df['frequenza_giorni'], errors='coerce').fillna(30).astype(int)
+            else:
+                df['frequenza_giorni'] = 30
+            
+            # Campo visitare - IMPORTANTE per il giro
+            if 'visitare' in df.columns:
+                df['visitare'] = df['visitare'].fillna('SI').astype(str).str.upper().str.strip()
+            else:
+                df['visitare'] = 'SI'
+            
+            # Stato cliente
+            if 'stato_cliente' in df.columns:
                 df['stato_cliente'] = df['stato_cliente'].fillna('CLIENTE ATTIVO')
-            # Default per citta se non esiste
-            if 'citta' not in df.columns:
-                df['citta'] = ''
             else:
+                df['stato_cliente'] = 'CLIENTE ATTIVO'
+            
+            # Città
+            if 'citta' in df.columns:
                 df['citta'] = df['citta'].fillna('')
+            else:
+                df['citta'] = ''
+            
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -1398,6 +1428,20 @@ def main_app():
     if 'df_clienti' not in st.session_state or st.session_state.get('reload_data', False):
         st.session_state.df_clienti = fetch_clienti()
         st.session_state.reload_data = False
+    
+    # DEBUG TEMPORANEO - Mostra info caricamento
+    df_debug = st.session_state.df_clienti
+    with st.sidebar:
+        st.divider()
+        st.caption("🔧 DEBUG INFO:")
+        st.caption(f"User ID: {get_user_id()}")
+        st.caption(f"Clienti caricati: {len(df_debug)}")
+        if not df_debug.empty and 'visitare' in df_debug.columns:
+            st.caption(f"Nel giro (SI): {len(df_debug[df_debug['visitare'] == 'SI'])}")
+            st.caption(f"Valori visitare: {df_debug['visitare'].unique().tolist()}")
+        if st.button("🔄 Forza Ricarica", key="debug_reload"):
+            st.session_state.reload_data = True
+            st.rerun()
     
     if 'config' not in st.session_state:
         config = fetch_config()
