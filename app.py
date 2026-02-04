@@ -2229,7 +2229,7 @@ def main_app():
         if 'scambi_giorni' not in st.session_state:
             st.session_state.scambi_giorni = {}
         
-        col_nav1, col_nav2, col_nav3 = st.columns([1, 3, 1])
+        col_nav1, col_nav2, col_nav3, col_nav4, col_nav5 = st.columns([1, 1, 2, 1, 1])
         
         with col_nav1:
             if st.button("⬅️ Sett. Prec.", use_container_width=True):
@@ -2237,7 +2237,15 @@ def main_app():
                 st.session_state.giorno_da_scambiare = None
                 st.rerun()
         
-        with col_nav3:
+        with col_nav2:
+            # Pulsante per tornare alla settimana corrente (visibile solo se non siamo già lì)
+            if st.session_state.current_week_index != 0:
+                if st.button("🏠 Oggi", use_container_width=True, type="primary"):
+                    st.session_state.current_week_index = 0
+                    st.session_state.giorno_da_scambiare = None
+                    st.rerun()
+        
+        with col_nav5:
             if st.button("Sett. Succ. ➡️", use_container_width=True):
                 st.session_state.current_week_index += 1
                 st.session_state.giorno_da_scambiare = None
@@ -2249,7 +2257,7 @@ def main_app():
         lunedi_selezionato = lunedi_corrente + timedelta(weeks=st.session_state.current_week_index)
         domenica_selezionata = lunedi_selezionato + timedelta(days=6)
         
-        with col_nav2:
+        with col_nav3:
             if st.session_state.current_week_index == 0:
                 st.markdown(f"### 📆 Settimana Corrente")
             elif st.session_state.current_week_index > 0:
