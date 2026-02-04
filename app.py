@@ -642,6 +642,11 @@ def fetch_clienti():
                 df['stato_cliente'] = 'CLIENTE ATTIVO'
             else:
                 df['stato_cliente'] = df['stato_cliente'].fillna('CLIENTE ATTIVO')
+            # Default per citta se non esiste
+            if 'citta' not in df.columns:
+                df['citta'] = ''
+            else:
+                df['citta'] = df['citta'].fillna('')
             return df
         return pd.DataFrame()
     except Exception as e:
