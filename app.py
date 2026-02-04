@@ -3641,8 +3641,8 @@ def main_app():
         if uploaded_file is not None:
             try:
                 # Leggi il contenuto per rilevare il separatore
-                content = uploaded_file.read().decode('utf-8', errors='ignore')
-                uploaded_file.seek(0)  # Riporta all'inizio
+                content = uploaded_file.read().decode('utf-8-sig', errors='ignore')  # utf-8-sig gestisce BOM
+                uploaded_file.seek(0)
                 
                 # Rileva separatore (conta quale appare di più nella prima riga)
                 first_line = content.split('\n')[0]
@@ -3659,7 +3659,7 @@ def main_app():
                 # Prova a leggere con diversi encoding
                 try:
                     uploaded_file.seek(0)
-                    df_import = pd.read_csv(uploaded_file, sep=separatore, encoding='utf-8')
+                    df_import = pd.read_csv(uploaded_file, sep=separatore, encoding='utf-8-sig')
                 except:
                     try:
                         uploaded_file.seek(0)
@@ -3668,8 +3668,8 @@ def main_app():
                         uploaded_file.seek(0)
                         df_import = pd.read_csv(uploaded_file, sep=separatore, encoding='cp1252')
                 
-                # Normalizza nomi colonne (minuscolo, senza spazi extra)
-                df_import.columns = [c.lower().strip() for c in df_import.columns]
+                # Normalizza nomi colonne: minuscolo, underscore -> spazio
+                df_import.columns = [c.lower().strip().replace('_', ' ') for c in df_import.columns]
                 
                 st.success(f"✅ File caricato! Trovati **{len(df_import)} clienti**")
                 st.caption(f"Colonne trovate: {', '.join(df_import.columns.tolist())}")
@@ -3693,70 +3693,88 @@ def main_app():
                     
                     for idx, row in df_import.iterrows():
                         try:
-                            # Converti latitude/longitude (gestisce sia virgola che punto)
-                            lat = None
-                            lon = None
-                            if 'latitude' in row and pd.notnull(row['latitude']):
-                                lat = float(str(row['latitude']).replace(',', '.'))
-                            if 'longitude' in row and pd.notnull(row['longitude']):
-                                lon = float(str(row['longitude']).replace(',', '.'))
+                            # Funzione helper per estrarre valori
+                            def get_val(col_name, default=''):
+                                val = row.get(col_name)
+                                if pd.isna(val) or val is None or str(val).lower() == 'nan':
+                                    return default
+                                return str(val).strip()
+                            
+                            def get_float(col_name):
+                                val = row.get(col_name)
+                                if pd.isna(val) or val is None:
+                                    return None
+                                try:
+                                    return float(str(val).replace(',', '.'))
+                                except:
+                                    return None
+                            
+                            # Estrai nome cliente
+                            nome = get_val('nome cliente')
+                            
+                            if not nome:
+                                errori += 1
+                                errori_dettagli.append(f"Riga {idx+2}: Nome cliente mancante")
+                                continue
+                            
+                            # Converti latitude/longitude
+                            lat = get_float('latitude')
+                            lon = get_float('longitude')
                             
                             # Converti data ultima visita
                             ultima_visita = None
-                            if 'ultima visita' in row and pd.notnull(row['ultima visita']):
+                            data_str = get_val('ultima visita')
+                            if data_str:
                                 try:
-                                    data_str = str(row['ultima visita']).split(' ')[0]
+                                    data_str = data_str.split(' ')[0]
                                     ultima_visita = datetime.strptime(data_str, '%d/%m/%Y').isoformat()
                                 except:
-                                    pass
-                            
-                            # Converti appuntamento
-                            appuntamento = None
-                            if 'appuntamento' in row and pd.notnull(row['appuntamento']):
-                                try:
-                                    appuntamento = datetime.strptime(str(row['appuntamento']), '%d/%m/%Y %H:%M').isoformat()
-                                except:
                                     try:
-                                        appuntamento = datetime.strptime(str(row['appuntamento']), '%d/%m/%Y').isoformat()
+                                        ultima_visita = datetime.strptime(data_str, '%Y-%m-%d').isoformat()
                                     except:
                                         pass
+                            
+                            # Converti frequenza
+                            freq = 30
+                            freq_val = row.get('frequenza giorni') or row.get('frequenza (giorni)')
+                            if pd.notna(freq_val):
+                                try:
+                                    freq = int(float(freq_val))
+                                except:
+                                    pass
                             
                             # Prepara dati cliente
                             cliente = {
                                 'user_id': user_id,
-                                'nome_cliente': str(row.get('nome cliente', '')) if pd.notnull(row.get('nome cliente')) else '',
-                                'indirizzo': str(row.get('indirizzo', '')) if pd.notnull(row.get('indirizzo')) else '',
-                                'cap': str(row.get('cap', '')) if pd.notnull(row.get('cap')) else '',
-                                'provincia': str(row.get('provincia', '')) if pd.notnull(row.get('provincia')) else '',
+                                'nome_cliente': nome,
+                                'indirizzo': get_val('indirizzo'),
+                                'citta': get_val('citta'),
+                                'cap': get_val('cap'),
+                                'provincia': get_val('provincia'),
                                 'latitude': lat,
                                 'longitude': lon,
-                                'frequenza_giorni': int(row.get('frequenza (giorni)', 30)) if pd.notnull(row.get('frequenza (giorni)')) else 30,
+                                'frequenza_giorni': freq,
                                 'ultima_visita': ultima_visita,
-                                'visitare': str(row.get('visitare', 'SI')).upper() if pd.notnull(row.get('visitare')) else 'SI',
-                                'storico_report': str(row.get('storico report', '')) if pd.notnull(row.get('storico report')) else '',
-                                'telefono': str(row.get('telefono', '')) if pd.notnull(row.get('telefono')) else '',
-                                'cellulare': str(row.get('cellulare', '')) if pd.notnull(row.get('cellulare')) else '',
-                                'mail': str(row.get('mail', '')) if pd.notnull(row.get('mail')) else '',
-                                'contatto': str(row.get('contatto', '')) if pd.notnull(row.get('contatto')) else '',
-                                'referente': str(row.get('referente', '')) if pd.notnull(row.get('referente')) else '',
-                                'note': str(row.get('note', '')) if pd.notnull(row.get('note')) else '',
-                                'appuntamento': appuntamento
+                                'visitare': get_val('visitare', 'SI').upper(),
+                                'storico_report': get_val('storico report'),
+                                'telefono': get_val('telefono'),
+                                'cellulare': get_val('cellulare'),
+                                'mail': get_val('mail'),
+                                'contatto': get_val('contatto'),
+                                'referente': get_val('referente'),
+                                'note': get_val('note'),
+                                'stato_cliente': get_val('stato cliente', 'CLIENTE ATTIVO')
                             }
                             
-                            # Pulisci valori vuoti e 'nan'
-                            cliente_clean = {}
-                            for k, v in cliente.items():
-                                if v is not None and str(v) != 'nan' and str(v) != '':
-                                    cliente_clean[k] = v
+                            # Rimuovi valori vuoti (tranne user_id e nome_cliente)
+                            cliente_clean = {k: v for k, v in cliente.items() 
+                                           if v is not None and v != ''}
                             cliente_clean['user_id'] = user_id
+                            cliente_clean['nome_cliente'] = nome
                             
-                            # Verifica che ci sia almeno il nome
-                            if cliente_clean.get('nome_cliente'):
-                                supabase.table('clienti').insert(cliente_clean).execute()
-                                successi += 1
-                            else:
-                                errori += 1
-                                errori_dettagli.append(f"Riga {idx+2}: Nome cliente mancante")
+                            # Inserisci nel database
+                            supabase.table('clienti').insert(cliente_clean).execute()
+                            successi += 1
                             
                         except Exception as e:
                             errori += 1
