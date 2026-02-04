@@ -971,10 +971,10 @@ def render_gps_button(button_id):
 # --- 5. CALCOLO GIRO OTTIMIZZATO ---
 def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, variante=0):
     """
-    Calcola l'agenda ottimizzata per un'intera settimana.
-    DISTRIBUISCE i clienti urgenti su tutti i giorni lavorativi.
-    Per ogni giorno ottimizza il percorso con Nearest Neighbor.
-    Considera: orari lavoro, pausa pranzo, tempo viaggio, ritorno a casa, FERIE.
+    NUOVO ALGORITMO: Raggruppa clienti per VICINANZA GEOGRAFICA.
+    - Massimizza visite per giorno
+    - Minimizza km percorsi
+    - Gli appuntamenti definiscono la zona del giorno
     """
     if df.empty:
         return {}
@@ -996,8 +996,6 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     if attiva_ferie:
         fi = config.get('ferie_inizio')
         ff = config.get('ferie_fine')
-        
-        # Converti date ferie
         if fi:
             if isinstance(fi, str):
                 try:
@@ -1008,7 +1006,6 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 ferie_inizio = fi.date()
             elif hasattr(fi, 'year'):
                 ferie_inizio = fi
-        
         if ff:
             if isinstance(ff, str):
                 try:
@@ -1021,7 +1018,6 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 ferie_fine = ff
     
     def is_giorno_ferie(data):
-        """Verifica se una data cade nel periodo ferie"""
         if not attiva_ferie or not ferie_inizio or not ferie_fine:
             return False
         return ferie_inizio <= data <= ferie_fine
@@ -1052,7 +1048,9 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     # Inizializza agenda
     agenda = {g: [] for g in range(7)}
     
-    # Filtra clienti con coordinate valide e attivi
+    # ========================================
+    # 1. PRENDI TUTTI I CLIENTI VALIDI
+    # ========================================
     df_validi = df[
         (df['visitare'] == 'SI') & 
         (df['latitude'].notna()) & 
@@ -1065,333 +1063,289 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     if df_validi.empty:
         return agenda
     
-    # Converti coordinate a float
-    df_validi['latitude'] = df_validi['latitude'].astype(float)
-    df_validi['longitude'] = df_validi['longitude'].astype(float)
-    
-    # Calcola priorità (giorni di ritardo dalla frequenza)
-    # POSITIVO = già scaduto, da visitare urgentemente
-    # NEGATIVO = mancano ancora giorni alla scadenza
-    # ZERO = scade oggi
-    def calcola_giorni_ritardo(row):
-        ultima = row.get('ultima_visita')
-        freq = int(row.get('frequenza_giorni', 30))
-        
-        if pd.isnull(ultima) or (hasattr(ultima, 'year') and ultima.year < 2001):
-            return 999  # Mai visitato = massima priorità
-        
-        ultima_date = ultima.date() if hasattr(ultima, 'date') else ultima
-        prossima_visita = ultima_date + timedelta(days=freq)
-        ritardo = (oggi - prossima_visita).days
-        return ritardo
-    
-    df_validi['ritardo'] = df_validi.apply(calcola_giorni_ritardo, axis=1)
-    
-    # ========================================
-    # CALCOLA PROSSIMA VISITA PER OGNI CLIENTE
-    # ========================================
-    def calcola_prossima_visita(row):
-        ultima = row.get('ultima_visita')
-        freq = int(row.get('frequenza_giorni', 30))
-        
-        if pd.isnull(ultima) or (hasattr(ultima, 'year') and ultima.year < 2001):
-            return oggi  # Mai visitato = da visitare subito
-        
-        ultima_date = ultima.date() if hasattr(ultima, 'date') else ultima
-        return ultima_date + timedelta(days=freq)
-    
-    df_validi['prossima_visita'] = df_validi.apply(calcola_prossima_visita, axis=1)
-    
-    # Calcola inizio e fine della settimana richiesta
-    inizio_settimana = lunedi_settimana
-    fine_settimana = lunedi_settimana + timedelta(days=6)
-    
-    # Calcola quante visite possiamo fare per giorno
-    ore_lavoro_giorno = (datetime.combine(oggi, h_fine) - datetime.combine(oggi, h_inizio)).seconds / 3600
-    ore_pausa = (datetime.combine(oggi, pausa_fine) - datetime.combine(oggi, pausa_inizio)).seconds / 3600
-    ore_effettive = ore_lavoro_giorno - ore_pausa
-    tempo_medio_per_visita = (durata_visita + 20) / 60  # in ore
-    max_visite_per_giorno = int(ore_effettive / tempo_medio_per_visita)
-    max_visite_per_giorno = max(min(max_visite_per_giorno, 12), 1)  # Min 1, Max 12
-    
-    # Filtra giorni disponibili
-    giorni_disponibili = []
-    for giorno_idx in giorni_lavorativi:
-        data_giorno = lunedi_settimana + timedelta(days=giorno_idx)
-        if (settimana_offset > 0 or data_giorno >= oggi) and not is_giorno_ferie(data_giorno):
-            giorni_disponibili.append(giorno_idx)
-    
-    if not giorni_disponibili:
-        return agenda
-    
-    # Capacità massima per settimana
-    max_clienti_settimana = max_visite_per_giorno * len(giorni_disponibili)
-    
-    # ========================================
-    # DISTRIBUZIONE SEMPLICE: DIVIDI TUTTI I CLIENTI PER SETTIMANA
-    # ========================================
-    
-    # Ordina TUTTI i clienti per priorità:
-    # 1. Prima quelli GIÀ SCADUTI (ritardo > 0) - ordinati per ritardo decrescente
-    # 2. Poi quelli MAI VISITATI (ritardo = 999) - ordinati per nome
-    # 3. Infine quelli che scadranno in futuro (ritardo < 0)
-    
-    df_validi['priorita_sort'] = df_validi['ritardo'].apply(
-        lambda x: 0 if x == 999 else (1 if x > 0 else 2)
-    )
-    df_validi = df_validi.sort_values(
-        ['priorita_sort', 'ritardo', 'nome_cliente'], 
-        ascending=[True, False, True]
-    )
-    
-    # Calcola il numero totale di clienti
-    totale_clienti = len(df_validi)
-    
-    if totale_clienti == 0:
-        return agenda
-    
-    # Calcola quante settimane servono per visitare tutti
-    settimane_necessarie = max(1, (totale_clienti + max_clienti_settimana - 1) // max_clienti_settimana)
-    
-    # Calcola la settimana nel ciclo (per il loop quando si ricomincia)
-    settimana_nel_ciclo = settimana_offset % settimane_necessarie
-    
-    # Calcola indice inizio e fine per questa settimana
-    indice_inizio = settimana_nel_ciclo * max_clienti_settimana
-    indice_fine = min(indice_inizio + max_clienti_settimana, totale_clienti)
-    
-    # Prendi la fetta di clienti per questa settimana
-    clienti_questa_settimana = df_validi.iloc[indice_inizio:indice_fine].copy()
-    
-    if clienti_questa_settimana.empty:
-        return agenda
-    
-    # Converti in lista di dizionari
-    clienti_da_visitare = []
-    for _, row in clienti_questa_settimana.iterrows():
-        clienti_da_visitare.append({
+    # Converti a lista di dizionari
+    tutti_clienti = []
+    for _, row in df_validi.iterrows():
+        tutti_clienti.append({
             'id': row['id'],
             'nome_cliente': row['nome_cliente'],
             'latitude': float(row['latitude']),
             'longitude': float(row['longitude']),
             'indirizzo': row.get('indirizzo', ''),
             'cellulare': str(row.get('cellulare', '')),
-            'ritardo': row['ritardo'],
-            'frequenza': int(row.get('frequenza_giorni', 30)),
+            'appuntamento': row.get('appuntamento')
         })
     
-    if not clienti_da_visitare:
+    # ========================================
+    # 2. CALCOLA CAPACITÀ GIORNALIERA
+    # ========================================
+    ore_lavoro = (datetime.combine(oggi, h_fine) - datetime.combine(oggi, h_inizio)).seconds / 3600
+    ore_pausa = (datetime.combine(oggi, pausa_fine) - datetime.combine(oggi, pausa_inizio)).seconds / 3600
+    ore_effettive = ore_lavoro - ore_pausa
+    
+    # Stima: 40 km/h media, quindi in media 20-30 min tra clienti + durata visita
+    tempo_per_visita = durata_visita + 25  # minuti (visita + viaggio medio)
+    max_visite_giorno = int((ore_effettive * 60) / tempo_per_visita)
+    max_visite_giorno = max(min(max_visite_giorno, 15), 3)  # Min 3, Max 15
+    
+    # ========================================
+    # 3. TROVA APPUNTAMENTI DELLA SETTIMANA
+    # ========================================
+    appuntamenti_settimana = {}  # {giorno_idx: [clienti con appuntamento]}
+    clienti_con_appuntamento = set()
+    
+    for c in tutti_clienti:
+        if pd.notnull(c['appuntamento']):
+            app = c['appuntamento']
+            app_date = app.date() if hasattr(app, 'date') else None
+            
+            if app_date:
+                # Verifica se è in questa settimana
+                if lunedi_settimana <= app_date <= lunedi_settimana + timedelta(days=6):
+                    giorno_idx = app_date.weekday()
+                    
+                    if giorno_idx not in appuntamenti_settimana:
+                        appuntamenti_settimana[giorno_idx] = []
+                    
+                    appuntamenti_settimana[giorno_idx].append({
+                        **c,
+                        'ora_appuntamento': app.strftime('%H:%M') if hasattr(app, 'strftime') else '09:00'
+                    })
+                    clienti_con_appuntamento.add(c['nome_cliente'])
+    
+    # Clienti senza appuntamento
+    clienti_disponibili = [c for c in tutti_clienti if c['nome_cliente'] not in clienti_con_appuntamento]
+    
+    # ========================================
+    # 4. TROVA GIORNI DISPONIBILI
+    # ========================================
+    giorni_disponibili = []
+    for giorno_idx in giorni_lavorativi:
+        data_giorno = lunedi_settimana + timedelta(days=giorno_idx)
+        if not is_giorno_ferie(data_giorno):
+            if settimana_offset > 0 or data_giorno >= oggi:
+                giorni_disponibili.append(giorno_idx)
+    
+    if not giorni_disponibili:
         return agenda
     
     # ========================================
-    # ALGORITMO NEAREST NEIGHBOR SEMPLICE
+    # 5. DIVIDI CLIENTI IN ZONE GEOGRAFICHE
     # ========================================
-    # Per ogni giorno:
-    # 1. Parti dalla base
-    # 2. Scegli sempre il cliente NON ASSEGNATO più vicino
-    # 3. Quando il giorno è pieno, passa al successivo
-    # 4. Ottimizza con 2-opt
+    import math
     
-    def trova_piu_vicino(pos_lat, pos_lon, clienti_disponibili):
-        """Trova il cliente più vicino a una posizione"""
-        if not clienti_disponibili:
-            return None, float('inf')
-        
-        miglior_cliente = None
-        miglior_distanza = float('inf')
-        
-        for c in clienti_disponibili:
-            dist = haversine(pos_lat, pos_lon, c['latitude'], c['longitude'])
-            if dist < miglior_distanza:
-                miglior_distanza = dist
-                miglior_cliente = c
-        
-        return miglior_cliente, miglior_distanza
+    def calcola_angolo(lat, lon, base_lat, base_lon):
+        """Calcola angolo rispetto alla base (per dividere in settori)"""
+        delta_lat = lat - base_lat
+        delta_lon = lon - base_lon
+        return (math.degrees(math.atan2(delta_lon, delta_lat)) + 360) % 360
     
-    def ottimizza_2opt(percorso, base_lat, base_lon):
-        """Ottimizza il percorso con 2-opt"""
-        if len(percorso) < 3:
+    # Calcola angolo per ogni cliente disponibile
+    for c in clienti_disponibili:
+        c['angolo'] = calcola_angolo(c['latitude'], c['longitude'], start_lat, start_lon)
+        c['distanza_base'] = haversine(c['latitude'], c['longitude'], start_lat, start_lon)
+    
+    # Ordina per angolo
+    clienti_disponibili.sort(key=lambda x: x['angolo'])
+    
+    # Dividi in settori (uno per giorno disponibile)
+    n_giorni = len(giorni_disponibili)
+    clienti_per_giorno = {}
+    
+    if clienti_disponibili:
+        clienti_per_settore = max(1, len(clienti_disponibili) // n_giorni)
+        
+        for idx, giorno_idx in enumerate(giorni_disponibili):
+            inizio = idx * clienti_per_settore
+            
+            if idx == n_giorni - 1:
+                # Ultimo giorno: prendi tutti i rimanenti
+                clienti_per_giorno[giorno_idx] = clienti_disponibili[inizio:]
+            else:
+                fine = inizio + clienti_per_settore
+                clienti_per_giorno[giorno_idx] = clienti_disponibili[inizio:fine]
+    
+    # ========================================
+    # 6. COSTRUISCI AGENDA PER OGNI GIORNO
+    # ========================================
+    
+    def nearest_neighbor(clienti, lat_partenza, lon_partenza):
+        """Ordina i clienti con algoritmo Nearest Neighbor"""
+        if not clienti:
+            return []
+        
+        risultato = []
+        rimanenti = clienti.copy()
+        pos_lat, pos_lon = lat_partenza, lon_partenza
+        
+        while rimanenti:
+            # Trova il più vicino
+            min_dist = float('inf')
+            piu_vicino = None
+            
+            for c in rimanenti:
+                dist = haversine(pos_lat, pos_lon, c['latitude'], c['longitude'])
+                if dist < min_dist:
+                    min_dist = dist
+                    piu_vicino = c
+            
+            if piu_vicino:
+                risultato.append(piu_vicino)
+                rimanenti.remove(piu_vicino)
+                pos_lat = piu_vicino['latitude']
+                pos_lon = piu_vicino['longitude']
+        
+        return risultato
+    
+    def ottimizza_2opt(percorso, lat_base, lon_base):
+        """Migliora il percorso con 2-opt"""
+        if len(percorso) < 4:
             return percorso
         
         def calcola_distanza_totale(p):
             if not p:
                 return 0
-            dist = haversine(base_lat, base_lon, p[0]['latitude'], p[0]['longitude'])
+            dist = haversine(lat_base, lon_base, p[0]['latitude'], p[0]['longitude'])
             for i in range(len(p) - 1):
                 dist += haversine(p[i]['latitude'], p[i]['longitude'], 
                                  p[i+1]['latitude'], p[i+1]['longitude'])
-            dist += haversine(p[-1]['latitude'], p[-1]['longitude'], base_lat, base_lon)
+            dist += haversine(p[-1]['latitude'], p[-1]['longitude'], lat_base, lon_base)
             return dist
         
         percorso = list(percorso)
         migliorato = True
+        iterazioni = 0
         
-        while migliorato:
+        while migliorato and iterazioni < 20:
             migliorato = False
             dist_attuale = calcola_distanza_totale(percorso)
             
             for i in range(len(percorso) - 1):
                 for j in range(i + 2, len(percorso)):
-                    # Inverti segmento
                     nuovo = percorso[:i+1] + percorso[i+1:j+1][::-1] + percorso[j+1:]
-                    nuova_dist = calcola_distanza_totale(nuovo)
-                    
-                    if nuova_dist < dist_attuale - 0.5:  # Migliora di almeno 500m
+                    if calcola_distanza_totale(nuovo) < dist_attuale - 0.5:
                         percorso = nuovo
                         migliorato = True
                         break
                 if migliorato:
                     break
+            iterazioni += 1
         
         return percorso
     
-    # Lista clienti ancora da assegnare
-    clienti_non_assegnati = clienti_da_visitare.copy()
-    
-    # Per ogni giorno lavorativo disponibile
+    # Per ogni giorno disponibile
     for giorno_idx in giorni_disponibili:
-        if not clienti_non_assegnati:
-            break
-        
         data_giorno = lunedi_settimana + timedelta(days=giorno_idx)
         tappe_giorno = []
         
-        # Prima: gestisci APPUNTAMENTI del giorno (cerca in TUTTI i clienti, non solo df_validi)
-        appuntamenti_giorno = []
-        clienti_con_appuntamento = []
+        # Clienti per questo giorno
+        clienti_giorno = clienti_per_giorno.get(giorno_idx, []).copy()
         
-        try:
-            for _, row in df.iterrows():
-                if pd.notnull(row.get('appuntamento')):
-                    app_datetime = row['appuntamento']
-                    app_date = app_datetime.date() if hasattr(app_datetime, 'date') else None
-                    
-                    if app_date == data_giorno:
-                        # Verifica che abbia coordinate valide
-                        if pd.notnull(row.get('latitude')) and pd.notnull(row.get('longitude')):
-                            if row['latitude'] != 0 and row['longitude'] != 0:
-                                ora_app = app_datetime.strftime('%H:%M') if hasattr(app_datetime, 'strftime') else '09:00'
-                                
-                                appuntamenti_giorno.append({
-                                    'id': row['id'],
-                                    'nome_cliente': row['nome_cliente'],
-                                    'latitude': float(row['latitude']),
-                                    'longitude': float(row['longitude']),
-                                    'indirizzo': row.get('indirizzo', ''),
-                                    'cellulare': str(row.get('cellulare', '')),
-                                    'ora_appuntamento': ora_app,
-                                    'tipo_tappa': '📌 APPUNTAMENTO',
-                                    'ritardo': 0
-                                })
-                                clienti_con_appuntamento.append(row['nome_cliente'])
-        except Exception as e:
-            pass
+        # ========================================
+        # GESTISCI APPUNTAMENTI
+        # ========================================
+        if giorno_idx in appuntamenti_settimana:
+            appuntamenti = appuntamenti_settimana[giorno_idx]
+            
+            # L'appuntamento definisce la "zona" del giorno
+            # Trova clienti più vicini all'appuntamento
+            for app in appuntamenti:
+                app_lat = app['latitude']
+                app_lon = app['longitude']
+                
+                # Ordina TUTTI i clienti disponibili per distanza dall'appuntamento
+                for c in clienti_giorno:
+                    c['dist_app'] = haversine(c['latitude'], c['longitude'], app_lat, app_lon)
+                
+                # Ordina per distanza dall'appuntamento
+                clienti_giorno.sort(key=lambda x: x.get('dist_app', 999))
+            
+            # Aggiungi appuntamenti alla lista
+            for app in appuntamenti:
+                app['tipo_tappa'] = '📌 APPUNTAMENTO'
+                app['is_appuntamento'] = True
         
-        # Ordina appuntamenti per ora
-        appuntamenti_giorno.sort(key=lambda x: x['ora_appuntamento'])
+        # ========================================
+        # COSTRUISCI PERCORSO DEL GIORNO
+        # ========================================
         
-        # Rimuovi clienti con appuntamento dalla lista dei non assegnati
-        clienti_non_assegnati = [c for c in clienti_non_assegnati 
-                                  if c['nome_cliente'] not in clienti_con_appuntamento]
+        # Prendi i clienti per questo giorno (max visite)
+        clienti_da_visitare = clienti_giorno[:max_visite_giorno]
         
-        # Slot disponibili per oggi (meno gli appuntamenti)
-        slot_disponibili = max_visite_per_giorno - len(appuntamenti_giorno)
+        # Aggiungi appuntamenti se presenti
+        if giorno_idx in appuntamenti_settimana:
+            for app in appuntamenti_settimana[giorno_idx]:
+                if app not in clienti_da_visitare:
+                    clienti_da_visitare.append(app)
         
-        if slot_disponibili <= 0:
-            # Solo appuntamenti, calcola distanze
-            pos_lat = start_lat
-            pos_lon = start_lon
-            for app in appuntamenti_giorno:
-                dist = haversine(pos_lat, pos_lon, app['latitude'], app['longitude'])
-                tappe_giorno.append({
-                    'id': app['id'],
-                    'nome_cliente': app['nome_cliente'],
-                    'latitude': app['latitude'],
-                    'longitude': app['longitude'],
-                    'indirizzo': app['indirizzo'],
-                    'cellulare': app['cellulare'],
-                    'ora_arrivo': app['ora_appuntamento'],
-                    'tipo_tappa': '📌 APPUNTAMENTO',
-                    'distanza_km': round(dist, 1),
-                    'ritardo': 0
-                })
-                pos_lat = app['latitude']
-                pos_lon = app['longitude']
-            agenda[giorno_idx] = tappe_giorno
+        if not clienti_da_visitare:
             continue
         
-        # ========================================
-        # COSTRUISCI PERCORSO INTEGRANDO APPUNTAMENTI
-        # ========================================
-        # Strategia: 
-        # 1. Se c'è un appuntamento al mattino, visita clienti vicini PRIMA
-        # 2. Poi vai all'appuntamento
-        # 3. Poi continua con i clienti vicini all'appuntamento
+        # Ordina con Nearest Neighbor
+        percorso = nearest_neighbor(clienti_da_visitare, start_lat, start_lon)
         
-        if appuntamenti_giorno:
-            # Abbiamo appuntamenti - costruisci percorso intorno a loro
-            percorso_finale = []
-            pos_lat = start_lat
-            pos_lon = start_lon
-            ora_corrente = datetime.combine(data_giorno, h_inizio)
-            clienti_disponibili = clienti_non_assegnati.copy()
+        # Ottimizza con 2-opt
+        percorso = ottimizza_2opt(percorso, start_lat, start_lon)
+        
+        # Se ci sono appuntamenti, riordina per rispettare gli orari
+        if giorno_idx in appuntamenti_settimana:
+            # Separa appuntamenti e visite normali
+            appuntamenti = [c for c in percorso if c.get('is_appuntamento')]
+            visite_normali = [c for c in percorso if not c.get('is_appuntamento')]
             
-            for app in appuntamenti_giorno:
-                ora_app = datetime.strptime(app['ora_appuntamento'], '%H:%M').time()
-                ora_app_datetime = datetime.combine(data_giorno, ora_app)
-                
-                # Quanto tempo ho prima dell'appuntamento?
-                tempo_disponibile = (ora_app_datetime - ora_corrente).total_seconds() / 60
-                
-                # Tempo per arrivare all'appuntamento dalla posizione corrente
-                dist_a_app = haversine(pos_lat, pos_lon, app['latitude'], app['longitude'])
-                tempo_a_app = (dist_a_app / 40) * 60
-                
-                # Margine di sicurezza: 15 minuti
-                tempo_utile = tempo_disponibile - tempo_a_app - 15
-                
-                # Se ho tempo, visita clienti VICINI ALL'APPUNTAMENTO prima
-                if tempo_utile > (durata_visita + 15) and clienti_disponibili:
-                    # Trova clienti vicini all'appuntamento
-                    for c in clienti_disponibili:
-                        c['dist_app'] = haversine(c['latitude'], c['longitude'], app['latitude'], app['longitude'])
-                    
-                    clienti_ordinati = sorted(clienti_disponibili, key=lambda x: x['dist_app'])
-                    
-                    while tempo_utile > (durata_visita + 15) and clienti_ordinati:
-                        cliente = clienti_ordinati[0]
-                        
-                        # Tempo per andare al cliente + visita + andare all'appuntamento
-                        dist_a_cliente = haversine(pos_lat, pos_lon, cliente['latitude'], cliente['longitude'])
-                        dist_cliente_app = cliente['dist_app']
-                        tempo_totale = (dist_a_cliente / 40) * 60 + durata_visita + (dist_cliente_app / 40) * 60 + 15
-                        
-                        if tempo_totale <= tempo_utile:
-                            percorso_finale.append(cliente)
-                            clienti_disponibili.remove(cliente)
-                            clienti_ordinati.remove(cliente)
-                            
-                            pos_lat = cliente['latitude']
-                            pos_lon = cliente['longitude']
-                            tempo_utile -= (dist_a_cliente / 40) * 60 + durata_visita
-                            ora_corrente = ora_corrente + timedelta(minutes=(dist_a_cliente / 40) * 60 + durata_visita)
-                        else:
-                            break
-                
-                # Aggiungi l'appuntamento
-                percorso_finale.append(app)
-                pos_lat = app['latitude']
-                pos_lon = app['longitude']
-                ora_corrente = ora_app_datetime + timedelta(minutes=durata_visita)
+            # Ordina appuntamenti per ora
+            appuntamenti.sort(key=lambda x: x.get('ora_appuntamento', '09:00'))
             
-            # Dopo gli appuntamenti, continua con nearest neighbor per i clienti rimanenti
-            while len(percorso_finale) < max_visite_per_giorno and clienti_disponibili:
-                cliente_vicino, distanza = trova_piu_vicino(pos_lat, pos_lon, clienti_disponibili)
+            # Ricostruisci percorso: visite prima del primo appuntamento, 
+            # poi appuntamento, poi altre visite
+            if appuntamenti:
+                primo_app = appuntamenti[0]
+                ora_primo_app = datetime.strptime(primo_app.get('ora_appuntamento', '09:00'), '%H:%M').time()
                 
-                if cliente_vicino is None:
-                    break
+                # Quante visite posso fare prima dell'appuntamento?
+                ora_corrente = datetime.combine(data_giorno, h_inizio)
+                ora_app = datetime.combine(data_giorno, ora_primo_app)
+                minuti_disponibili = (ora_app - ora_corrente).total_seconds() / 60
                 
-                tempo_viaggio = (distanza / 40) * 60
+                # Trova visite vicine all'appuntamento da fare PRIMA
+                visite_prima = []
+                visite_dopo = []
+                
+                for v in visite_normali:
+                    v['dist_app'] = haversine(v['latitude'], v['longitude'], 
+                                             primo_app['latitude'], primo_app['longitude'])
+                
+                visite_normali.sort(key=lambda x: x['dist_app'])
+                
+                tempo_usato = 0
+                for v in visite_normali:
+                    tempo_necessario = tempo_per_visita
+                    if tempo_usato + tempo_necessario < minuti_disponibili - 30:  # 30 min margine
+                        visite_prima.append(v)
+                        tempo_usato += tempo_necessario
+                    else:
+                        visite_dopo.append(v)
+                
+                # Ricostruisci percorso
+                percorso = visite_prima + appuntamenti + visite_dopo
+        
+        # ========================================
+        # CALCOLA ORARI E DISTANZE FINALI
+        # ========================================
+        pos_lat = start_lat
+        pos_lon = start_lon
+        ora_corrente = datetime.combine(data_giorno, h_inizio)
+        
+        for cliente in percorso:
+            dist = haversine(pos_lat, pos_lon, cliente['latitude'], cliente['longitude'])
+            tempo_viaggio = (dist / 40) * 60  # 40 km/h media
+            
+            if cliente.get('is_appuntamento'):
+                # Per appuntamenti: usa l'ora fissata
+                ora_arrivo_str = cliente.get('ora_appuntamento', '09:00')
+                ora_arrivo = datetime.strptime(ora_arrivo_str, '%H:%M')
+                ora_arrivo = datetime.combine(data_giorno, ora_arrivo.time())
+            else:
                 ora_arrivo = ora_corrente + timedelta(minutes=tempo_viaggio)
                 
                 # Gestisci pausa pranzo
@@ -1399,136 +1353,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                     ora_corrente = datetime.combine(data_giorno, pausa_fine)
                     ora_arrivo = ora_corrente + timedelta(minutes=tempo_viaggio)
                 
-                ora_fine = ora_arrivo + timedelta(minutes=durata_visita)
-                
-                # Verifica tempo rientro
-                dist_ritorno = haversine(cliente_vicino['latitude'], cliente_vicino['longitude'], start_lat, start_lon)
-                tempo_ritorno = (dist_ritorno / 40) * 60
-                ora_rientro = ora_fine + timedelta(minutes=tempo_ritorno)
-                
-                if ora_rientro.time() > h_fine:
-                    break
-                
-                percorso_finale.append(cliente_vicino)
-                clienti_disponibili.remove(cliente_vicino)
-                clienti_non_assegnati.remove(cliente_vicino)
-                
-                pos_lat = cliente_vicino['latitude']
-                pos_lon = cliente_vicino['longitude']
-                ora_corrente = ora_fine
-            
-            # Calcola orari e distanze finali
-            pos_lat = start_lat
-            pos_lon = start_lon
-            ora = datetime.combine(data_giorno, h_inizio)
-            
-            for tappa in percorso_finale:
-                dist = haversine(pos_lat, pos_lon, tappa['latitude'], tappa['longitude'])
-                tempo_viaggio = (dist / 40) * 60
-                
-                if tappa.get('tipo_tappa') == '📌 APPUNTAMENTO':
-                    # Per gli appuntamenti, usa l'ora fissata
-                    ora_arrivo_str = tappa['ora_appuntamento']
-                    ora = datetime.strptime(ora_arrivo_str, '%H:%M')
-                    ora = datetime.combine(data_giorno, ora.time()) + timedelta(minutes=durata_visita)
-                else:
-                    ora_arrivo = ora + timedelta(minutes=tempo_viaggio)
-                    
-                    if ora_arrivo.time() >= pausa_inizio and ora_arrivo.time() < pausa_fine:
-                        ora = datetime.combine(data_giorno, pausa_fine)
-                        ora_arrivo = ora + timedelta(minutes=tempo_viaggio)
-                    
-                    ora_arrivo_str = ora_arrivo.strftime('%H:%M')
-                    ora = ora_arrivo + timedelta(minutes=durata_visita)
-                
-                tappe_giorno.append({
-                    'id': tappa['id'],
-                    'nome_cliente': tappa['nome_cliente'],
-                    'latitude': tappa['latitude'],
-                    'longitude': tappa['longitude'],
-                    'indirizzo': tappa.get('indirizzo', ''),
-                    'cellulare': tappa.get('cellulare', ''),
-                    'ora_arrivo': ora_arrivo_str,
-                    'tipo_tappa': tappa.get('tipo_tappa', '🚗 Giro'),
-                    'distanza_km': round(dist, 1),
-                    'ritardo': tappa.get('ritardo', 0)
-                })
-                
-                pos_lat = tappa['latitude']
-                pos_lon = tappa['longitude']
-            
-            agenda[giorno_idx] = tappe_giorno
-            continue
-        
-        # ========================================
-        # NESSUN APPUNTAMENTO: NEAREST NEIGHBOR normale
-        # ========================================
-        percorso_giorno = []
-        pos_corrente_lat = start_lat
-        pos_corrente_lon = start_lon
-        ora_corrente = datetime.combine(data_giorno, h_inizio)
-        
-        while len(percorso_giorno) < slot_disponibili and clienti_non_assegnati:
-            # Trova il cliente più vicino
-            cliente_vicino, distanza = trova_piu_vicino(
-                pos_corrente_lat, pos_corrente_lon, clienti_non_assegnati
-            )
-            
-            if cliente_vicino is None:
-                break
-            
-            # Calcola tempo di viaggio (40 km/h media con traffico)
-            tempo_viaggio_minuti = (distanza / 40) * 60
-            ora_arrivo = ora_corrente + timedelta(minutes=tempo_viaggio_minuti)
-            
-            # Gestisci pausa pranzo
-            if ora_arrivo.time() >= pausa_inizio and ora_arrivo.time() < pausa_fine:
-                ora_corrente = datetime.combine(data_giorno, pausa_fine)
-                ora_arrivo = ora_corrente + timedelta(minutes=tempo_viaggio_minuti)
-            
-            ora_fine_visita = ora_arrivo + timedelta(minutes=durata_visita)
-            
-            # Verifica tempo per tornare a casa
-            dist_ritorno = haversine(cliente_vicino['latitude'], cliente_vicino['longitude'], 
-                                     start_lat, start_lon)
-            tempo_ritorno = (dist_ritorno / 40) * 60
-            ora_rientro = ora_fine_visita + timedelta(minutes=tempo_ritorno)
-            
-            if ora_rientro.time() > h_fine:
-                # Non c'è tempo, passa al giorno successivo
-                break
-            
-            # Aggiungi al percorso
-            percorso_giorno.append(cliente_vicino)
-            clienti_non_assegnati.remove(cliente_vicino)
-            
-            # Aggiorna posizione e ora
-            pos_corrente_lat = cliente_vicino['latitude']
-            pos_corrente_lon = cliente_vicino['longitude']
-            ora_corrente = ora_fine_visita
-        
-        # ========================================
-        # OTTIMIZZA con 2-opt
-        # ========================================
-        if len(percorso_giorno) >= 3:
-            percorso_giorno = ottimizza_2opt(percorso_giorno, start_lat, start_lon)
-        
-        # ========================================
-        # CALCOLA ORARI FINALI
-        # ========================================
-        pos_lat = start_lat
-        pos_lon = start_lon
-        ora = datetime.combine(data_giorno, h_inizio)
-        
-        for cliente in percorso_giorno:
-            dist = haversine(pos_lat, pos_lon, cliente['latitude'], cliente['longitude'])
-            tempo_viaggio = (dist / 40) * 60
-            ora_arrivo = ora + timedelta(minutes=tempo_viaggio)
-            
-            # Pausa pranzo
-            if ora_arrivo.time() >= pausa_inizio and ora_arrivo.time() < pausa_fine:
-                ora = datetime.combine(data_giorno, pausa_fine)
-                ora_arrivo = ora + timedelta(minutes=tempo_viaggio)
+                ora_arrivo_str = ora_arrivo.strftime('%H:%M')
             
             tappe_giorno.append({
                 'id': cliente['id'],
@@ -1537,15 +1362,15 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 'longitude': cliente['longitude'],
                 'indirizzo': cliente.get('indirizzo', ''),
                 'cellulare': cliente.get('cellulare', ''),
-                'ora_arrivo': ora_arrivo.strftime('%H:%M'),
-                'tipo_tappa': '🚗 Giro',
+                'ora_arrivo': ora_arrivo_str,
+                'tipo_tappa': cliente.get('tipo_tappa', '🚗 Giro'),
                 'distanza_km': round(dist, 1),
-                'ritardo': cliente.get('ritardo', 0)
+                'ritardo': 0
             })
             
             pos_lat = cliente['latitude']
             pos_lon = cliente['longitude']
-            ora = ora_arrivo + timedelta(minutes=durata_visita)
+            ora_corrente = ora_arrivo + timedelta(minutes=durata_visita)
         
         agenda[giorno_idx] = tappe_giorno
     
@@ -1556,6 +1381,7 @@ def calcola_piano_giornaliero(df, giorno_settimana, config, esclusi=[], variante
     agenda = calcola_agenda_settimanale(df, config, esclusi, settimana_offset=0, variante=variante)
     return agenda.get(giorno_settimana, [])
 
+# --- 6. MAIN APP ---
 # --- 6. MAIN APP ---
 def main_app():
     # Verifica che l'utente sia ancora valido
