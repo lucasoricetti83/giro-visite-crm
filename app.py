@@ -3627,21 +3627,52 @@ def main_app():
         **Formato CSV richiesto:**
         Il file deve avere queste colonne (nell'ordine che preferisci):
         - `nome cliente` (obbligatorio)
-        - `indirizzo`, `cap`, `provincia`
+        - `indirizzo`, `citta`, `cap`, `provincia`
         - `latitude`, `longitude` (con virgola o punto)
         - `telefono`, `cellulare`, `mail`
         - `frequenza (giorni)`, `ultima visita`, `visitare`
         - `referente`, `contatto`, `note`, `storico report`
+        
+        ℹ️ **Separatore:** Accetta sia `,` che `;`
         """)
         
         uploaded_file = st.file_uploader("📂 Carica file CSV", type=['csv'])
         
         if uploaded_file is not None:
             try:
-                # Leggi CSV
-                df_import = pd.read_csv(uploaded_file)
+                # Leggi il contenuto per rilevare il separatore
+                content = uploaded_file.read().decode('utf-8', errors='ignore')
+                uploaded_file.seek(0)  # Riporta all'inizio
+                
+                # Rileva separatore (conta quale appare di più nella prima riga)
+                first_line = content.split('\n')[0]
+                count_comma = first_line.count(',')
+                count_semicolon = first_line.count(';')
+                
+                if count_semicolon > count_comma:
+                    separatore = ';'
+                    st.info("🔍 Rilevato separatore: **punto e virgola (;)**")
+                else:
+                    separatore = ','
+                    st.info("🔍 Rilevato separatore: **virgola (,)**")
+                
+                # Prova a leggere con diversi encoding
+                try:
+                    uploaded_file.seek(0)
+                    df_import = pd.read_csv(uploaded_file, sep=separatore, encoding='utf-8')
+                except:
+                    try:
+                        uploaded_file.seek(0)
+                        df_import = pd.read_csv(uploaded_file, sep=separatore, encoding='latin-1')
+                    except:
+                        uploaded_file.seek(0)
+                        df_import = pd.read_csv(uploaded_file, sep=separatore, encoding='cp1252')
+                
+                # Normalizza nomi colonne (minuscolo, senza spazi extra)
+                df_import.columns = [c.lower().strip() for c in df_import.columns]
                 
                 st.success(f"✅ File caricato! Trovati **{len(df_import)} clienti**")
+                st.caption(f"Colonne trovate: {', '.join(df_import.columns.tolist())}")
                 
                 # Mostra anteprima
                 with st.expander("👀 Anteprima dati", expanded=True):
