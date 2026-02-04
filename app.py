@@ -2860,6 +2860,7 @@ def main_app():
                         
                         nome = c1.text_input("Nome", cliente['nome_cliente'], key=f"nome_{cliente['id']}")
                         indirizzo = c1.text_input("Indirizzo", cliente.get('indirizzo', ''), key=f"indirizzo_{cliente['id']}")
+                        citta = c1.text_input("Città", cliente.get('citta', ''), key=f"citta_{cliente['id']}")
                         cap = c1.text_input("CAP", cliente.get('cap', ''), key=f"cap_{cliente['id']}")
                         provincia = c1.text_input("Provincia", cliente.get('provincia', ''), key=f"provincia_{cliente['id']}")
                         frequenza = c1.number_input("Frequenza (gg)", value=int(cliente.get('frequenza_giorni', 30)), key=f"freq_{cliente['id']}")
@@ -2887,10 +2888,10 @@ def main_app():
                         storico = st.text_area("Storico Report", cliente.get('storico_report', ''), height=120, key=f"storico_{cliente['id']}")
                         
                         if st.form_submit_button("💾 Salva Modifiche", use_container_width=True, type="primary"):
-                            # Debug: mostra cosa stiamo salvando
                             update_data = {
                                 'nome_cliente': nome,
                                 'indirizzo': indirizzo,
+                                'citta': citta,
                                 'cap': cap,
                                 'provincia': provincia,
                                 'frequenza_giorni': frequenza,
@@ -3064,6 +3065,7 @@ def main_app():
                         save_cliente({
                             'nome_cliente': nome,
                             'indirizzo': indirizzo,
+                            'citta': citta,
                             'cap': cap,
                             'provincia': provincia,
                             'contatto': contatto,
