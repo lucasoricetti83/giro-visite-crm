@@ -3333,6 +3333,79 @@ def main_app():
                 st.success("✅ Tutti i clienti hanno coordinate valide!")
         
         st.divider()
+        st.subheader("🏙️ Aggiorna Città Clienti")
+        st.info("Se hai clienti senza il campo città compilato, puoi aggiornarlo automaticamente dalle coordinate GPS.")
+        
+        if not df.empty:
+            # Assicurati che la colonna citta esista
+            if 'citta' not in df.columns:
+                df['citta'] = None
+            
+            # Trova clienti senza città ma con coordinate valide
+            senza_citta = df[
+                ((df['citta'].isna()) | (df['citta'] == '') | (df['citta'].isnull())) &
+                (df['latitude'].notna()) & (df['latitude'] != 0) &
+                (df['longitude'].notna()) & (df['longitude'] != 0)
+            ]
+            
+            if len(senza_citta) > 0:
+                st.warning(f"🏙️ **{len(senza_citta)} clienti** hanno coordinate ma non hanno la città compilata!")
+                
+                with st.expander(f"👀 Vedi clienti senza città ({len(senza_citta)})"):
+                    for _, row in senza_citta.head(20).iterrows():
+                        st.write(f"- **{row['nome_cliente']}**: {row.get('indirizzo', 'N/A')} ({row['latitude']:.4f}, {row['longitude']:.4f})")
+                    if len(senza_citta) > 20:
+                        st.write(f"... e altri {len(senza_citta) - 20}")
+                
+                if st.button("🏙️ AGGIORNA TUTTE LE CITTÀ", type="primary", use_container_width=True):
+                    progress = st.progress(0)
+                    status = st.empty()
+                    
+                    successi = 0
+                    errori = 0
+                    
+                    for idx, (_, row) in enumerate(senza_citta.iterrows()):
+                        status.text(f"Cercando città per: {row['nome_cliente']}...")
+                        
+                        try:
+                            # Reverse geocoding
+                            addr = reverse_geocode(float(row['latitude']), float(row['longitude']))
+                            
+                            if addr and addr.get('citta'):
+                                # Aggiorna nel database
+                                update_data = {'citta': addr['citta']}
+                                
+                                # Aggiorna anche altri campi se vuoti
+                                if not row.get('indirizzo') and addr.get('via'):
+                                    update_data['indirizzo'] = addr['via']
+                                if not row.get('cap') and addr.get('cap'):
+                                    update_data['cap'] = addr['cap']
+                                if not row.get('provincia') and addr.get('provincia'):
+                                    update_data['provincia'] = addr['provincia']
+                                
+                                update_cliente(row['id'], update_data)
+                                successi += 1
+                            else:
+                                errori += 1
+                        except Exception as e:
+                            errori += 1
+                        
+                        # Rate limiting LocationIQ (2 req/sec)
+                        time_module.sleep(0.5)
+                        
+                        progress.progress((idx + 1) / len(senza_citta))
+                    
+                    progress.empty()
+                    status.empty()
+                    
+                    st.success(f"✅ Completato! {successi} città aggiornate, {errori} errori")
+                    st.session_state.reload_data = True
+                    time_module.sleep(1)
+                    st.rerun()
+            else:
+                st.success("✅ Tutti i clienti hanno la città compilata!")
+        
+        st.divider()
         st.subheader("📥 Importa Clienti da CSV")
         
         st.info("""
