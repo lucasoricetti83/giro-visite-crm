@@ -94,28 +94,78 @@ def create_user_subscription(user_id, email, is_trial=True):
         today = datetime.now().date()
         
         # Controlla se è l'admin
-        is_admin = email.lower() == ADMIN_EMAIL.lower()
+        is_admin_user = email.lower() == ADMIN_EMAIL.lower()
         
-        data = {
-            'user_id': user_id,
-            'email': email,
-            'status': 'active' if is_admin else ('trial' if is_trial else 'pending'),
-            'is_admin': is_admin,
-            'created_at': datetime.now().isoformat()
-        }
-        
-        if is_trial and not is_admin:
-            data['trial_start'] = today.isoformat()
-            data['trial_end'] = (today + timedelta(days=TRIAL_DAYS)).isoformat()
-        
-        if is_admin:
-            data['subscription_start'] = today.isoformat()
+        if is_admin_user:
+            # Admin: accesso immediato
+            data = {
+                'user_id': user_id,
+                'email': email,
+                'status': 'active',
+                'is_admin': True,
+                'approved': True,
+                'created_at': datetime.now().isoformat(),
+                'subscription_start': today.isoformat()
+            }
+        else:
+            # Nuovi utenti: in attesa di approvazione
+            data = {
+                'user_id': user_id,
+                'email': email,
+                'status': 'pending',  # In attesa di approvazione dall'admin
+                'is_admin': False,
+                'approved': False,
+                'created_at': datetime.now().isoformat()
+            }
         
         response = supabase.table('user_subscriptions').insert(data).execute()
         return response.data[0] if response.data else None
     except Exception as e:
         st.error(f"Errore creazione abbonamento: {str(e)}")
         return None
+
+def approve_user(user_id):
+    """Approva un utente e avvia il periodo di prova"""
+    try:
+        today = datetime.now().date()
+        update_data = {
+            'status': 'trial',
+            'approved': True,
+            'trial_start': today.isoformat(),
+            'trial_end': (today + timedelta(days=TRIAL_DAYS)).isoformat()
+        }
+        response = supabase.table('user_subscriptions').update(update_data).eq('user_id', user_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore approvazione: {str(e)}")
+        return False
+
+def reject_user(user_id):
+    """Rifiuta un utente"""
+    try:
+        update_data = {
+            'status': 'blocked',
+            'approved': False,
+            'blocked_reason': 'Richiesta rifiutata'
+        }
+        response = supabase.table('user_subscriptions').update(update_data).eq('user_id', user_id).execute()
+        return True
+    except Exception as e:
+        return False
+
+def delete_user_account(user_id):
+    """Elimina completamente un account utente"""
+    try:
+        # Elimina prima i clienti dell'utente
+        supabase.table('clienti').delete().eq('user_id', user_id).execute()
+        # Elimina la configurazione
+        supabase.table('config_utente').delete().eq('user_id', user_id).execute()
+        # Elimina l'abbonamento
+        supabase.table('user_subscriptions').delete().eq('user_id', user_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Errore eliminazione: {str(e)}")
+        return False
 
 def update_user_subscription(user_id, update_data):
     """Aggiorna lo stato abbonamento di un utente"""
@@ -292,7 +342,8 @@ def login_page():
                     st.warning("⚠️ Inserisci email e password")
     
     with tab_register:
-        st.info(f"🎁 **Registrati per una prova gratuita di {TRIAL_DAYS} giorni!**")
+        st.info(f"📝 **Registrati per richiedere l'accesso!**")
+        st.caption("⏳ Dopo la registrazione, l'amministratore dovrà approvare il tuo account.")
         
         with st.form("register_form"):
             new_email = st.text_input("📧 Email")
@@ -315,7 +366,7 @@ def login_page():
                             })
                             
                             if response.user:
-                                # Crea abbonamento trial
+                                # Crea account in attesa di approvazione
                                 create_user_subscription(
                                     response.user.id, 
                                     new_email, 
@@ -327,7 +378,10 @@ def login_page():
                                 
                                 📧 Controlla la tua email per confermare l'account.
                                 
-                                🎁 Hai **{TRIAL_DAYS} giorni di prova gratuita** a partire dal primo accesso!
+                                ⏳ **Il tuo account è in attesa di approvazione.**
+                                
+                                Riceverai l'accesso quando l'amministratore approverà la tua richiesta.
+                                Una volta approvato, avrai **{TRIAL_DAYS} giorni di prova gratuita**!
                                 """)
                             else:
                                 st.success("✅ Controlla la tua email per confermare l'account.")
@@ -380,6 +434,37 @@ def admin_panel():
     col4.metric("⏳ In Attesa", pending)
     col5.metric("🚫 Bloccati", blocked)
     
+    # === SEZIONE RICHIESTE IN ATTESA ===
+    users_pending = [u for u in users if u['status'] == 'pending']
+    
+    if users_pending:
+        st.divider()
+        st.subheader(f"🔔 Richieste in Attesa ({len(users_pending)})")
+        st.warning("⚠️ Questi utenti hanno richiesto l'accesso e sono in attesa di approvazione")
+        
+        for user in users_pending:
+            with st.container(border=True):
+                col1, col2, col3 = st.columns([3, 1, 1])
+                
+                with col1:
+                    st.markdown(f"### 📧 {user['email']}")
+                    created = user.get('created_at', '')[:10] if user.get('created_at') else 'N/D'
+                    st.caption(f"📅 Registrato: {created}")
+                
+                with col2:
+                    if st.button("✅ Approva", key=f"approve_{user['user_id']}", type="primary", use_container_width=True):
+                        if approve_user(user['user_id']):
+                            st.success(f"✅ {user['email']} approvato! Trial di {TRIAL_DAYS} giorni attivato.")
+                            time_module.sleep(1)
+                            st.rerun()
+                
+                with col3:
+                    if st.button("❌ Rifiuta", key=f"reject_{user['user_id']}", use_container_width=True):
+                        if reject_user(user['user_id']):
+                            st.warning(f"🚫 {user['email']} rifiutato")
+                            time_module.sleep(1)
+                            st.rerun()
+    
     st.divider()
     
     # Filtri
@@ -399,7 +484,7 @@ def admin_panel():
     if cerca_email:
         users_filtrati = [u for u in users_filtrati if cerca_email.lower() in u['email'].lower()]
     
-    st.subheader(f"📋 Utenti ({len(users_filtrati)})")
+    st.subheader(f"📋 Tutti gli Utenti ({len(users_filtrati)})")
     
     # Lista utenti
     for user in users_filtrati:
@@ -444,24 +529,31 @@ def admin_panel():
                 if user['user_id'] != st.session_state.user.id and not user.get('is_admin'):
                     
                     # Azioni basate sullo stato
-                    if status in ['pending', 'expired', 'blocked']:
+                    if status in ['pending']:
+                        col_btn1, col_btn2 = st.columns(2)
+                        with col_btn1:
+                            if st.button("✅", key=f"appr_{user['user_id']}", help="Approva", use_container_width=True):
+                                if approve_user(user['user_id']):
+                                    st.success("✅ Approvato!")
+                                    st.rerun()
+                        with col_btn2:
+                            if st.button("❌", key=f"rej_{user['user_id']}", help="Rifiuta", use_container_width=True):
+                                if reject_user(user['user_id']):
+                                    st.rerun()
+                    
+                    if status in ['expired', 'blocked']:
                         # Attiva con trial
                         if st.button("🎁 Attiva Trial", key=f"trial_{user['user_id']}", use_container_width=True):
-                            today = datetime.now().date()
-                            update_user_subscription(user['user_id'], {
-                                'status': 'trial',
-                                'trial_start': today.isoformat(),
-                                'trial_end': (today + timedelta(days=TRIAL_DAYS)).isoformat(),
-                                'blocked_reason': None
-                            })
-                            st.success("✅ Trial attivato!")
-                            st.rerun()
+                            if approve_user(user['user_id']):
+                                st.success("✅ Trial attivato!")
+                                st.rerun()
                         
                         # Attiva abbonamento
                         if st.button("✅ Attiva Abbonamento", key=f"active_{user['user_id']}", use_container_width=True):
                             today = datetime.now().date()
                             update_user_subscription(user['user_id'], {
                                 'status': 'active',
+                                'approved': True,
                                 'subscription_start': today.isoformat(),
                                 'subscription_end': (today + timedelta(days=365)).isoformat(),
                                 'blocked_reason': None
@@ -488,6 +580,20 @@ def admin_panel():
                             })
                             st.success("✅ Utente sbloccato (in attesa)")
                             st.rerun()
+                    
+                    # ELIMINA ACCOUNT (sempre visibile)
+                    st.divider()
+                    with st.expander("🗑️ Elimina Account"):
+                        st.warning(f"⚠️ Eliminare **{user['email']}** cancellerà tutti i suoi dati!")
+                        conferma_email = st.text_input("Scrivi l'email per confermare:", key=f"del_conf_{user['user_id']}")
+                        if conferma_email == user['email']:
+                            if st.button("🗑️ ELIMINA DEFINITIVAMENTE", key=f"del_{user['user_id']}", type="primary"):
+                                if delete_user_account(user['user_id']):
+                                    st.success(f"✅ Account {user['email']} eliminato")
+                                    time_module.sleep(1)
+                                    st.rerun()
+                        elif conferma_email:
+                            st.error("❌ Email non corrisponde")
     
     # Sezione impostazioni
     st.divider()
