@@ -2416,7 +2416,7 @@ def main_app():
                     st.caption(f"{data_giorno.strftime('%d/%m')}")
                     
                     # === PULSANTI AZIONE GIORNO ===
-                    col_btn1, col_btn2 = st.columns(2)
+                    col_btn1, col_btn2, col_btn3 = st.columns(3)
                     
                     with col_btn1:
                         # Pulsante SCAMBIA
@@ -2453,6 +2453,21 @@ def main_app():
                                 st.rerun()
                     
                     with col_btn2:
+                        # Pulsante MAPPA - mostra giro del giorno sulla mappa
+                        if tappe_giorno and not is_ferie:
+                            if st.button("🗺️", key=f"mappa_{data_giorno}", help="Vedi su mappa", use_container_width=True):
+                                # Salva le tappe del giorno per la mappa
+                                st.session_state.mappa_giorno_selezionato = {
+                                    'data': data_giorno,
+                                    'tappe': tappe_giorno,
+                                    'giorno_nome': giorni_nomi_full[giorno_idx]
+                                }
+                                st.session_state.active_tab = "🗺️ Mappa"
+                                st.rerun()
+                        else:
+                            st.button("🗺️", key=f"mappa_{data_giorno}", disabled=True, use_container_width=True, help="Nessuna visita")
+                    
+                    with col_btn3:
                         # Pulsante FERIE
                         if is_ferie and data_giorno in st.session_state.giorni_ferie_singoli:
                             # È in ferie singolo - mostra pulsante per togliere
@@ -2552,6 +2567,105 @@ def main_app():
     elif st.session_state.active_tab == "🗺️ Mappa":
         st.header("🗺️ Mappa Clienti")
         
+        # Inizializza stato per mappa giorno
+        if 'mappa_giorno_selezionato' not in st.session_state:
+            st.session_state.mappa_giorno_selezionato = None
+        
+        # === MAPPA GIRO DEL GIORNO (dall'Agenda) ===
+        if st.session_state.mappa_giorno_selezionato:
+            giorno_info = st.session_state.mappa_giorno_selezionato
+            data_giorno = giorno_info['data']
+            tappe = giorno_info['tappe']
+            giorno_nome = giorno_info['giorno_nome']
+            
+            st.success(f"🗺️ **Giro di {giorno_nome} {data_giorno.strftime('%d/%m/%Y')}** - {len(tappe)} visite")
+            
+            col_back, col_info = st.columns([1, 3])
+            with col_back:
+                if st.button("⬅️ Torna a tutti i clienti", use_container_width=True):
+                    st.session_state.mappa_giorno_selezionato = None
+                    st.rerun()
+            
+            # Crea mappa del giro
+            if tappe:
+                lat_center = sum(t['latitude'] for t in tappe) / len(tappe)
+                lon_center = sum(t['longitude'] for t in tappe) / len(tappe)
+                
+                m = folium.Map(location=[lat_center, lon_center], zoom_start=11)
+                
+                # Aggiungi punto di partenza
+                lat_base = config.get('lat_base', lat_center)
+                lon_base = config.get('lon_base', lon_center)
+                folium.Marker(
+                    [lat_base, lon_base],
+                    popup="🏠 Partenza",
+                    icon=folium.Icon(color='green', icon='home', prefix='fa')
+                ).add_to(m)
+                
+                # Aggiungi tappe numerate
+                coords_percorso = [[lat_base, lon_base]]
+                
+                for idx, tappa in enumerate(tappe, 1):
+                    lat = tappa['latitude']
+                    lon = tappa['longitude']
+                    nome = tappa['nome_cliente']
+                    indirizzo = tappa.get('indirizzo', '')
+                    ora = tappa.get('ora_arrivo', '--:--')
+                    ritardo = tappa.get('ritardo', 0)
+                    
+                    # Colore in base al ritardo
+                    if ritardo >= 14:
+                        color = 'red'
+                    elif ritardo >= 7:
+                        color = 'orange'
+                    elif ritardo >= 0:
+                        color = 'blue'
+                    else:
+                        color = 'green'
+                    
+                    popup_html = f"""
+                    <b>{idx}. {nome}</b><br>
+                    📍 {indirizzo}<br>
+                    ⏰ {ora}<br>
+                    {'🔴' if ritardo >= 14 else '🟡' if ritardo >= 0 else '🟢'} Ritardo: {ritardo}gg
+                    """
+                    
+                    folium.Marker(
+                        [lat, lon],
+                        popup=folium.Popup(popup_html, max_width=250),
+                        icon=folium.DivIcon(
+                            html=f'<div style="font-size: 12pt; color: white; background-color: {color}; border-radius: 50%; width: 24px; height: 24px; text-align: center; line-height: 24px; font-weight: bold;">{idx}</div>'
+                        )
+                    ).add_to(m)
+                    
+                    coords_percorso.append([lat, lon])
+                
+                # Aggiungi linea del percorso
+                coords_percorso.append([lat_base, lon_base])  # Ritorno
+                folium.PolyLine(
+                    coords_percorso,
+                    color='blue',
+                    weight=3,
+                    opacity=0.7,
+                    dash_array='10'
+                ).add_to(m)
+                
+                # Mostra mappa
+                st_folium(m, width=None, height=500, use_container_width=True)
+                
+                # Lista tappe sotto la mappa
+                st.subheader("📋 Ordine Visite")
+                for idx, tappa in enumerate(tappe, 1):
+                    ritardo = tappa.get('ritardo', 0)
+                    badge = "🔴" if ritardo >= 14 else "🟡" if ritardo >= 0 else "🟢"
+                    col_t1, col_t2, col_t3 = st.columns([1, 3, 1])
+                    col_t1.write(f"**{idx}.**")
+                    col_t2.write(f"{tappa['nome_cliente']} - {tappa.get('indirizzo', '')}")
+                    col_t3.write(f"{badge} {tappa.get('ora_arrivo', '--:--')}")
+            
+            return  # Non mostrare la mappa normale
+        
+        # === MAPPA NORMALE (tutti i clienti) ===
         if not df.empty:
             # Filtri
             col_filtri1, col_filtri2, col_filtri3 = st.columns(3)
