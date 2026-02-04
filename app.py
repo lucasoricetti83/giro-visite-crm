@@ -1088,21 +1088,87 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     df_validi['ritardo'] = df_validi.apply(calcola_giorni_ritardo, axis=1)
     
     # ========================================
-    # NUOVA LOGICA: Prendi clienti da visitare questa settimana
+    # CALCOLA PROSSIMA VISITA PER OGNI CLIENTE
     # ========================================
-    # Include:
-    # 1. Clienti già scaduti (ritardo >= 0)
-    # 2. Clienti che scadranno entro 7 giorni (ritardo >= -7)
-    # Questo permette di pianificare PRIMA che scadano
+    def calcola_prossima_visita(row):
+        ultima = row.get('ultima_visita')
+        freq = int(row.get('frequenza_giorni', 30))
+        
+        if pd.isnull(ultima) or (hasattr(ultima, 'year') and ultima.year < 2001):
+            return oggi  # Mai visitato = da visitare subito
+        
+        ultima_date = ultima.date() if hasattr(ultima, 'date') else ultima
+        return ultima_date + timedelta(days=freq)
     
-    clienti_settimana = df_validi[df_validi['ritardo'] >= -7].copy()
+    df_validi['prossima_visita'] = df_validi.apply(calcola_prossima_visita, axis=1)
     
-    # Ordina per ritardo (più scaduti/urgenti prima)
-    clienti_settimana = clienti_settimana.sort_values('ritardo', ascending=False)
+    # Calcola inizio e fine della settimana richiesta
+    inizio_settimana = lunedi_settimana
+    fine_settimana = lunedi_settimana + timedelta(days=6)
+    
+    # Calcola quante visite possiamo fare per giorno
+    ore_lavoro_giorno = (datetime.combine(oggi, h_fine) - datetime.combine(oggi, h_inizio)).seconds / 3600
+    ore_pausa = (datetime.combine(oggi, pausa_fine) - datetime.combine(oggi, pausa_inizio)).seconds / 3600
+    ore_effettive = ore_lavoro_giorno - ore_pausa
+    tempo_medio_per_visita = (durata_visita + 20) / 60  # in ore
+    max_visite_per_giorno = int(ore_effettive / tempo_medio_per_visita)
+    max_visite_per_giorno = max(min(max_visite_per_giorno, 12), 1)  # Min 1, Max 12
+    
+    # Filtra giorni disponibili
+    giorni_disponibili = []
+    for giorno_idx in giorni_lavorativi:
+        data_giorno = lunedi_settimana + timedelta(days=giorno_idx)
+        if (settimana_offset > 0 or data_giorno >= oggi) and not is_giorno_ferie(data_giorno):
+            giorni_disponibili.append(giorno_idx)
+    
+    if not giorni_disponibili:
+        return agenda
+    
+    # Capacità massima per settimana
+    max_clienti_settimana = max_visite_per_giorno * len(giorni_disponibili)
+    
+    # ========================================
+    # DISTRIBUZIONE SEMPLICE: DIVIDI TUTTI I CLIENTI PER SETTIMANA
+    # ========================================
+    
+    # Ordina TUTTI i clienti per priorità:
+    # 1. Prima quelli GIÀ SCADUTI (ritardo > 0) - ordinati per ritardo decrescente
+    # 2. Poi quelli MAI VISITATI (ritardo = 999) - ordinati per nome
+    # 3. Infine quelli che scadranno in futuro (ritardo < 0)
+    
+    df_validi['priorita_sort'] = df_validi['ritardo'].apply(
+        lambda x: 0 if x == 999 else (1 if x > 0 else 2)
+    )
+    df_validi = df_validi.sort_values(
+        ['priorita_sort', 'ritardo', 'nome_cliente'], 
+        ascending=[True, False, True]
+    )
+    
+    # Calcola il numero totale di clienti
+    totale_clienti = len(df_validi)
+    
+    if totale_clienti == 0:
+        return agenda
+    
+    # Calcola quante settimane servono per visitare tutti
+    settimane_necessarie = max(1, (totale_clienti + max_clienti_settimana - 1) // max_clienti_settimana)
+    
+    # Calcola la settimana nel ciclo (per il loop quando si ricomincia)
+    settimana_nel_ciclo = settimana_offset % settimane_necessarie
+    
+    # Calcola indice inizio e fine per questa settimana
+    indice_inizio = settimana_nel_ciclo * max_clienti_settimana
+    indice_fine = min(indice_inizio + max_clienti_settimana, totale_clienti)
+    
+    # Prendi la fetta di clienti per questa settimana
+    clienti_questa_settimana = df_validi.iloc[indice_inizio:indice_fine].copy()
+    
+    if clienti_questa_settimana.empty:
+        return agenda
     
     # Converti in lista di dizionari
     clienti_urgenti = []
-    for _, row in clienti_settimana.iterrows():
+    for _, row in clienti_questa_settimana.iterrows():
         clienti_urgenti.append({
             'id': row['id'],
             'nome_cliente': row['nome_cliente'],
@@ -1112,34 +1178,16 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             'cellulare': str(row.get('cellulare', '')),
             'ritardo': row['ritardo'],
             'frequenza': int(row.get('frequenza_giorni', 30)),
-            'ultima_visita': row.get('ultima_visita')
+            'ultima_visita': row.get('ultima_visita'),
+            'prossima_visita': row.get('prossima_visita', oggi)
         })
     
-    # Filtra solo giorni lavorativi futuri (o oggi) ESCLUDENDO FERIE
-    giorni_disponibili = []
-    for giorno_idx in giorni_lavorativi:
-        data_giorno = lunedi_settimana + timedelta(days=giorno_idx)
-        # Escludi giorni passati (tranne oggi) e giorni di ferie
-        if (settimana_offset > 0 or data_giorno >= oggi) and not is_giorno_ferie(data_giorno):
-            giorni_disponibili.append(giorno_idx)
-    
-    if not giorni_disponibili or not clienti_urgenti:
+    if not clienti_urgenti:
         return agenda
     
     # ========================================
     # DISTRIBUZIONE CLIENTI SUI GIORNI
     # ========================================
-    
-    # Per ogni giorno, calcola quante visite possiamo fare
-    # (basato su ore disponibili e durata visita media + viaggio)
-    ore_lavoro_giorno = (datetime.combine(oggi, h_fine) - datetime.combine(oggi, h_inizio)).seconds / 3600
-    ore_pausa = (datetime.combine(oggi, pausa_fine) - datetime.combine(oggi, pausa_inizio)).seconds / 3600
-    ore_effettive = ore_lavoro_giorno - ore_pausa
-    
-    # Stima: visita + viaggio medio = durata_visita + 20 min
-    tempo_medio_per_visita = (durata_visita + 20) / 60  # in ore
-    max_visite_per_giorno = int(ore_effettive / tempo_medio_per_visita)
-    max_visite_per_giorno = min(max_visite_per_giorno, 12)  # Cap a 12
     
     # Clienti ancora da assegnare
     clienti_da_assegnare = clienti_urgenti.copy()
@@ -1428,20 +1476,6 @@ def main_app():
     if 'df_clienti' not in st.session_state or st.session_state.get('reload_data', False):
         st.session_state.df_clienti = fetch_clienti()
         st.session_state.reload_data = False
-    
-    # DEBUG TEMPORANEO - Mostra info caricamento
-    df_debug = st.session_state.df_clienti
-    with st.sidebar:
-        st.divider()
-        st.caption("🔧 DEBUG INFO:")
-        st.caption(f"User ID: {get_user_id()}")
-        st.caption(f"Clienti caricati: {len(df_debug)}")
-        if not df_debug.empty and 'visitare' in df_debug.columns:
-            st.caption(f"Nel giro (SI): {len(df_debug[df_debug['visitare'] == 'SI'])}")
-            st.caption(f"Valori visitare: {df_debug['visitare'].unique().tolist()}")
-        if st.button("🔄 Forza Ricarica", key="debug_reload"):
-            st.session_state.reload_data = True
-            st.rerun()
     
     if 'config' not in st.session_state:
         config = fetch_config()
@@ -2224,6 +2258,15 @@ def main_app():
                 st.markdown(f"### 📆 {st.session_state.current_week_index} Settimana/e")
             st.caption(f"Dal {lunedi_selezionato.strftime('%d/%m/%Y')} al {domenica_selezionata.strftime('%d/%m/%Y')}")
         
+        # Info distribuzione clienti
+        if not df.empty and 'visitare' in df.columns:
+            clienti_attivi = len(df[df['visitare'] == 'SI'])
+            # Stima settimane necessarie (circa 30-40 clienti a settimana)
+            settimane_stimate = max(1, (clienti_attivi + 34) // 35)
+            ciclo_attuale = (st.session_state.current_week_index // settimane_stimate) + 1
+            settimana_nel_ciclo = (st.session_state.current_week_index % settimane_stimate) + 1
+            st.info(f"📊 **{clienti_attivi} clienti** da visitare in **~{settimane_stimate} settimane** | Ciclo {ciclo_attuale}, Settimana {settimana_nel_ciclo}/{settimane_stimate}")
+        
         # Giorni lavorativi configurati (definiti prima per poterli usare nell'expander)
         giorni_nomi_full = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"]
         giorni_attivi = config.get('giorni_lavorativi', [0, 1, 2, 3, 4])
@@ -2711,21 +2754,41 @@ def main_app():
                     st.divider()
                     
                     # Info visite
-                    col_vis1, col_vis2, col_vis3 = st.columns(3)
+                    col_vis1, col_vis2, col_vis3, col_vis4 = st.columns(4)
                     
                     ultima = cliente.get('ultima_visita')
+                    frequenza = int(cliente.get('frequenza_giorni', 30))
+                    
                     if pd.notnull(ultima):
                         col_vis1.metric("📅 Ultima visita", ultima.strftime('%d/%m/%Y'))
+                        # Calcola prossima visita
+                        if hasattr(ultima, 'date'):
+                            prossima = ultima.date() + timedelta(days=frequenza)
+                        else:
+                            prossima = ultima + timedelta(days=frequenza)
+                        
+                        oggi_date = ora_italiana.date()
+                        giorni_mancanti = (prossima - oggi_date).days
+                        
+                        if giorni_mancanti < 0:
+                            col_vis2.metric("📆 Prossima visita", prossima.strftime('%d/%m/%Y'), f"🔴 {abs(giorni_mancanti)} gg fa!")
+                        elif giorni_mancanti == 0:
+                            col_vis2.metric("📆 Prossima visita", "OGGI", "🟡 Scade oggi!")
+                        elif giorni_mancanti <= 7:
+                            col_vis2.metric("📆 Prossima visita", prossima.strftime('%d/%m/%Y'), f"🟠 tra {giorni_mancanti} gg")
+                        else:
+                            col_vis2.metric("📆 Prossima visita", prossima.strftime('%d/%m/%Y'), f"🟢 tra {giorni_mancanti} gg")
                     else:
                         col_vis1.metric("📅 Ultima visita", "Mai")
+                        col_vis2.metric("📆 Prossima visita", "ASAP", "🔴 Mai visitato!")
                     
-                    col_vis2.metric("🔄 Frequenza", f"{cliente.get('frequenza_giorni', 30)} giorni")
+                    col_vis3.metric("🔄 Frequenza", f"{frequenza} giorni")
                     
                     # Toggle rapido per Nel Giro
                     visitare_attuale = str(cliente.get('visitare', 'SI')).upper().strip()
                     is_nel_giro = visitare_attuale == 'SI'
                     
-                    with col_vis3:
+                    with col_vis4:
                         st.metric("🚗 Nel giro", "✅ SI" if is_nel_giro else "❌ NO")
                         # Pulsante toggle
                         if is_nel_giro:
