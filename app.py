@@ -8,10 +8,48 @@ import io
 import re
 import time as time_module
 import requests
+import hashlib
 from supabase import create_client, Client
 
 # --- 1. CONFIGURAZIONE ---
 st.set_page_config(page_title="Giro Visite CRM Pro", layout="wide", page_icon="🚀")
+
+# --- FUNZIONI PER PERSISTENZA SESSIONE ---
+def generate_session_token(user_id, email):
+    """Genera un token di sessione sicuro"""
+    secret = "girovisitepro_secret_2024"  # In produzione usare un secret più sicuro
+    data = f"{user_id}:{email}:{secret}"
+    return hashlib.sha256(data.encode()).hexdigest()[:32]
+
+def validate_session_token(user_id, email, token):
+    """Valida il token di sessione"""
+    expected_token = generate_session_token(user_id, email)
+    return token == expected_token
+
+def save_session_to_url(user_id, email):
+    """Salva la sessione nei query params dell'URL"""
+    token = generate_session_token(user_id, email)
+    st.query_params["uid"] = user_id
+    st.query_params["email"] = email
+    st.query_params["token"] = token
+
+def clear_session_from_url():
+    """Rimuove la sessione dall'URL"""
+    st.query_params.clear()
+
+def restore_session_from_url():
+    """Prova a recuperare la sessione dall'URL"""
+    try:
+        uid = st.query_params.get("uid")
+        email = st.query_params.get("email")
+        token = st.query_params.get("token")
+        
+        if uid and email and token:
+            if validate_session_token(uid, email, token):
+                return {"user_id": uid, "email": email}
+    except:
+        pass
+    return None
 
 # ============================================
 # 🔐 CREDENZIALI DA STREAMLIT SECRETS
@@ -155,16 +193,39 @@ def init_auth_state():
     if 'auth_checked' not in st.session_state:
         st.session_state.auth_checked = False
     
-    # Se non abbiamo un utente, proviamo a recuperare la sessione esistente
+    # Se non abbiamo un utente, proviamo a recuperare la sessione
     if st.session_state.user is None and not st.session_state.auth_checked:
+        
+        # METODO 1: Prova a recuperare dall'URL (persistenza tra refresh)
+        url_session = restore_session_from_url()
+        if url_session:
+            try:
+                # Recupera i dati dell'utente dal database
+                subscription = get_user_subscription(url_session['user_id'], url_session['email'])
+                
+                if subscription:
+                    can_access, message = check_subscription_status(subscription)
+                    if can_access:
+                        # Crea un oggetto user-like
+                        class UserFromURL:
+                            def __init__(self, uid, email):
+                                self.id = uid
+                                self.email = email
+                        
+                        st.session_state.user = UserFromURL(url_session['user_id'], url_session['email'])
+                        st.session_state.subscription = subscription
+                        st.session_state.auth_checked = True
+                        return  # Sessione recuperata con successo!
+            except Exception as e:
+                pass
+        
+        # METODO 2: Prova Supabase (fallback)
         try:
-            # Prova a recuperare la sessione da Supabase
             session_response = supabase.auth.get_session()
             
             if session_response and session_response.session:
                 user = session_response.session.user
                 if user:
-                    # Sessione valida trovata! Recuperiamo i dati
                     subscription = get_user_subscription(user.id, user.email)
                     
                     if subscription:
@@ -173,8 +234,9 @@ def init_auth_state():
                             st.session_state.user = user
                             st.session_state.session = session_response.session
                             st.session_state.subscription = subscription
+                            # Salva anche nell'URL per persistenza
+                            save_session_to_url(user.id, user.email)
         except Exception as e:
-            # Ignora errori di recupero sessione
             pass
         
         st.session_state.auth_checked = True
@@ -214,6 +276,8 @@ def login_page():
                             st.session_state.user = user
                             st.session_state.session = response.session
                             st.session_state.subscription = subscription
+                            # Salva sessione nell'URL per persistenza
+                            save_session_to_url(user.id, email)
                             st.success(f"✅ Accesso effettuato! {message}")
                             time_module.sleep(1)
                             st.rerun()
@@ -281,6 +345,8 @@ def logout():
         supabase.auth.sign_out()
     except:
         pass
+    # Pulisci sessione dall'URL
+    clear_session_from_url()
     st.session_state.user = None
     st.session_state.session = None
     st.session_state.subscription = None
