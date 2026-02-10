@@ -2082,6 +2082,69 @@ def main_app():
             settimana_nel_ciclo = (st.session_state.current_week_index % settimane_stimate) + 1
             st.info(f"📊 **{clienti_attivi} clienti** da visitare in **~{settimane_stimate} settimane** | Ciclo {ciclo_attuale}, Settimana {settimana_nel_ciclo}/{settimane_stimate}")
         
+        # === PANNELLO DEBUG ===
+        with st.expander("🔧 DEBUG - Verifica Configurazione Giro", expanded=False):
+            base_lat = float(config.get('lat_base', 0))
+            base_lon = float(config.get('lon_base', 0))
+            
+            col_dbg1, col_dbg2 = st.columns(2)
+            
+            with col_dbg1:
+                st.write("**📍 Punto di Partenza (BASE):**")
+                if base_lat != 0 and base_lon != 0:
+                    st.success(f"Lat: **{base_lat:.4f}** | Lon: **{base_lon:.4f}**")
+                    st.caption("Se le coordinate sono sbagliate, vai in ⚙️ Config e reimpostale")
+                else:
+                    st.error("⚠️ COORDINATE BASE NON IMPOSTATE!")
+                    st.caption("Vai in ⚙️ Config → Imposta punto di partenza")
+            
+            with col_dbg2:
+                st.write("**⚙️ Parametri Giro:**")
+                st.write(f"- Durata visita: **{config.get('durata_visita', 45)} min**")
+                st.write(f"- Orario: **{str(config.get('h_inizio', '09:00'))[:5]} - {str(config.get('h_fine', '18:00'))[:5]}**")
+                giorni_cfg = config.get('giorni_lavorativi', [0,1,2,3,4])
+                if isinstance(giorni_cfg, str):
+                    giorni_cfg = [int(x) for x in giorni_cfg.strip('{}').split(',')]
+                nomi_g = ["Lun","Mar","Mer","Gio","Ven","Sab","Dom"]
+                st.write(f"- Giorni: **{', '.join([nomi_g[g] for g in giorni_cfg])}**")
+            
+            st.divider()
+            
+            # Mostra i 10 clienti più vicini alla base
+            if base_lat != 0 and base_lon != 0 and not df.empty:
+                st.write("**🎯 TOP 10 Clienti più VICINI alla BASE:**")
+                
+                df_debug = df[
+                    (df['visitare'] == 'SI') & 
+                    (df['latitude'].notna()) & 
+                    (df['longitude'].notna()) &
+                    (df['latitude'] != 0) &
+                    (df['longitude'] != 0)
+                ].copy()
+                
+                if not df_debug.empty:
+                    # Calcola distanza dalla base
+                    df_debug['dist_base'] = df_debug.apply(
+                        lambda r: haversine(base_lat, base_lon, float(r['latitude']), float(r['longitude'])), 
+                        axis=1
+                    )
+                    
+                    # Ordina per distanza
+                    df_debug = df_debug.sort_values('dist_base')
+                    
+                    # Mostra top 10
+                    for idx, (_, r) in enumerate(df_debug.head(10).iterrows(), 1):
+                        citta = r.get('citta', '') or ''
+                        st.write(f"{idx}. **{r['nome_cliente']}** - {citta} ({r['dist_base']:.1f} km)")
+                    
+                    st.divider()
+                    st.write("**❌ TOP 5 Clienti più LONTANI (non dovrebbero essere nel primo giorno!):**")
+                    for idx, (_, r) in enumerate(df_debug.tail(5).iterrows(), 1):
+                        citta = r.get('citta', '') or ''
+                        st.warning(f"{idx}. {r['nome_cliente']} - {citta} ({r['dist_base']:.1f} km)")
+                else:
+                    st.warning("Nessun cliente con coordinate valide")
+        
         # Giorni lavorativi configurati (definiti prima per poterli usare nell'expander)
         giorni_nomi_full = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"]
         giorni_attivi = config.get('giorni_lavorativi', [0, 1, 2, 3, 4])
