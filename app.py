@@ -971,12 +971,11 @@ def render_gps_button(button_id):
 # --- 5. CALCOLO GIRO OTTIMIZZATO ---
 def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, variante=0):
     """
-    NEAREST NEIGHBOR PURO:
-    1. Parti dalla BASE
-    2. Vai al cliente più vicino
-    3. Da lì, vai al più vicino tra i rimanenti
-    4. Ripeti finché il giorno è pieno
-    5. Il giorno dopo, riparti dalla BASE
+    ALGORITMO OTTIMIZZATO:
+    1. Divide i clienti in ZONE GEOGRAFICHE (clustering per città/area)
+    2. Ogni settimana visita ZONE DIVERSE (rotazione)
+    3. Considera FLESSIBILITÀ sulla frequenza (±10 giorni)
+    4. Ottimizza percorso con NEAREST NEIGHBOR
     """
     if df.empty:
         return {}
@@ -1021,15 +1020,16 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     pausa_da = get_time(config.get('pausa_inizio'), time(13, 0))
     pausa_a = get_time(config.get('pausa_fine'), time(14, 0))
     
-    # Calcolo date
+    # Date
     oggi = ora_italiana.date()
     lunedi = oggi - timedelta(days=oggi.weekday()) + timedelta(weeks=settimana_offset)
+    fine_settimana = lunedi + timedelta(days=6)
     
     # Agenda vuota
     agenda = {g: [] for g in range(7)}
     
     # ========================================
-    # RACCOGLI TUTTI I CLIENTI VALIDI
+    # 1. RACCOGLI TUTTI I CLIENTI VALIDI
     # ========================================
     tutti = []
     for _, r in df.iterrows():
@@ -1040,21 +1040,49 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         lat, lon = r.get('latitude'), r.get('longitude')
         if pd.isna(lat) or pd.isna(lon) or lat == 0 or lon == 0:
             continue
+        
+        # Calcola scadenza visita
+        ultima = r.get('ultima_visita')
+        freq = int(r.get('frequenza_giorni', 30)) if pd.notna(r.get('frequenza_giorni')) else 30
+        
+        if pd.isna(ultima) or (hasattr(ultima, 'year') and ultima.year < 2000):
+            # Mai visitato = priorità alta
+            scadenza = oggi - timedelta(days=30)  # Consideralo scaduto da 30 giorni
+            giorni_ritardo = 999
+        else:
+            ultima_date = ultima.date() if hasattr(ultima, 'date') else ultima
+            scadenza = ultima_date + timedelta(days=freq)
+            giorni_ritardo = (oggi - scadenza).days
+        
+        # FLESSIBILITÀ: finestra di visita = scadenza ± 10 giorni
+        finestra_inizio = scadenza - timedelta(days=10)
+        finestra_fine = scadenza + timedelta(days=10)
+        
+        # Calcola distanza dalla base (fattore 1.3 per approssimare strada reale)
+        dist_base = haversine(base_lat, base_lon, float(lat), float(lon)) * 1.3
+        
         tutti.append({
             'id': r['id'],
             'nome': r['nome_cliente'],
             'lat': float(lat),
             'lon': float(lon),
             'ind': r.get('indirizzo', ''),
+            'citta': r.get('citta', '') or '',
             'cell': str(r.get('cellulare', '')),
-            'app': r.get('appuntamento')
+            'app': r.get('appuntamento'),
+            'scadenza': scadenza,
+            'ritardo': giorni_ritardo,
+            'finestra_inizio': finestra_inizio,
+            'finestra_fine': finestra_fine,
+            'dist_base': dist_base,
+            'freq': freq
         })
     
     if not tutti:
         return agenda
     
     # ========================================
-    # GIORNI DISPONIBILI
+    # 2. GIORNI DISPONIBILI
     # ========================================
     giorni = []
     for g in giorni_lavorativi:
@@ -1067,7 +1095,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         return agenda
     
     # ========================================
-    # SEPARA APPUNTAMENTI
+    # 3. SEPARA APPUNTAMENTI
     # ========================================
     app_per_giorno = {}
     nomi_app = set()
@@ -1076,7 +1104,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         app = c.get('app')
         if pd.notna(app) and hasattr(app, 'date'):
             data_app = app.date()
-            if lunedi <= data_app <= lunedi + timedelta(days=6):
+            if lunedi <= data_app <= fine_settimana:
                 g = data_app.weekday()
                 if g not in app_per_giorno:
                     app_per_giorno[g] = []
@@ -1085,85 +1113,156 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 app_per_giorno[g].append(c)
                 nomi_app.add(c['nome'])
     
-    # Clienti liberi (senza appuntamento)
+    # Clienti senza appuntamento
     liberi = [c for c in tutti if c['nome'] not in nomi_app]
     
     # ========================================
-    # MAX VISITE AL GIORNO
+    # 4. DIVIDI IN ZONE GEOGRAFICHE
+    # ========================================
+    # Usa clustering basato su distanza dalla base e angolo
+    import math
+    
+    def get_zona(lat, lon, base_lat, base_lon):
+        """Determina la zona geografica (0-7 = 8 settori)"""
+        delta_lat = lat - base_lat
+        delta_lon = lon - base_lon
+        angolo = math.degrees(math.atan2(delta_lon, delta_lat))
+        angolo = (angolo + 360) % 360
+        # 8 settori da 45° ciascuno
+        return int(angolo // 45)
+    
+    # Assegna zona a ogni cliente
+    for c in liberi:
+        c['zona'] = get_zona(c['lat'], c['lon'], base_lat, base_lon)
+    
+    # Raggruppa per zona
+    zone = {}
+    for c in liberi:
+        z = c['zona']
+        if z not in zone:
+            zone[z] = []
+        zone[z].append(c)
+    
+    # ========================================
+    # 5. SELEZIONA CLIENTI PER QUESTA SETTIMANA
+    # ========================================
+    # Priorità:
+    # 1. Clienti nella "finestra" di visita (scadenza ± 10 giorni)
+    # 2. Tra questi, raggruppa per zona
+    # 3. Ruota le zone ogni settimana
+    
+    # Clienti nella finestra di questa settimana
+    clienti_finestra = []
+    for c in liberi:
+        # Il cliente è visitabile se la sua finestra si sovrappone alla settimana
+        if c['finestra_inizio'] <= fine_settimana and c['finestra_fine'] >= lunedi:
+            clienti_finestra.append(c)
+    
+    # Se non ci sono abbastanza clienti nella finestra, aggiungi i più urgenti
+    if len(clienti_finestra) < len(giorni) * 8:
+        # Ordina per ritardo (più urgenti prima)
+        altri = [c for c in liberi if c not in clienti_finestra]
+        altri.sort(key=lambda x: x['ritardo'], reverse=True)
+        clienti_finestra.extend(altri[:len(giorni) * 10])
+    
+    # ========================================
+    # 6. ROTAZIONE ZONE PER SETTIMANA
+    # ========================================
+    # Ogni settimana parte da una zona diversa
+    zona_start = settimana_offset % 8
+    
+    # Ordina le zone partendo da zona_start
+    zone_ordinate = [(zona_start + i) % 8 for i in range(8)]
+    
+    # ========================================
+    # 7. MAX VISITE AL GIORNO
     # ========================================
     ore_lavoro = (datetime.combine(oggi, ora_fine) - datetime.combine(oggi, ora_inizio)).seconds / 3600
     ore_pausa = (datetime.combine(oggi, pausa_a) - datetime.combine(oggi, pausa_da)).seconds / 3600
-    max_visite = max(3, min(10, int(ore_lavoro - ore_pausa)))
+    max_visite = max(4, min(10, int(ore_lavoro - ore_pausa)))
     
     # ========================================
-    # COSTRUISCI GIRO PER OGNI GIORNO
+    # 8. ASSEGNA CLIENTI AI GIORNI
     # ========================================
-    for giorno in giorni:
+    clienti_assegnati = set()
+    
+    for idx_giorno, giorno in enumerate(giorni):
         data_g = lunedi + timedelta(days=giorno)
-        
-        # Posizione iniziale = BASE
-        pos_lat, pos_lon = base_lat, base_lon
-        
-        # Lista del giorno
         giro_oggi = []
         
-        # Se c'è appuntamento, inseriscilo e usa come punto di partenza per trovare vicini
+        # Se c'è appuntamento, gestiscilo
         if giorno in app_per_giorno:
-            apps = sorted(app_per_giorno[giorno], key=lambda x: x.get('ora_app', '09:00'))
-            
-            # L'appuntamento diventa il "centro" della giornata
-            # Aggiungi l'appuntamento
-            for a in apps:
+            for a in app_per_giorno[giorno]:
                 giro_oggi.append(a)
-            
-            # Usa la posizione dell'appuntamento come riferimento
-            pos_lat, pos_lon = apps[0]['lat'], apps[0]['lon']
+                clienti_assegnati.add(a['nome'])
         
-        # Quanti slot rimangono?
-        slot = max_visite - len(giro_oggi)
+        slot_rimasti = max_visite - len(giro_oggi)
         
-        # NEAREST NEIGHBOR PURO
-        temp = liberi.copy()  # Copia per non modificare l'originale
-        visite_aggiunte = []
-        
-        while slot > 0 and temp:
-            # Trova il cliente PIÙ VICINO alla posizione corrente
-            migliore = None
-            dist_min = float('inf')
-            
-            for c in temp:
-                d = haversine(pos_lat, pos_lon, c['lat'], c['lon'])
-                if d < dist_min:
-                    dist_min = d
-                    migliore = c
-            
-            if migliore is None:
-                break
-            
-            # Aggiungi
-            visite_aggiunte.append(migliore)
-            temp.remove(migliore)
-            
-            # Aggiorna posizione
-            pos_lat, pos_lon = migliore['lat'], migliore['lon']
-            slot -= 1
-        
-        # Rimuovi dalla lista globale
-        for v in visite_aggiunte:
-            if v in liberi:
-                liberi.remove(v)
-        
-        # Combina appuntamenti e visite
-        # Se c'è appuntamento, metti prima le visite VICINE all'appuntamento, poi l'appuntamento
-        if giorno in app_per_giorno:
-            # Ordina visite per distanza dall'appuntamento
-            app_lat, app_lon = app_per_giorno[giorno][0]['lat'], app_per_giorno[giorno][0]['lon']
-            visite_aggiunte.sort(key=lambda c: haversine(c['lat'], c['lon'], app_lat, app_lon))
-            
-            # Ricostruisci: visite vicine + appuntamento
-            giro_finale = visite_aggiunte + giro_oggi
+        # Determina il "centro" del giorno
+        if giro_oggi:
+            # C'è un appuntamento: usa quello come centro
+            centro_lat = giro_oggi[0]['lat']
+            centro_lon = giro_oggi[0]['lon']
         else:
-            giro_finale = visite_aggiunte
+            # Nessun appuntamento: usa la zona assegnata a questo giorno
+            zona_giorno = zone_ordinate[idx_giorno % 8]
+            
+            # Trova il centroide della zona
+            clienti_zona = [c for c in clienti_finestra 
+                          if c['nome'] not in clienti_assegnati and c['zona'] == zona_giorno]
+            
+            if clienti_zona:
+                centro_lat = sum(c['lat'] for c in clienti_zona) / len(clienti_zona)
+                centro_lon = sum(c['lon'] for c in clienti_zona) / len(clienti_zona)
+            else:
+                centro_lat = base_lat
+                centro_lon = base_lon
+        
+        # Trova clienti più vicini al centro
+        candidati = []
+        for c in clienti_finestra:
+            if c['nome'] in clienti_assegnati:
+                continue
+            
+            # Distanza dal centro (fattore 1.3 per strada reale)
+            dist_centro = haversine(centro_lat, centro_lon, c['lat'], c['lon']) * 1.3
+            
+            # Score: combina distanza e urgenza
+            # Più basso = migliore
+            # Distanza pesa di più, ritardo aggiunge bonus per urgenti
+            score = dist_centro - (c['ritardo'] * 0.5)  # Bonus per urgenti
+            
+            candidati.append({**c, 'dist_centro': dist_centro, 'score': score})
+        
+        # Ordina per score
+        candidati.sort(key=lambda x: x['score'])
+        
+        # Prendi i migliori
+        selezionati = candidati[:slot_rimasti]
+        
+        # NEAREST NEIGHBOR per ordinare il percorso
+        if selezionati:
+            percorso = []
+            temp = selezionati.copy()
+            pos_lat, pos_lon = base_lat, base_lon
+            
+            while temp:
+                # Trova il più vicino
+                min_d = float('inf')
+                piu_vic = None
+                for c in temp:
+                    d = haversine(pos_lat, pos_lon, c['lat'], c['lon'])
+                    if d < min_d:
+                        min_d = d
+                        piu_vic = c
+                
+                if piu_vic:
+                    percorso.append(piu_vic)
+                    temp.remove(piu_vic)
+                    pos_lat, pos_lon = piu_vic['lat'], piu_vic['lon']
+                    clienti_assegnati.add(piu_vic['nome'])
+            
+            giro_oggi.extend(percorso)
         
         # ========================================
         # CALCOLA ORARI
@@ -1172,20 +1271,22 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         pos_lat, pos_lon = base_lat, base_lon
         ora_corrente = datetime.combine(data_g, ora_inizio)
         
-        for c in giro_finale:
-            dist = haversine(pos_lat, pos_lon, c['lat'], c['lon'])
-            tempo_viaggio = (dist / 40) * 60
+        for c in giro_oggi:
+            dist = haversine(pos_lat, pos_lon, c['lat'], c['lon']) * 1.3
+            tempo_viaggio = (dist / 40) * 60  # 40 km/h media
             
             if c.get('is_app'):
                 ora_arr = c.get('ora_app', '09:00')
             else:
                 arrivo = ora_corrente + timedelta(minutes=tempo_viaggio)
-                # Pausa pranzo
                 if arrivo.time() >= pausa_da and arrivo.time() < pausa_a:
                     ora_corrente = datetime.combine(data_g, pausa_a)
                     arrivo = ora_corrente + timedelta(minutes=tempo_viaggio)
                 ora_arr = arrivo.strftime('%H:%M')
                 ora_corrente = arrivo + timedelta(minutes=durata_visita)
+            
+            # Calcola ritardo per visualizzazione
+            ritardo = c.get('ritardo', 0)
             
             tappe.append({
                 'id': c['id'],
@@ -1197,7 +1298,8 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 'ora_arrivo': ora_arr,
                 'tipo_tappa': '📌 APPUNTAMENTO' if c.get('is_app') else '🚗 Giro',
                 'distanza_km': round(dist, 1),
-                'ritardo': 0
+                'ritardo': ritardo,
+                'citta': c.get('citta', '')
             })
             
             pos_lat, pos_lon = c['lat'], c['lon']
