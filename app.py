@@ -971,15 +971,15 @@ def render_gps_button(button_id):
 # --- 5. CALCOLO GIRO OTTIMIZZATO ---
 def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, variante=0):
     """
-    NEAREST NEIGHBOR PURO:
-    1. Parti dalla BASE
-    2. Vai al cliente più vicino
-    3. Da lì, vai al più vicino tra i rimanenti
-    4. Ripeti finché il giorno è pieno
-    5. Il giorno dopo, riparti dalla BASE
+    ALGORITMO CON:
+    1. SETTIMANE DIVERSE - Ogni settimana clienti diversi (rotazione)
+    2. ORDINE OTTIMIZZATO - 2-opt per evitare avanti-indietro
+    3. VARIANTE - Il pulsante Rigenera propone giri alternativi
     """
     if df.empty:
         return {}
+    
+    import random
     
     # Parametri
     base_lat = float(config.get('lat_base', 41.9028))
@@ -992,12 +992,10 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     
     # Ferie
     ferie_attive = config.get('attiva_ferie', False)
-    ferie_inizio = None
-    ferie_fine = None
+    ferie_inizio, ferie_fine = None, None
     if ferie_attive:
         try:
-            fi = config.get('ferie_inizio')
-            ff = config.get('ferie_fine')
+            fi, ff = config.get('ferie_inizio'), config.get('ferie_fine')
             if fi:
                 ferie_inizio = datetime.strptime(str(fi)[:10], '%Y-%m-%d').date() if isinstance(fi, str) else (fi.date() if hasattr(fi, 'date') else fi)
             if ff:
@@ -1007,13 +1005,10 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     
     # Orari
     def get_time(val, default):
-        if val is None:
-            return default
+        if val is None: return default
         if isinstance(val, str):
-            try:
-                return datetime.strptime(val[:5], '%H:%M').time()
-            except:
-                return default
+            try: return datetime.strptime(val[:5], '%H:%M').time()
+            except: return default
         return val if hasattr(val, 'hour') else default
     
     ora_inizio = get_time(config.get('h_inizio'), time(9, 0))
@@ -1021,7 +1016,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     pausa_da = get_time(config.get('pausa_inizio'), time(13, 0))
     pausa_a = get_time(config.get('pausa_fine'), time(14, 0))
     
-    # Calcolo date
+    # Date
     oggi = ora_italiana.date()
     lunedi = oggi - timedelta(days=oggi.weekday()) + timedelta(weeks=settimana_offset)
     
@@ -1029,7 +1024,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     agenda = {g: [] for g in range(7)}
     
     # ========================================
-    # RACCOGLI TUTTI I CLIENTI VALIDI
+    # 1. RACCOGLI CLIENTI VALIDI
     # ========================================
     tutti = []
     for _, r in df.iterrows():
@@ -1040,21 +1035,28 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         lat, lon = r.get('latitude'), r.get('longitude')
         if pd.isna(lat) or pd.isna(lon) or lat == 0 or lon == 0:
             continue
+        
+        citta = str(r.get('citta', '') or '').strip().upper()
+        if not citta:
+            citta = 'ALTRO'
+        
         tutti.append({
             'id': r['id'],
             'nome': r['nome_cliente'],
             'lat': float(lat),
             'lon': float(lon),
             'ind': r.get('indirizzo', ''),
+            'citta': citta,
             'cell': str(r.get('cellulare', '')),
-            'app': r.get('appuntamento')
+            'app': r.get('appuntamento'),
+            'dist_base': haversine(base_lat, base_lon, float(lat), float(lon))
         })
     
     if not tutti:
         return agenda
     
     # ========================================
-    # GIORNI DISPONIBILI
+    # 2. GIORNI DISPONIBILI
     # ========================================
     giorni = []
     for g in giorni_lavorativi:
@@ -1067,7 +1069,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         return agenda
     
     # ========================================
-    # SEPARA APPUNTAMENTI
+    # 3. GESTISCI APPUNTAMENTI
     # ========================================
     app_per_giorno = {}
     nomi_app = set()
@@ -1085,109 +1087,163 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 app_per_giorno[g].append(c)
                 nomi_app.add(c['nome'])
     
-    # Clienti liberi (senza appuntamento)
     liberi = [c for c in tutti if c['nome'] not in nomi_app]
     
     # ========================================
-    # MAX VISITE AL GIORNO
+    # 4. MAX VISITE AL GIORNO
     # ========================================
-    ore_lavoro = (datetime.combine(oggi, ora_fine) - datetime.combine(oggi, ora_inizio)).seconds / 3600
-    ore_pausa = (datetime.combine(oggi, pausa_a) - datetime.combine(oggi, pausa_da)).seconds / 3600
-    max_visite = max(3, min(10, int(ore_lavoro - ore_pausa)))
+    ore = (datetime.combine(oggi, ora_fine) - datetime.combine(oggi, ora_inizio)).seconds / 3600
+    pausa = (datetime.combine(oggi, pausa_a) - datetime.combine(oggi, pausa_da)).seconds / 3600
+    max_visite = max(4, min(10, int(ore - pausa)))
+    max_settimana = max_visite * len(giorni)
     
     # ========================================
-    # COSTRUISCI GIRO PER OGNI GIORNO
+    # 5. CALCOLA NUMERO SETTIMANE CICLO
     # ========================================
+    tot_clienti = len(liberi)
+    num_settimane = max(1, (tot_clienti + max_settimana - 1) // max_settimana)
+    
+    # ========================================
+    # 6. ORDINA CLIENTI PER DISTANZA DALLA BASE
+    # ========================================
+    liberi.sort(key=lambda x: x['dist_base'])
+    
+    # ========================================
+    # 7. SELEZIONA CLIENTI PER QUESTA SETTIMANA
+    # ========================================
+    # Dividi in fasce di distanza e ruota
+    settimana_nel_ciclo = settimana_offset % num_settimane
+    
+    # Invece di prendere fette consecutive, prendiamo 1 ogni N
+    # Così ogni settimana abbiamo clienti sparsi geograficamente
+    clienti_settimana = []
+    for i, c in enumerate(liberi):
+        if i % num_settimane == settimana_nel_ciclo:
+            clienti_settimana.append(c)
+    
+    # ========================================
+    # 8. VARIANTE: cambia ordine per giro diverso
+    # ========================================
+    if variante > 0:
+        # Usa la variante come seed per mescolare
+        random.seed(variante * 12345)
+        random.shuffle(clienti_settimana)
+    
+    # ========================================
+    # 9. FUNZIONE 2-OPT PER OTTIMIZZARE ORDINE
+    # ========================================
+    def ottimizza_2opt(percorso, lat_start, lon_start):
+        """Ottimizza l'ordine per minimizzare km ed evitare avanti-indietro"""
+        if len(percorso) < 3:
+            return percorso
+        
+        def distanza_totale(p):
+            if not p: return 0
+            d = haversine(lat_start, lon_start, p[0]['lat'], p[0]['lon'])
+            for i in range(len(p)-1):
+                d += haversine(p[i]['lat'], p[i]['lon'], p[i+1]['lat'], p[i+1]['lon'])
+            d += haversine(p[-1]['lat'], p[-1]['lon'], lat_start, lon_start)
+            return d
+        
+        percorso = list(percorso)
+        migliorato = True
+        iterazioni = 0
+        
+        while migliorato and iterazioni < 50:
+            migliorato = False
+            dist_attuale = distanza_totale(percorso)
+            
+            for i in range(len(percorso) - 1):
+                for j in range(i + 2, len(percorso)):
+                    # Prova a invertire la sezione tra i e j
+                    nuovo = percorso[:i+1] + percorso[i+1:j+1][::-1] + percorso[j+1:]
+                    nuova_dist = distanza_totale(nuovo)
+                    
+                    if nuova_dist < dist_attuale - 0.3:  # Migliora di almeno 300m
+                        percorso = nuovo
+                        migliorato = True
+                        break
+                if migliorato:
+                    break
+            iterazioni += 1
+        
+        return percorso
+    
+    # ========================================
+    # 10. DISTRIBUISCI SUI GIORNI
+    # ========================================
+    clienti_disponibili = clienti_settimana.copy()
+    
     for giorno in giorni:
         data_g = lunedi + timedelta(days=giorno)
+        tappe = []
         
-        # Posizione iniziale = BASE
-        pos_lat, pos_lon = base_lat, base_lon
-        
-        # Lista del giorno
-        giro_oggi = []
-        
-        # Se c'è appuntamento, inseriscilo e usa come punto di partenza per trovare vicini
+        # Appuntamenti del giorno
         if giorno in app_per_giorno:
-            apps = sorted(app_per_giorno[giorno], key=lambda x: x.get('ora_app', '09:00'))
-            
-            # L'appuntamento diventa il "centro" della giornata
-            # Aggiungi l'appuntamento
-            for a in apps:
-                giro_oggi.append(a)
-            
-            # Usa la posizione dell'appuntamento come riferimento
-            pos_lat, pos_lon = apps[0]['lat'], apps[0]['lon']
+            for a in app_per_giorno[giorno]:
+                tappe.append(a)
         
-        # Quanti slot rimangono?
-        slot = max_visite - len(giro_oggi)
+        slot = max_visite - len(tappe)
         
-        # NEAREST NEIGHBOR PURO
-        temp = liberi.copy()  # Copia per non modificare l'originale
-        visite_aggiunte = []
+        # Determina punto di partenza
+        if tappe:
+            pos_lat, pos_lon = tappe[-1]['lat'], tappe[-1]['lon']
+        else:
+            pos_lat, pos_lon = base_lat, base_lon
+        
+        # NEAREST NEIGHBOR per selezionare
+        visite_giorno = []
+        temp = clienti_disponibili.copy()
         
         while slot > 0 and temp:
-            # Trova il cliente PIÙ VICINO alla posizione corrente
-            migliore = None
-            dist_min = float('inf')
+            min_dist = float('inf')
+            piu_vicino = None
             
             for c in temp:
                 d = haversine(pos_lat, pos_lon, c['lat'], c['lon'])
-                if d < dist_min:
-                    dist_min = d
-                    migliore = c
+                if d < min_dist:
+                    min_dist = d
+                    piu_vicino = c
             
-            if migliore is None:
+            if piu_vicino is None:
                 break
             
-            # Aggiungi
-            visite_aggiunte.append(migliore)
-            temp.remove(migliore)
+            visite_giorno.append(piu_vicino)
+            temp.remove(piu_vicino)
+            clienti_disponibili.remove(piu_vicino)
             
-            # Aggiorna posizione
-            pos_lat, pos_lon = migliore['lat'], migliore['lon']
+            pos_lat, pos_lon = piu_vicino['lat'], piu_vicino['lon']
             slot -= 1
         
-        # Rimuovi dalla lista globale
-        for v in visite_aggiunte:
-            if v in liberi:
-                liberi.remove(v)
+        # OTTIMIZZA ORDINE CON 2-OPT
+        if len(visite_giorno) >= 3:
+            visite_giorno = ottimizza_2opt(visite_giorno, base_lat, base_lon)
         
-        # Combina appuntamenti e visite
-        # Se c'è appuntamento, metti prima le visite VICINE all'appuntamento, poi l'appuntamento
-        if giorno in app_per_giorno:
-            # Ordina visite per distanza dall'appuntamento
-            app_lat, app_lon = app_per_giorno[giorno][0]['lat'], app_per_giorno[giorno][0]['lon']
-            visite_aggiunte.sort(key=lambda c: haversine(c['lat'], c['lon'], app_lat, app_lon))
-            
-            # Ricostruisci: visite vicine + appuntamento
-            giro_finale = visite_aggiunte + giro_oggi
-        else:
-            giro_finale = visite_aggiunte
+        # Combina: appuntamenti + visite ottimizzate
+        giro_finale = list(tappe) + visite_giorno
         
         # ========================================
         # CALCOLA ORARI
         # ========================================
-        tappe = []
+        tappe_finali = []
         pos_lat, pos_lon = base_lat, base_lon
-        ora_corrente = datetime.combine(data_g, ora_inizio)
+        ora = datetime.combine(data_g, ora_inizio)
         
         for c in giro_finale:
             dist = haversine(pos_lat, pos_lon, c['lat'], c['lon'])
-            tempo_viaggio = (dist / 40) * 60
+            tempo = (dist / 40) * 60
             
             if c.get('is_app'):
                 ora_arr = c.get('ora_app', '09:00')
             else:
-                arrivo = ora_corrente + timedelta(minutes=tempo_viaggio)
-                # Pausa pranzo
+                arrivo = ora + timedelta(minutes=tempo)
                 if arrivo.time() >= pausa_da and arrivo.time() < pausa_a:
-                    ora_corrente = datetime.combine(data_g, pausa_a)
-                    arrivo = ora_corrente + timedelta(minutes=tempo_viaggio)
+                    ora = datetime.combine(data_g, pausa_a)
+                    arrivo = ora + timedelta(minutes=tempo)
                 ora_arr = arrivo.strftime('%H:%M')
-                ora_corrente = arrivo + timedelta(minutes=durata_visita)
+                ora = arrivo + timedelta(minutes=durata_visita)
             
-            tappe.append({
+            tappe_finali.append({
                 'id': c['id'],
                 'nome_cliente': c['nome'],
                 'latitude': c['lat'],
@@ -1197,12 +1253,13 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 'ora_arrivo': ora_arr,
                 'tipo_tappa': '📌 APPUNTAMENTO' if c.get('is_app') else '🚗 Giro',
                 'distanza_km': round(dist, 1),
-                'ritardo': 0
+                'ritardo': 0,
+                'citta': c.get('citta', '')
             })
             
             pos_lat, pos_lon = c['lat'], c['lon']
         
-        agenda[giorno] = tappe
+        agenda[giorno] = tappe_finali
     
     return agenda
 
@@ -1353,11 +1410,15 @@ def main_app():
     
     # --- TAB: GIRO OGGI ---
     if st.session_state.active_tab == "🚀 Giro Oggi":
-        col_header, col_refresh = st.columns([5, 1])
+        col_header, col_regen, col_refresh = st.columns([4, 1, 1])
         with col_header:
             st.header(f"📍 Giro di Oggi ({ora_italiana.strftime('%d/%m/%Y')})")
+        with col_regen:
+            if st.button("🔄 Rigenera", use_container_width=True, help="Propone un giro diverso"):
+                st.session_state.variante_giro = st.session_state.get('variante_giro', 0) + 1
+                st.rerun()
         with col_refresh:
-            if st.button("🔄", use_container_width=True, help="Ricarica dati"):
+            if st.button("🔃", use_container_width=True, help="Ricarica dati"):
                 st.session_state.reload_data = True
                 st.rerun()
         
@@ -1367,46 +1428,23 @@ def main_app():
         # Inizializza esclusi_oggi se non esiste
         if 'esclusi_oggi' not in st.session_state:
             st.session_state.esclusi_oggi = []
-        if 'variante_percorso' not in st.session_state:
-            st.session_state.variante_percorso = 0
+        if 'variante_giro' not in st.session_state:
+            st.session_state.variante_giro = 0
         
         # === PANNELLO GESTIONE GIRO ===
         with st.expander("⚙️ Gestisci Giro", expanded=False):
             
-            # --- SEZIONE 1: Varianti Percorso ---
-            st.write("**🔄 Prova percorsi alternativi:**")
-            
-            col_var1, col_var2, col_var3, col_var4 = st.columns(4)
-            
-            with col_var1:
-                if st.button("🔀 Percorso A", use_container_width=True, 
-                           type="primary" if st.session_state.variante_percorso == 0 else "secondary"):
-                    st.session_state.variante_percorso = 0
+            # Info variante attuale
+            variante_attuale = st.session_state.get('variante_giro', 0)
+            if variante_attuale > 0:
+                st.info(f"🔄 Giro rigenerato {variante_attuale} volta/e - Premi '🔄 Rigenera' per provare un altro percorso")
+                if st.button("↩️ Torna al giro originale"):
+                    st.session_state.variante_giro = 0
                     st.rerun()
-            
-            with col_var2:
-                if st.button("🔀 Percorso B", use_container_width=True,
-                           type="primary" if st.session_state.variante_percorso == 1 else "secondary"):
-                    st.session_state.variante_percorso = 1
-                    st.rerun()
-            
-            with col_var3:
-                if st.button("🔀 Percorso C", use_container_width=True,
-                           type="primary" if st.session_state.variante_percorso == 2 else "secondary"):
-                    st.session_state.variante_percorso = 2
-                    st.rerun()
-            
-            with col_var4:
-                if st.button("🔀 Percorso D", use_container_width=True,
-                           type="primary" if st.session_state.variante_percorso == 3 else "secondary"):
-                    st.session_state.variante_percorso = 3
-                    st.rerun()
-            
-            st.caption("💡 Ogni variante parte da una direzione diversa. Prova per trovare il percorso migliore!")
             
             st.divider()
             
-            # --- SEZIONE 2: Escludi Clienti ---
+            # --- SEZIONE: Escludi Clienti ---
             st.write("**🚫 Escludi clienti dal giro di oggi:**")
             
             # Lista clienti attivi (da poter escludere)
@@ -1485,13 +1523,9 @@ def main_app():
             if critici:
                 st.error(f"🚨 **{len(critici)} clienti critici** da visitare urgentemente!")
             
-            # Calcola tappe (con variante percorso)
-            variante = st.session_state.get('variante_percorso', 0)
+            # Calcola tappe (con variante giro)
+            variante = st.session_state.get('variante_giro', 0)
             tappe_oggi = calcola_piano_giornaliero(df, idx_g, config, st.session_state.esclusi_oggi, variante=variante)
-            
-            # Mostra quale variante è attiva
-            variante_nomi = ["A (Nord)", "B (Est)", "C (Sud)", "D (Ovest)"]
-            st.caption(f"🔀 Percorso attivo: **{variante_nomi[variante]}** - Usa ⚙️ Gestisci Giro per provare alternative")
             
             # Trova visitati fuori giro
             nomi_nel_giro = [t['nome_cliente'] for t in tappe_oggi]
@@ -2081,6 +2115,69 @@ def main_app():
             ciclo_attuale = (st.session_state.current_week_index // settimane_stimate) + 1
             settimana_nel_ciclo = (st.session_state.current_week_index % settimane_stimate) + 1
             st.info(f"📊 **{clienti_attivi} clienti** da visitare in **~{settimane_stimate} settimane** | Ciclo {ciclo_attuale}, Settimana {settimana_nel_ciclo}/{settimane_stimate}")
+        
+        # === PANNELLO DEBUG ===
+        with st.expander("🔧 DEBUG - Verifica Configurazione Giro", expanded=False):
+            base_lat = float(config.get('lat_base', 0))
+            base_lon = float(config.get('lon_base', 0))
+            
+            col_dbg1, col_dbg2 = st.columns(2)
+            
+            with col_dbg1:
+                st.write("**📍 Punto di Partenza (BASE):**")
+                if base_lat != 0 and base_lon != 0:
+                    st.success(f"Lat: **{base_lat:.4f}** | Lon: **{base_lon:.4f}**")
+                    st.caption("Se le coordinate sono sbagliate, vai in ⚙️ Config e reimpostale")
+                else:
+                    st.error("⚠️ COORDINATE BASE NON IMPOSTATE!")
+                    st.caption("Vai in ⚙️ Config → Imposta punto di partenza")
+            
+            with col_dbg2:
+                st.write("**⚙️ Parametri Giro:**")
+                st.write(f"- Durata visita: **{config.get('durata_visita', 45)} min**")
+                st.write(f"- Orario: **{str(config.get('h_inizio', '09:00'))[:5]} - {str(config.get('h_fine', '18:00'))[:5]}**")
+                giorni_cfg = config.get('giorni_lavorativi', [0,1,2,3,4])
+                if isinstance(giorni_cfg, str):
+                    giorni_cfg = [int(x) for x in giorni_cfg.strip('{}').split(',')]
+                nomi_g = ["Lun","Mar","Mer","Gio","Ven","Sab","Dom"]
+                st.write(f"- Giorni: **{', '.join([nomi_g[g] for g in giorni_cfg])}**")
+            
+            st.divider()
+            
+            # Mostra i 10 clienti più vicini alla base
+            if base_lat != 0 and base_lon != 0 and not df.empty:
+                st.write("**🎯 TOP 10 Clienti più VICINI alla BASE:**")
+                
+                df_debug = df[
+                    (df['visitare'] == 'SI') & 
+                    (df['latitude'].notna()) & 
+                    (df['longitude'].notna()) &
+                    (df['latitude'] != 0) &
+                    (df['longitude'] != 0)
+                ].copy()
+                
+                if not df_debug.empty:
+                    # Calcola distanza dalla base
+                    df_debug['dist_base'] = df_debug.apply(
+                        lambda r: haversine(base_lat, base_lon, float(r['latitude']), float(r['longitude'])), 
+                        axis=1
+                    )
+                    
+                    # Ordina per distanza
+                    df_debug = df_debug.sort_values('dist_base')
+                    
+                    # Mostra top 10
+                    for idx, (_, r) in enumerate(df_debug.head(10).iterrows(), 1):
+                        citta = r.get('citta', '') or ''
+                        st.write(f"{idx}. **{r['nome_cliente']}** - {citta} ({r['dist_base']:.1f} km)")
+                    
+                    st.divider()
+                    st.write("**❌ TOP 5 Clienti più LONTANI (non dovrebbero essere nel primo giorno!):**")
+                    for idx, (_, r) in enumerate(df_debug.tail(5).iterrows(), 1):
+                        citta = r.get('citta', '') or ''
+                        st.warning(f"{idx}. {r['nome_cliente']} - {citta} ({r['dist_base']:.1f} km)")
+                else:
+                    st.warning("Nessun cliente con coordinate valide")
         
         # Giorni lavorativi configurati (definiti prima per poterli usare nell'expander)
         giorni_nomi_full = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"]
