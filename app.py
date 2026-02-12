@@ -14,162 +14,215 @@ from supabase import create_client, Client
 # --- 1. CONFIGURAZIONE ---
 st.set_page_config(page_title="Giro Visite CRM Pro", layout="wide", page_icon="🚀")
 
-# --- CSS ULTRA-COMPATTO PER MOBILE ---
+# --- CSS MOBILE-FIRST ULTRA COMPATTO ---
 st.markdown("""
 <style>
-    /* === LAYOUT GENERALE === */
+    /* === RESET E BASE === */
     .block-container {
-        padding: 0.5rem 0.8rem 0 0.8rem !important;
+        padding: 0.3rem 0.5rem 0 0.5rem !important;
         max-width: 100% !important;
     }
+    header[data-testid="stHeader"] { display: none !important; }
+    #MainMenu { display: none !important; }
+    footer { display: none !important; }
     
-    /* Nascondi header Streamlit */
-    header[data-testid="stHeader"] {
-        height: 0 !important;
-        min-height: 0 !important;
-        padding: 0 !important;
-    }
+    /* === TITOLI MINIMI === */
+    h1 { font-size: 1.1rem !important; margin: 0 !important; }
+    h2 { font-size: 1rem !important; margin: 0 !important; }
+    h3 { font-size: 0.9rem !important; margin: 0 !important; }
+    p, li { margin: 0 !important; font-size: 0.85rem !important; }
     
-    /* === TITOLI COMPATTI === */
-    h1 { font-size: 1.3rem !important; margin: 0 0 0.3rem 0 !important; }
-    h2 { font-size: 1.1rem !important; margin: 0.3rem 0 0.2rem 0 !important; }
-    h3 { font-size: 0.95rem !important; margin: 0.2rem 0 !important; }
-    p { margin-bottom: 0.3rem !important; }
-    
-    /* === METRICHE COMPATTE === */
-    [data-testid="stMetric"] {
-        background: #f8f9fa;
-        border-radius: 8px;
-        padding: 6px 10px !important;
-    }
-    [data-testid="stMetricLabel"] { font-size: 0.7rem !important; }
-    [data-testid="stMetricValue"] { font-size: 1.1rem !important; }
-    [data-testid="stMetricDelta"] { font-size: 0.7rem !important; }
-    
-    /* === BOTTONI COMPATTI === */
+    /* === BOTTONI TOUCH === */
     .stButton > button {
-        padding: 0.25rem 0.6rem !important;
+        padding: 0.4rem 0.6rem !important;
         font-size: 0.8rem !important;
-        min-height: 0 !important;
+        min-height: 38px !important;
+        border-radius: 8px !important;
     }
-    .stButton { margin-bottom: 0 !important; }
+    .stButton { margin: 0 !important; }
     
-    /* === EXPANDER COMPATTO === */
+    /* === EXPANDER MINIMO === */
     .streamlit-expanderHeader {
-        font-size: 0.85rem !important;
+        font-size: 0.8rem !important;
         padding: 0.3rem 0.5rem !important;
-        background: #f8f9fa !important;
+        background: #f0f2f6 !important;
         border-radius: 6px !important;
     }
-    .streamlit-expanderContent {
-        padding: 0.5rem !important;
-    }
+    .streamlit-expanderContent { padding: 0.3rem !important; }
     
-    /* === ELEMENTI COMPATTI === */
-    .element-container { margin-bottom: 0.2rem !important; }
-    hr { margin: 0.4rem 0 !important; border-color: #e0e0e0 !important; }
-    .stDivider { margin: 0.3rem 0 !important; }
+    /* === ELEMENTI ZERO MARGIN === */
+    .element-container { margin: 0 !important; padding: 0 !important; }
+    hr { margin: 0.2rem 0 !important; }
+    .stDivider { margin: 0.2rem 0 !important; }
+    [data-testid="column"] { padding: 0 0.1rem !important; }
     
-    /* === INPUT COMPATTI === */
-    .stTextInput > div > div > input { padding: 0.3rem 0.5rem !important; font-size: 0.85rem !important; }
-    .stSelectbox > div > div { padding: 0 !important; }
-    .stDateInput > div > div > input { padding: 0.3rem !important; font-size: 0.85rem !important; }
-    
-    /* === TABS COMPATTE === */
-    .stTabs [data-baseweb="tab-list"] { gap: 1px; }
-    .stTabs [data-baseweb="tab"] { padding: 4px 10px !important; font-size: 0.8rem !important; }
-    
-    /* === CARD TAPPA GIRO === */
-    .tappa-card {
-        background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
-        border-radius: 8px;
-        padding: 8px 12px;
-        margin: 4px 0;
-        color: white;
-        font-size: 0.85rem;
-    }
-    .tappa-card.visitato {
-        background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
-    }
-    .tappa-card.appuntamento {
-        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-    }
-    .tappa-nome { font-weight: bold; font-size: 0.9rem; }
-    .tappa-info { font-size: 0.75rem; opacity: 0.9; }
-    
-    /* === COLONNE STRETTE === */
-    [data-testid="column"] { padding: 0 0.2rem !important; }
-    
-    /* === SIDEBAR COMPATTA === */
-    [data-testid="stSidebar"] { min-width: 180px !important; }
-    [data-testid="stSidebar"] .block-container { padding: 0.5rem !important; }
-    
-    /* === DATAFRAME COMPATTO === */
-    .stDataFrame { font-size: 0.8rem !important; }
-    
-    /* === ALERT COMPATTO === */
-    .stAlert { padding: 0.4rem 0.6rem !important; font-size: 0.8rem !important; }
-    
-    /* === MAPPA === */
-    iframe { border-radius: 8px !important; }
-    
-    /* ========================================
-       MOBILE SPECIFIC (iPhone, iPad)
-       ======================================== */
+    /* === SIDEBAR NASCOSTA SU MOBILE === */
     @media (max-width: 768px) {
-        .block-container {
-            padding: 0.3rem 0.5rem 0 0.5rem !important;
-        }
-        
-        h1 { font-size: 1.1rem !important; }
-        h2 { font-size: 1rem !important; }
-        h3 { font-size: 0.9rem !important; }
-        
-        /* Colonne stack verticale */
-        [data-testid="column"] {
-            width: 100% !important;
-            flex: 100% !important;
-            padding: 0 !important;
-        }
-        
-        /* Metriche in riga */
-        [data-testid="stMetric"] { padding: 4px 8px !important; }
-        [data-testid="stMetricLabel"] { font-size: 0.65rem !important; }
-        [data-testid="stMetricValue"] { font-size: 1rem !important; }
-        
-        /* Bottoni più grandi per touch */
-        .stButton > button {
-            padding: 0.4rem 0.8rem !important;
-            font-size: 0.85rem !important;
-            min-height: 40px !important;
-        }
-        
-        /* Tappa card mobile */
-        .tappa-card { padding: 10px 12px; margin: 6px 0; }
-        .tappa-nome { font-size: 0.95rem; }
-        
-        /* Input più grandi per touch */
-        .stTextInput > div > div > input { 
-            padding: 0.5rem !important; 
-            font-size: 16px !important; /* Previene zoom iOS */
-        }
+        [data-testid="stSidebar"] { display: none !important; }
     }
     
-    /* iPhone SE e piccoli */
-    @media (max-width: 375px) {
+    /* === AGENDA STYLE - SFONDO RIGHE ORARIO === */
+    .agenda-container {
+        background: linear-gradient(to bottom, 
+            #fff 0px, #fff 39px, #e8e8e8 40px,
+            #fff 41px, #fff 79px, #e8e8e8 80px,
+            #fff 81px, #fff 119px, #e8e8e8 120px,
+            #fff 121px, #fff 159px, #e8e8e8 160px,
+            #fff 161px, #fff 199px, #e8e8e8 200px
+        );
+        background-size: 100% 200px;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 5px;
+        min-height: 400px;
+    }
+    
+    /* === TAPPA CLIENTE === */
+    .tappa {
+        background: #fff;
+        border-left: 4px solid #3498db;
+        border-radius: 6px;
+        padding: 8px 10px;
+        margin: 4px 0;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+    .tappa:hover { transform: translateX(3px); }
+    .tappa.visitato {
+        background: #d4edda;
+        border-left-color: #28a745;
+        opacity: 0.8;
+    }
+    .tappa.appuntamento {
+        border-left-color: #dc3545;
+        background: #fff5f5;
+    }
+    .tappa-ora {
+        font-size: 0.7rem;
+        color: #666;
+        font-weight: bold;
+    }
+    .tappa-nome {
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: #333;
+    }
+    .tappa-info {
+        font-size: 0.7rem;
+        color: #888;
+    }
+    
+    /* === AZIONI CLIENTE (nascoste di default) === */
+    .tappa-azioni {
+        display: flex;
+        gap: 8px;
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px solid #eee;
+    }
+    .tappa-azioni a, .tappa-azioni button {
+        flex: 1;
+        padding: 8px;
+        border-radius: 6px;
+        text-align: center;
+        text-decoration: none;
+        font-size: 1.2rem;
+        background: #f8f9fa;
+        border: 1px solid #ddd;
+    }
+    .tappa-azioni a:hover { background: #e9ecef; }
+    
+    /* === AGENDA SETTIMANALE === */
+    .week-grid {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 3px;
+        background: #f0f2f6;
+        border-radius: 8px;
+        padding: 3px;
+    }
+    .week-day {
+        background: white;
+        border-radius: 6px;
+        padding: 5px;
+        min-height: 150px;
+        font-size: 0.75rem;
+    }
+    .week-day-header {
+        font-weight: bold;
+        font-size: 0.8rem;
+        text-align: center;
+        padding: 3px;
+        background: #3498db;
+        color: white;
+        border-radius: 4px;
+        margin-bottom: 5px;
+    }
+    .week-day-header.oggi {
+        background: #e74c3c;
+    }
+    .week-cliente {
+        background: #f8f9fa;
+        border-radius: 4px;
+        padding: 3px 5px;
+        margin: 2px 0;
+        font-size: 0.7rem;
+        border-left: 3px solid #3498db;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    
+    /* === TABS MENU BOTTOM (MOBILE) === */
+    .bottom-nav {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: white;
+        border-top: 1px solid #ddd;
+        display: flex;
+        justify-content: space-around;
+        padding: 5px 0;
+        z-index: 1000;
+    }
+    .bottom-nav a {
+        text-decoration: none;
+        text-align: center;
+        color: #666;
+        font-size: 0.7rem;
+        padding: 5px 10px;
+    }
+    .bottom-nav a.active { color: #3498db; }
+    
+    /* === FORM COMPATTO === */
+    .stTextInput > div > div > input,
+    .stTextArea > div > div > textarea {
+        padding: 0.4rem !important;
+        font-size: 16px !important;
+    }
+    .stSelectbox > div > div { min-height: 36px !important; }
+    
+    /* === METRICHE INLINE === */
+    .stats-bar {
+        display: flex;
+        justify-content: space-between;
+        background: #f8f9fa;
+        padding: 6px 10px;
+        border-radius: 6px;
+        font-size: 0.8rem;
+        margin-bottom: 5px;
+    }
+    .stats-bar span { font-weight: bold; }
+    
+    /* === MOBILE ADJUSTMENTS === */
+    @media (max-width: 768px) {
+        .block-container { padding: 0.2rem 0.3rem 60px 0.3rem !important; }
+        .week-grid { grid-template-columns: repeat(5, 1fr); gap: 2px; }
+        .week-day { min-height: 120px; padding: 3px; }
+        .week-cliente { font-size: 0.65rem; }
         h1 { font-size: 1rem !important; }
-        [data-testid="stMetricValue"] { font-size: 0.9rem !important; }
-    }
-    
-    /* === NASCONDI SU MOBILE === */
-    @media (max-width: 640px) {
-        .desktop-only { display: none !important; }
-        .stCaption { font-size: 0.7rem !important; }
-    }
-    
-    /* === MOSTRA SOLO SU MOBILE === */
-    @media (min-width: 641px) {
-        .mobile-only { display: none !important; }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -1540,7 +1593,7 @@ def main_app():
     
     # Menu navigazione
     if 'active_tab' not in st.session_state:
-        st.session_state.active_tab = "🚀 Giro Oggi"
+        st.session_state.active_tab = "🚀 Giro"
     
     # Se è il pannello admin, mostralo
     if st.session_state.active_tab == "🔐 Admin":
@@ -1548,24 +1601,21 @@ def main_app():
             admin_panel()
             st.divider()
             if st.button("⬅️ Torna all'App", use_container_width=True):
-                st.session_state.active_tab = "🚀 Giro Oggi"
+                st.session_state.active_tab = "🚀 Giro"
                 st.rerun()
             return
         else:
-            st.session_state.active_tab = "🚀 Giro Oggi"
+            st.session_state.active_tab = "🚀 Giro"
     
-    # Menu compatto - usa selectbox su mobile, bottoni su desktop
-    menu = ["🚀 Giro", "📊 Dash", "📅 Agenda", "🗺️ Mappa", "👤 Clienti", "➕ Nuovo", "⚙️ Config"]
-    menu_full = ["🚀 Giro Oggi", "📊 Dashboard", "📅 Agenda", "🗺️ Mappa", "👤 Anagrafica", "➕ Nuovo", "⚙️ Config"]
+    # Menu COMPATTO - Dashboard alla fine
+    menu = ["🚀", "📅", "👤", "➕", "⚙️", "📊"]
+    menu_full = ["🚀 Giro", "📅 Agenda", "👤 Clienti", "➕ Nuovo", "⚙️ Config", "📊 Report"]
     
-    # Mappa menu corto -> menu completo
-    menu_map = dict(zip(menu, menu_full))
-    
-    nav = st.columns(7)
-    for i, m in enumerate(menu):
-        full_name = menu_map[m]
-        if nav[i].button(m, key=f"nav_{m}", use_container_width=True, type="primary" if st.session_state.active_tab == full_name else "secondary"):
-            st.session_state.active_tab = full_name
+    nav = st.columns(6)
+    for i, (icon, name) in enumerate(zip(menu, menu_full)):
+        if nav[i].button(icon, key=f"nav_{i}", use_container_width=True, 
+                        type="primary" if st.session_state.active_tab == name else "secondary"):
+            st.session_state.active_tab = name
             st.rerun()
     
     config = st.session_state.config
@@ -1573,449 +1623,130 @@ def main_app():
     if isinstance(giorni_lavorativi, str):
         giorni_lavorativi = [int(x) for x in giorni_lavorativi.strip('{}').split(',')]
     
-    # --- TAB: GIRO OGGI ---
-    if st.session_state.active_tab == "🚀 Giro Oggi":
-        # Header compatto con data e pulsanti
-        col_title, col_btns = st.columns([3, 2])
-        with col_title:
-            st.markdown(f"### 📍 {ora_italiana.strftime('%d/%m')} - {['Lun','Mar','Mer','Gio','Ven','Sab','Dom'][ora_italiana.weekday()]}")
-        with col_btns:
-            c1, c2 = st.columns(2)
-            with c1:
-                if st.button("🔄 Rigenera", use_container_width=True):
-                    st.session_state.variante_giro = st.session_state.get('variante_giro', 0) + 1
-                    st.rerun()
-            with c2:
-                if st.button("🔃 Ricarica", use_container_width=True):
-                    st.session_state.reload_data = True
-                    st.rerun()
-        
+    # --- TAB: GIRO ---
+    if st.session_state.active_tab == "🚀 Giro":
         idx_g = ora_italiana.weekday()
-        giorni_nomi = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"]
         
         # Inizializza
-        if 'esclusi_oggi' not in st.session_state:
-            st.session_state.esclusi_oggi = []
-        if 'variante_giro' not in st.session_state:
-            st.session_state.variante_giro = 0
+        if 'esclusi_oggi' not in st.session_state: st.session_state.esclusi_oggi = []
+        if 'variante_giro' not in st.session_state: st.session_state.variante_giro = 0
+        if 'visitati_oggi' not in st.session_state: st.session_state.visitati_oggi = []
+        if 'cliente_espanso' not in st.session_state: st.session_state.cliente_espanso = None
         
-        # === PANNELLO GESTIONE GIRO (nascosto di default) ===
-        with st.expander("⚙️ Opzioni", expanded=False):
-            
-            # Info variante attuale
-            variante_attuale = st.session_state.get('variante_giro', 0)
-            if variante_attuale > 0:
-                st.info(f"🔄 Giro rigenerato {variante_attuale} volta/e - Premi '🔄 Rigenera' per provare un altro percorso")
-                if st.button("↩️ Torna al giro originale"):
-                    st.session_state.variante_giro = 0
-                    st.rerun()
-            
-            st.divider()
-            
-            # --- SEZIONE: Escludi Clienti ---
-            st.write("**🚫 Escludi clienti dal giro di oggi:**")
-            
-            # Lista clienti attivi (da poter escludere)
-            clienti_attivi = df[df['visitare'] == 'SI']['nome_cliente'].tolist() if not df.empty and 'visitare' in df.columns else []
-            
-            if clienti_attivi:
-                # Multiselect per escludere clienti
-                esclusi_selezionati = st.multiselect(
-                    "Seleziona clienti da escludere:",
-                    sorted(clienti_attivi),
-                    default=st.session_state.esclusi_oggi,
-                    key="escludi_clienti_select"
-                )
-                
-                col_esc1, col_esc2 = st.columns(2)
-                
-                with col_esc1:
-                    if st.button("🔄 Ricalcola Giro", type="primary", use_container_width=True):
-                        st.session_state.esclusi_oggi = esclusi_selezionati
-                        st.rerun()
-                
-                with col_esc2:
-                    if st.button("🗑️ Rimuovi Esclusioni", use_container_width=True):
-                        st.session_state.esclusi_oggi = []
-                        st.rerun()
-                
-                if st.session_state.esclusi_oggi:
-                    st.warning(f"⚠️ **{len(st.session_state.esclusi_oggi)} clienti esclusi** dal giro di oggi")
-            else:
-                st.info("Nessun cliente attivo da escludere")
+        # Calcola tappe
+        variante = st.session_state.get('variante_giro', 0)
+        tappe_oggi = calcola_piano_giornaliero(df, idx_g, config, st.session_state.esclusi_oggi, variante=variante) if idx_g in giorni_lavorativi else []
         
-        # Controlla se oggi è giorno di ferie
-        oggi_date = ora_italiana.date()
-        is_ferie_oggi = False
+        fatte = len([t for t in tappe_oggi if t['nome_cliente'] in st.session_state.visitati_oggi])
         
-        attiva_ferie = config.get('attiva_ferie', False)
-        if attiva_ferie:
-            fi = config.get('ferie_inizio')
-            ff = config.get('ferie_fine')
-            
-            ferie_inizio = None
-            ferie_fine = None
-            
-            if fi:
-                if isinstance(fi, str):
-                    try:
-                        ferie_inizio = datetime.strptime(fi[:10], '%Y-%m-%d').date()
-                    except:
-                        pass
-                elif hasattr(fi, 'date'):
-                    ferie_inizio = fi.date()
-                elif hasattr(fi, 'year'):
-                    ferie_inizio = fi
-            
-            if ff:
-                if isinstance(ff, str):
-                    try:
-                        ferie_fine = datetime.strptime(ff[:10], '%Y-%m-%d').date()
-                    except:
-                        pass
-                elif hasattr(ff, 'date'):
-                    ferie_fine = ff.date()
-                elif hasattr(ff, 'year'):
-                    ferie_fine = ff
-            
-            if ferie_inizio and ferie_fine:
-                is_ferie_oggi = ferie_inizio <= oggi_date <= ferie_fine
+        # === HEADER: Data + Stats + Pulsanti ===
+        st.markdown(f"""
+        <div style="display:flex; justify-content:space-between; align-items:center; background:#f8f9fa; padding:8px 12px; border-radius:8px; margin-bottom:5px;">
+            <b style="font-size:1rem;">📍 {['Lun','Mar','Mer','Gio','Ven','Sab','Dom'][idx_g]} {ora_italiana.strftime('%d/%m')}</b>
+            <span style="font-size:0.9rem;">✅ <b>{fatte}/{len(tappe_oggi)}</b></span>
+        </div>
+        """, unsafe_allow_html=True)
         
-        # Mostra messaggio appropriato
-        if is_ferie_oggi:
-            st.warning(f"🏖️ **Oggi sei in FERIE!** (dal {ferie_inizio.strftime('%d/%m/%Y')} al {ferie_fine.strftime('%d/%m/%Y')})")
-            st.info("Per disattivare le ferie, vai su ⚙️ Config → Ferie")
-        elif idx_g in giorni_lavorativi:
-            # Alert critici
-            critici = [c for c in get_clienti_trascurati(df) if c['livello'] == 'critico']
-            if critici:
-                st.error(f"🚨 **{len(critici)} clienti critici** da visitare urgentemente!")
-            
-            # Calcola tappe (con variante giro)
-            variante = st.session_state.get('variante_giro', 0)
-            tappe_oggi = calcola_piano_giornaliero(df, idx_g, config, st.session_state.esclusi_oggi, variante=variante)
-            
-            # === DEBUG GIRO ===
-            with st.expander("🔧 DEBUG GIRO - Clicca per vedere i dettagli", expanded=False):
-                base_lat = float(config.get('lat_base', 0))
-                base_lon = float(config.get('lon_base', 0))
+        # Pulsanti compatti
+        c1, c2, c3 = st.columns(3)
+        c1.button("🔄", key="regen", use_container_width=True, on_click=lambda: setattr(st.session_state, 'variante_giro', variante+1))
+        if c2.button("🗺️", use_container_width=True):
+            st.session_state.show_map = not st.session_state.get('show_map', False)
+            st.rerun()
+        c3.button("⚙️", key="opts", use_container_width=True)
+        
+        # Mappa toggle
+        if st.session_state.get('show_map', False) and tappe_oggi:
+            wps = [(config.get('lat_base', 43.4), config.get('lon_base', 13.5))] + [(t['latitude'], t['longitude']) for t in tappe_oggi]
+            m = folium.Map(location=wps[0], zoom_start=10, tiles='cartodbpositron')
+            folium.Marker(wps[0], icon=folium.Icon(color="blue", icon="home")).add_to(m)
+            for i, t in enumerate(tappe_oggi, 1):
+                col = "green" if t['nome_cliente'] in st.session_state.visitati_oggi else "red"
+                folium.Marker([t['latitude'], t['longitude']], popup=f"{i}", icon=folium.Icon(color=col)).add_to(m)
+            rt = get_route_osrm(wps)
+            if len(rt) > 1: folium.PolyLine(rt, weight=2, color='#3498db').add_to(m)
+            st_folium(m, height=180, use_container_width=True, key="map1")
+        
+        # === LISTA TAPPE COMPATTA ===
+        if idx_g not in giorni_lavorativi:
+            st.info("🏖️ Oggi non è giorno lavorativo")
+        elif not tappe_oggi:
+            st.warning("Nessuna visita programmata")
+        else:
+            for i, t in enumerate(tappe_oggi, 1):
+                visitato = t['nome_cliente'] in st.session_state.visitati_oggi
+                espanso = st.session_state.cliente_espanso == t['id']
+                is_app = "APPUNTAMENTO" in t.get('tipo_tappa', '')
                 
-                st.write(f"**📍 BASE:** Lat={base_lat:.4f}, Lon={base_lon:.4f}")
+                # Colore riga
+                bg = "#e8f5e9" if visitato else ("#fff3e0" if is_app else "#fff")
+                border = "#4caf50" if visitato else ("#ff9800" if is_app else "#2196f3")
                 
-                if base_lat == 0 or base_lon == 0:
-                    st.error("❌ PROBLEMA: Coordinate BASE non impostate! Vai in ⚙️ Config")
-                
-                # Conta clienti
-                clienti_validi = df[(df['visitare'] == 'SI') & (df['latitude'].notna()) & (df['longitude'].notna()) & (df['latitude'] != 0)].shape[0]
-                st.write(f"**👥 Clienti totali con coordinate:** {clienti_validi}")
-                
-                if tappe_oggi:
-                    st.write(f"**📋 Clienti nel giro di oggi:** {len(tappe_oggi)}")
-                    st.divider()
-                    
-                    # Mostra dettaglio percorso
-                    st.write("**🛣️ PERCORSO DETTAGLIATO:**")
-                    pos_lat, pos_lon = base_lat, base_lon
-                    km_totale = 0
-                    
-                    for i, t in enumerate(tappe_oggi):
-                        dist = haversine(pos_lat, pos_lon, t['latitude'], t['longitude'])
-                        km_totale += dist
-                        citta = t.get('citta', '') or ''
-                        
-                        if dist > 30:
-                            st.error(f"{i+1}. **{t['nome_cliente']}** - {citta} | 🚗 **{dist:.1f} km** ← TROPPO LONTANO!")
-                        elif dist > 15:
-                            st.warning(f"{i+1}. **{t['nome_cliente']}** - {citta} | 🚗 {dist:.1f} km")
-                        else:
-                            st.success(f"{i+1}. **{t['nome_cliente']}** - {citta} | 🚗 {dist:.1f} km ✓")
-                        
-                        pos_lat, pos_lon = t['latitude'], t['longitude']
-                    
-                    # Ritorno a base
-                    dist_ritorno = haversine(pos_lat, pos_lon, base_lat, base_lon)
-                    km_totale += dist_ritorno
-                    st.write(f"🏠 Ritorno a base: {dist_ritorno:.1f} km")
-                    st.write(f"**📊 TOTALE KM: {km_totale:.1f}**")
-                else:
-                    st.warning("Nessuna tappa calcolata per oggi")
-            
-            # Trova visitati fuori giro
-            nomi_nel_giro = [t['nome_cliente'] for t in tappe_oggi]
-            visitati_fuori_giro = [v for v in st.session_state.visitati_oggi if v not in nomi_nel_giro]
-            
-            if tappe_oggi or visitati_fuori_giro:
-                # Statistiche compatte in una riga
-                km_tot, tempo_guida, tempo_tot = calcola_km_tempo_giro(
-                    tappe_oggi, 
-                    config.get('lat_base', 41.9028), 
-                    config.get('lon_base', 12.4964),
-                    config.get('durata_visita', 45)
-                )
-                
-                # Metriche super compatte
+                # RIGA COMPATTA
                 st.markdown(f"""
-                <div style="display:flex; justify-content:space-between; background:#f8f9fa; padding:8px 12px; border-radius:8px; margin-bottom:8px;">
-                    <span>📊 <b>{len(tappe_oggi)}</b> visite</span>
-                    <span>✅ <b>{len(st.session_state.visitati_oggi)}</b> fatte</span>
-                    <span>🛣️ <b>{km_tot}</b> km</span>
-                    <span>⏱️ <b>{tempo_tot//60}h{tempo_tot%60}m</b></span>
+                <div style="background:{bg}; border-left:4px solid {border}; padding:6px 10px; margin:3px 0; border-radius:4px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-size:0.75rem; color:#666; width:45px;">{t['ora_arrivo']}</span>
+                        <span style="flex:1; font-weight:{'normal' if visitato else 'bold'}; font-size:0.9rem; {'text-decoration:line-through; color:#888;' if visitato else ''}">
+                            {'✅ ' if visitato else ('📌 ' if is_app else '')}{t['nome_cliente'][:22]}
+                        </span>
+                    </div>
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Mappa in expander (chiuso di default su mobile)
-                if tappe_oggi:
-                    with st.expander("🗺️ Mappa Percorso", expanded=False):
-                        # Costruisci lista waypoints
-                        waypoints = [(config.get('lat_base', 41.9028), config.get('lon_base', 12.4964))]
-                        for t in tappe_oggi:
-                            waypoints.append((t['latitude'], t['longitude']))
-                        
-                        # Ottieni percorso stradale reale
-                        route_stradale = get_route_osrm(waypoints)
-                        
-                        m = folium.Map(location=[config.get('lat_base', 41.9028), config.get('lon_base', 12.4964)], zoom_start=10)
-                        
-                        # Marker partenza
-                        folium.Marker(
-                            [config.get('lat_base', 41.9028), config.get('lon_base', 12.4964)],
-                            popup="🏠 Base",
-                            icon=folium.Icon(color="blue", icon="home")
-                        ).add_to(m)
-                        
-                        # Marker tappe
-                        for i, t in enumerate(tappe_oggi, 1):
-                            visitato = t['nome_cliente'] in st.session_state.visitati_oggi
-                            color = "green" if visitato else ("red" if "APPUNTAMENTO" in t['tipo_tappa'] else "orange")
-                            
-                            folium.Marker(
-                                [t['latitude'], t['longitude']],
-                                popup=f"{i}. {t['nome_cliente']}",
-                                icon=folium.Icon(color=color, icon="ok" if visitato else "user")
-                            ).add_to(m)
-                        
-                        # Disegna il percorso stradale
-                        if len(route_stradale) > 1:
-                            folium.PolyLine(
-                                route_stradale, 
-                                weight=3, 
-                                color='#3498db', 
-                                opacity=0.8
-                            ).add_to(m)
-                        
-                        m.fit_bounds(waypoints)
-                        st_folium(m, width="100%", height=250, key="map_oggi")
-                
-                # Lista Tappe compatta
-                
-                for i, t in enumerate(tappe_oggi, 1):
-                    visitato = t['nome_cliente'] in st.session_state.visitati_oggi
-                    
-                    # Trova dati completi del cliente
-                    cliente_row = df[df['nome_cliente'] == t['nome_cliente']].iloc[0] if not df[df['nome_cliente'] == t['nome_cliente']].empty else None
-                    
-                    if 'cliente_report_aperto' not in st.session_state:
-                        st.session_state.cliente_report_aperto = None
-                    
-                    if visitato:
-                        # Tappa visitata - compatta
-                        st.markdown(f"""
-                        <div style="background: #d4edda; padding: 8px 12px; border-radius: 8px; margin-bottom: 5px; border-left: 4px solid #28a745;">
-                            ✅ <s>{i}. {t['nome_cliente']}</s> <span style="float:right; font-size:0.8em;">FATTO</span>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    else:
-                        with st.container(border=True):
-                            form_aperto = st.session_state.cliente_report_aperto == t['id']
-                            
-                            if not form_aperto:
-                                # Vista compatta
-                                c1, c2 = st.columns([3, 1])
-                                
-                                with c1:
-                                    tipo_icon = "📌" if "APPUNTAMENTO" in t['tipo_tappa'] else "🚗"
-                                    st.markdown(f"**{tipo_icon} {i}. {t['nome_cliente']}**")
-                                    st.caption(f"⏰ {t['ora_arrivo']} | 📍 {t.get('indirizzo', '')[:30]}...")
-                                    
-                                    # Promemoria (se presente)
-                                    if cliente_row is not None and pd.notnull(cliente_row.get('promemoria')) and str(cliente_row.get('promemoria')).strip():
-                                        st.warning(f"📝 {cliente_row['promemoria'][:50]}...")
-                                
-                                with c2:
-                                    if st.button("✅", key=f"visita_{t['id']}", help="Registra visita"):
-                                        st.session_state.cliente_report_aperto = t['id']
-                                        st.rerun()
-                                    
-                                    # Pulsanti azione compatti
-                                    bc1, bc2 = st.columns(2)
-                                    bc1.link_button("🚗", f"https://www.google.com/maps/dir/?api=1&destination={t['latitude']},{t['longitude']}", use_container_width=True)
-                                    if t.get('cellulare') and str(t.get('cellulare')).strip():
-                                        bc2.link_button("📱", f"tel:{t['cellulare']}", use_container_width=True)
-                            
-                            else:
-                                # FORM REPORT APERTO
-                                st.markdown(f"**📝 Report: {t['nome_cliente']}**")
-                                
-                                # Mostra storico precedente se presente
-                                storico_attuale = ""
-                                if cliente_row is not None and pd.notnull(cliente_row.get('storico_report')):
-                                    storico_attuale = str(cliente_row.get('storico_report', ''))
-                                    if storico_attuale.strip():
-                                        with st.expander("📜 Storico"):
-                                            st.text(storico_attuale[:500])
-                                
-                                # Form per nuovo report
-                                nuovo_report = st.text_area(
-                                    "✍️ Report visita:",
-                                    placeholder="Es: Discusso nuovo ordine...",
-                                    height=80,
-                                    key=f"report_text_{t['id']}"
-                                )
-                                
-                                col_save, col_skip, col_cancel = st.columns(3)
-                                
-                                with col_save:
-                                    if st.button("💾 Salva e Completa", key=f"save_report_{t['id']}", type="primary", use_container_width=True):
-                                        # Prepara nuovo storico con data
-                                        data_oggi = ora_italiana.strftime('%d/%m/%Y')
-                                        if nuovo_report.strip():
-                                            nuovo_storico = f"[{data_oggi}] {nuovo_report.strip()}"
-                                            if storico_attuale.strip():
-                                                nuovo_storico = f"{nuovo_storico}\n\n{storico_attuale}"
-                                        else:
-                                            nuovo_storico = storico_attuale
-                                        
-                                        # Aggiorna database
-                                        update_cliente(t['id'], {
-                                            'ultima_visita': ora_italiana.date().isoformat(),
-                                            'storico_report': nuovo_storico
-                                        })
-                                        st.session_state.visitati_oggi.append(t['nome_cliente'])
-                                        st.session_state.cliente_report_aperto = None
-                                        st.session_state.reload_data = True
-                                        st.success("✅ Visita registrata con report!")
-                                        time_module.sleep(0.5)
-                                        st.rerun()
-                                
-                                with col_skip:
-                                    if st.button("⏭️ Salta Report", key=f"skip_report_{t['id']}", use_container_width=True):
-                                        # Salva senza report
-                                        update_cliente(t['id'], {
-                                            'ultima_visita': ora_italiana.date().isoformat()
-                                        })
-                                        st.session_state.visitati_oggi.append(t['nome_cliente'])
-                                        st.session_state.cliente_report_aperto = None
-                                        st.session_state.reload_data = True
-                                        st.rerun()
-                                
-                                with col_cancel:
-                                    if st.button("❌ Annulla", key=f"cancel_report_{t['id']}", use_container_width=True):
-                                        st.session_state.cliente_report_aperto = None
-                                        st.rerun()
-                
-                # Navigazione completa
-                if tappe_oggi:
-                    st.divider()
-                    tappe_rimanenti = [t for t in tappe_oggi if t['nome_cliente'] not in st.session_state.visitati_oggi]
-                    if tappe_rimanenti:
-                        waypoints = "|".join([f"{t['latitude']},{t['longitude']}" for t in tappe_rimanenti[:-1]])
-                        dest = f"{tappe_rimanenti[-1]['latitude']},{tappe_rimanenti[-1]['longitude']}"
-                        origin = f"{config.get('lat_base', 41.9028)},{config.get('lon_base', 12.4964)}"
-                        url = f"https://www.google.com/maps/dir/?api=1&origin={origin}&destination={dest}&waypoints={waypoints}&travelmode=driving"
-                        st.link_button(f"🗺️ NAVIGA ({len(tappe_rimanenti)} tappe)", url, use_container_width=True, type="primary")
-                    else:
-                        st.success("🎉 Hai completato tutte le visite programmate!")
-                
-                # === SEZIONE VISITE FUORI GIRO ===
-                st.divider()
-                nomi_nel_giro = [t['nome_cliente'] for t in tappe_oggi]
-                visitati_fuori_giro = [v for v in st.session_state.visitati_oggi if v not in nomi_nel_giro]
-                
-                # Mostra clienti visitati fuori giro
-                if visitati_fuori_giro:
-                    st.subheader("➕ Visite Fuori Giro")
-                    for nome_vfg in visitati_fuori_giro:
-                        cliente_vfg = df[df['nome_cliente'] == nome_vfg]
-                        if not cliente_vfg.empty:
-                            cliente_vfg = cliente_vfg.iloc[0]
-                            with st.container(border=True):
-                                col_vfg1, col_vfg2 = st.columns([4, 1])
-                                col_vfg1.markdown(f"### ✅ {nome_vfg}")
-                                if cliente_vfg.get('indirizzo'):
-                                    col_vfg1.caption(f"📍 {cliente_vfg['indirizzo']}")
-                                if col_vfg2.button("👤", key=f"vfg_scheda_{nome_vfg}", help="Scheda"):
-                                    st.session_state.cliente_selezionato = nome_vfg
-                                    st.session_state.active_tab = "👤 Anagrafica"
-                                    st.rerun()
-                
-                # Form per aggiungere visita fuori giro
-                with st.expander("➕ Registra visita a cliente fuori giro"):
-                    clienti_non_visitati = [c for c in df['nome_cliente'].tolist() if c not in st.session_state.visitati_oggi] if not df.empty and 'nome_cliente' in df.columns else []
-                    cliente_extra = st.selectbox("Seleziona cliente:", [""] + sorted(clienti_non_visitati), key="cliente_extra_giro")
-                    
-                    if cliente_extra:
-                        col_extra1, col_extra2 = st.columns(2)
-                        if col_extra1.button("✅ Registra Visita", type="primary", use_container_width=True):
-                            # Aggiorna ultima_visita nel database
-                            cliente_row = df[df['nome_cliente'] == cliente_extra].iloc[0]
-                            update_cliente(cliente_row['id'], {
-                                'ultima_visita': ora_italiana.date().isoformat()
-                            })
-                            st.session_state.visitati_oggi.append(cliente_extra)
-                            st.session_state.reload_data = True
-                            st.success(f"✅ Visita a {cliente_extra} registrata!")
-                            st.rerun()
-                        
-                        if col_extra2.button("👤 Vai alla Scheda", use_container_width=True):
-                            st.session_state.cliente_selezionato = cliente_extra
-                            st.session_state.active_tab = "👤 Anagrafica"
-                            st.rerun()
-                
-                # Riepilogo finale
-                st.divider()
-                tot_visitati = len(st.session_state.visitati_oggi)
-                tot_giro = len(tappe_oggi)
-                tot_fuori = len(visitati_fuori_giro)
-                
-                st.markdown(f"""
-                ### 📊 Riepilogo Giornata
-                | | |
-                |---|---|
-                | ✅ **Visitati totali** | **{tot_visitati}** |
-                | 🚗 Nel giro | {tot_visitati - tot_fuori} / {tot_giro} |
-                | ➕ Fuori giro | {tot_fuori} |
-                """)
-                
-            else:
-                st.info("📭 Nessuna visita pianificata per oggi")
-                
-                # Anche senza giro, permetti visite fuori giro
-                st.divider()
-                st.subheader("➕ Registra visita")
-                
-                if st.session_state.visitati_oggi:
-                    st.success(f"✅ Hai visitato {len(st.session_state.visitati_oggi)} clienti oggi")
-                    for nome_v in st.session_state.visitati_oggi:
-                        st.write(f"✅ {nome_v}")
-                
-                clienti_non_visitati = [c for c in df['nome_cliente'].tolist() if c not in st.session_state.visitati_oggi] if not df.empty and 'nome_cliente' in df.columns else []
-                cliente_extra = st.selectbox("Seleziona cliente da visitare:", [""] + sorted(clienti_non_visitati), key="cliente_no_giro")
-                
-                if cliente_extra:
-                    if st.button("✅ Registra Visita", type="primary"):
-                        cliente_row = df[df['nome_cliente'] == cliente_extra].iloc[0]
-                        update_cliente(cliente_row['id'], {
-                            'ultima_visita': ora_italiana.date().isoformat()
-                        })
-                        st.session_state.visitati_oggi.append(cliente_extra)
-                        st.session_state.reload_data = True
-                        st.success(f"✅ Visita a {cliente_extra} registrata!")
+                # Pulsante espandi (solo se non visitato)
+                if not visitato:
+                    if st.button(f"{'▼' if espanso else '▶'} Azioni", key=f"act_{t['id']}", use_container_width=True):
+                        st.session_state.cliente_espanso = None if espanso else t['id']
                         st.rerun()
-        else:
-            st.warning(f"🏖️ Oggi è {giorni_nomi[idx_g]} - non lavorativo")
-    
+                
+                # === AZIONI ESPANSE ===
+                if espanso and not visitato:
+                    st.caption(f"📍 {t.get('indirizzo', t.get('citta', ''))[:40]}")
+                    
+                    # Promemoria
+                    cliente_row = df[df['nome_cliente'] == t['nome_cliente']]
+                    if not cliente_row.empty:
+                        prm = cliente_row.iloc[0].get('promemoria', '')
+                        if pd.notna(prm) and str(prm).strip():
+                            st.warning(f"📝 {prm}")
+                    
+                    # 5 pulsanti azione
+                    a1, a2, a3, a4, a5 = st.columns(5)
+                    a1.link_button("🚗", f"https://www.google.com/maps/dir/?api=1&destination={t['latitude']},{t['longitude']}", use_container_width=True)
+                    
+                    cell = str(t.get('cellulare', '')).strip()
+                    if cell: a2.link_button("📱", f"tel:{cell}", use_container_width=True)
+                    else: a2.button("📱", disabled=True, use_container_width=True)
+                    
+                    email = cliente_row.iloc[0].get('email', '') if not cliente_row.empty else ''
+                    if pd.notna(email) and str(email).strip(): a3.link_button("✉️", f"mailto:{email}", use_container_width=True)
+                    else: a3.button("✉️", disabled=True, use_container_width=True)
+                    
+                    if a4.button("👤", key=f"ana_{t['id']}", use_container_width=True):
+                        st.session_state.cliente_selezionato_id = t['id']
+                        st.session_state.active_tab = "👤 Clienti"
+                        st.rerun()
+                    
+                    if a5.button("✅", key=f"ok_{t['id']}", type="primary", use_container_width=True):
+                        st.session_state.visitati_oggi.append(t['nome_cliente'])
+                        update_cliente(t['id'], {'ultima_visita': ora_italiana.isoformat()})
+                        st.session_state.cliente_espanso = None
+                        st.rerun()
+            
+            # Visita extra (compatto)
+            with st.popover("➕ Extra"):
+                clienti = sorted(df[df['visitare'] == 'SI']['nome_cliente'].tolist()) if not df.empty else []
+                sel = st.selectbox("Cliente:", clienti, key="extra_sel")
+                if st.button("✅ Registra", key="extra_btn"):
+                    if sel and sel not in st.session_state.visitati_oggi:
+                        st.session_state.visitati_oggi.append(sel)
+                        row = df[df['nome_cliente'] == sel]
+                        if not row.empty: update_cliente(row.iloc[0]['id'], {'ultima_visita': ora_italiana.isoformat()})
+                        st.rerun()
+
     # --- TAB: DASHBOARD ---
-    elif st.session_state.active_tab == "📊 Dashboard":
+    elif st.session_state.active_tab == "📊 Report":
         st.header("📊 Dashboard")
         
         # Alert
@@ -2090,7 +1821,7 @@ def main_app():
                 col1.error(f"**{c['nome']}** - {c['messaggio']}")
                 if col2.button("👤", key=f"dash_{c['id']}"):
                     st.session_state.cliente_selezionato = c['nome']
-                    st.session_state.active_tab = "👤 Anagrafica"
+                    st.session_state.active_tab = "👤 Clienti"
                     st.rerun()
         
         # === STORICO VISITE ===
@@ -2172,7 +1903,7 @@ def main_app():
                             # Pulsante scheda
                             if col_st3.button("👤", key=f"storico_{row['id']}", help="Apri scheda"):
                                 st.session_state.cliente_selezionato = row['nome_cliente']
-                                st.session_state.active_tab = "👤 Anagrafica"
+                                st.session_state.active_tab = "👤 Clienti"
                                 st.rerun()
                 else:
                     if tipo_filtro == "Giorno singolo":
@@ -2560,7 +2291,7 @@ def main_app():
                                 nome_display = tappa['nome_cliente'][:15] + "..." if len(tappa['nome_cliente']) > 15 else tappa['nome_cliente']
                                 if st.button(nome_display, key=f"ag_{data_giorno}_{tappa['nome_cliente']}", use_container_width=True):
                                     st.session_state.cliente_selezionato = tappa['nome_cliente']
-                                    st.session_state.active_tab = "👤 Anagrafica"
+                                    st.session_state.active_tab = "👤 Clienti"
                                     st.rerun()
                                 
                                 # Mostra ritardo
@@ -2834,7 +2565,7 @@ def main_app():
                         col2.link_button("🚗", f"https://www.google.com/maps/dir/?api=1&destination={row['latitude']},{row['longitude']}", use_container_width=True)
                         if col3.button("👤", key=f"mappa_cliente_{row['id']}"):
                             st.session_state.cliente_selezionato = row['nome_cliente']
-                            st.session_state.active_tab = "👤 Anagrafica"
+                            st.session_state.active_tab = "👤 Clienti"
                             st.rerun()
             else:
                 st.warning("⚠️ Nessun cliente trovato con i filtri selezionati")
@@ -2842,7 +2573,7 @@ def main_app():
             st.info("Nessun cliente da mostrare")
     
     # --- TAB: ANAGRAFICA ---
-    elif st.session_state.active_tab == "👤 Anagrafica":
+    elif st.session_state.active_tab == "👤 Clienti":
         st.header("👤 Anagrafica Cliente")
         
         if not df.empty:
