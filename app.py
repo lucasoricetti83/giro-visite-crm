@@ -4,6 +4,7 @@ import folium
 from streamlit_folium import st_folium
 from datetime import datetime, timedelta, time
 from math import radians, cos, sin, asin, sqrt
+import math
 import io
 import re
 import time as time_module
@@ -13,219 +14,6 @@ from supabase import create_client, Client
 
 # --- 1. CONFIGURAZIONE ---
 st.set_page_config(page_title="Giro Visite CRM Pro", layout="wide", page_icon="🚀")
-
-# --- CSS MOBILE-FIRST ULTRA COMPATTO ---
-st.markdown("""
-<style>
-    /* === RESET E BASE === */
-    .block-container {
-        padding: 0.3rem 0.5rem 0 0.5rem !important;
-        max-width: 100% !important;
-    }
-    header[data-testid="stHeader"] { display: none !important; }
-    #MainMenu { display: none !important; }
-    footer { display: none !important; }
-    
-    /* === TITOLI MINIMI === */
-    h1 { font-size: 1.1rem !important; margin: 0 !important; }
-    h2 { font-size: 1rem !important; margin: 0 !important; }
-    h3 { font-size: 0.9rem !important; margin: 0 !important; }
-    p, li { margin: 0 !important; font-size: 0.85rem !important; }
-    
-    /* === BOTTONI TOUCH === */
-    .stButton > button {
-        padding: 0.4rem 0.6rem !important;
-        font-size: 0.8rem !important;
-        min-height: 38px !important;
-        border-radius: 8px !important;
-    }
-    .stButton { margin: 0 !important; }
-    
-    /* === EXPANDER MINIMO === */
-    .streamlit-expanderHeader {
-        font-size: 0.8rem !important;
-        padding: 0.3rem 0.5rem !important;
-        background: #f0f2f6 !important;
-        border-radius: 6px !important;
-    }
-    .streamlit-expanderContent { padding: 0.3rem !important; }
-    
-    /* === ELEMENTI ZERO MARGIN === */
-    .element-container { margin: 0 !important; padding: 0 !important; }
-    hr { margin: 0.2rem 0 !important; }
-    .stDivider { margin: 0.2rem 0 !important; }
-    [data-testid="column"] { padding: 0 0.1rem !important; }
-    
-    /* === SIDEBAR NASCOSTA SU MOBILE === */
-    @media (max-width: 768px) {
-        [data-testid="stSidebar"] { display: none !important; }
-    }
-    
-    /* === AGENDA STYLE - SFONDO RIGHE ORARIO === */
-    .agenda-container {
-        background: linear-gradient(to bottom, 
-            #fff 0px, #fff 39px, #e8e8e8 40px,
-            #fff 41px, #fff 79px, #e8e8e8 80px,
-            #fff 81px, #fff 119px, #e8e8e8 120px,
-            #fff 121px, #fff 159px, #e8e8e8 160px,
-            #fff 161px, #fff 199px, #e8e8e8 200px
-        );
-        background-size: 100% 200px;
-        border: 1px solid #ddd;
-        border-radius: 8px;
-        padding: 5px;
-        min-height: 400px;
-    }
-    
-    /* === TAPPA CLIENTE === */
-    .tappa {
-        background: #fff;
-        border-left: 4px solid #3498db;
-        border-radius: 6px;
-        padding: 8px 10px;
-        margin: 4px 0;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        cursor: pointer;
-        transition: all 0.2s;
-    }
-    .tappa:hover { transform: translateX(3px); }
-    .tappa.visitato {
-        background: #d4edda;
-        border-left-color: #28a745;
-        opacity: 0.8;
-    }
-    .tappa.appuntamento {
-        border-left-color: #dc3545;
-        background: #fff5f5;
-    }
-    .tappa-ora {
-        font-size: 0.7rem;
-        color: #666;
-        font-weight: bold;
-    }
-    .tappa-nome {
-        font-size: 0.85rem;
-        font-weight: 600;
-        color: #333;
-    }
-    .tappa-info {
-        font-size: 0.7rem;
-        color: #888;
-    }
-    
-    /* === AZIONI CLIENTE (nascoste di default) === */
-    .tappa-azioni {
-        display: flex;
-        gap: 8px;
-        margin-top: 8px;
-        padding-top: 8px;
-        border-top: 1px solid #eee;
-    }
-    .tappa-azioni a, .tappa-azioni button {
-        flex: 1;
-        padding: 8px;
-        border-radius: 6px;
-        text-align: center;
-        text-decoration: none;
-        font-size: 1.2rem;
-        background: #f8f9fa;
-        border: 1px solid #ddd;
-    }
-    .tappa-azioni a:hover { background: #e9ecef; }
-    
-    /* === AGENDA SETTIMANALE === */
-    .week-grid {
-        display: grid;
-        grid-template-columns: repeat(5, 1fr);
-        gap: 3px;
-        background: #f0f2f6;
-        border-radius: 8px;
-        padding: 3px;
-    }
-    .week-day {
-        background: white;
-        border-radius: 6px;
-        padding: 5px;
-        min-height: 150px;
-        font-size: 0.75rem;
-    }
-    .week-day-header {
-        font-weight: bold;
-        font-size: 0.8rem;
-        text-align: center;
-        padding: 3px;
-        background: #3498db;
-        color: white;
-        border-radius: 4px;
-        margin-bottom: 5px;
-    }
-    .week-day-header.oggi {
-        background: #e74c3c;
-    }
-    .week-cliente {
-        background: #f8f9fa;
-        border-radius: 4px;
-        padding: 3px 5px;
-        margin: 2px 0;
-        font-size: 0.7rem;
-        border-left: 3px solid #3498db;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-    
-    /* === TABS MENU BOTTOM (MOBILE) === */
-    .bottom-nav {
-        position: fixed;
-        bottom: 0;
-        left: 0;
-        right: 0;
-        background: white;
-        border-top: 1px solid #ddd;
-        display: flex;
-        justify-content: space-around;
-        padding: 5px 0;
-        z-index: 1000;
-    }
-    .bottom-nav a {
-        text-decoration: none;
-        text-align: center;
-        color: #666;
-        font-size: 0.7rem;
-        padding: 5px 10px;
-    }
-    .bottom-nav a.active { color: #3498db; }
-    
-    /* === FORM COMPATTO === */
-    .stTextInput > div > div > input,
-    .stTextArea > div > div > textarea {
-        padding: 0.4rem !important;
-        font-size: 16px !important;
-    }
-    .stSelectbox > div > div { min-height: 36px !important; }
-    
-    /* === METRICHE INLINE === */
-    .stats-bar {
-        display: flex;
-        justify-content: space-between;
-        background: #f8f9fa;
-        padding: 6px 10px;
-        border-radius: 6px;
-        font-size: 0.8rem;
-        margin-bottom: 5px;
-    }
-    .stats-bar span { font-weight: bold; }
-    
-    /* === MOBILE ADJUSTMENTS === */
-    @media (max-width: 768px) {
-        .block-container { padding: 0.2rem 0.3rem 60px 0.3rem !important; }
-        .week-grid { grid-template-columns: repeat(5, 1fr); gap: 2px; }
-        .week-day { min-height: 120px; padding: 3px; }
-        .week-cliente { font-size: 0.65rem; }
-        h1 { font-size: 1rem !important; }
-    }
-</style>
-""", unsafe_allow_html=True)
 
 # --- FUNZIONI PER PERSISTENZA SESSIONE ---
 def generate_session_token(user_id, email):
@@ -1126,32 +914,42 @@ def batch_geocode(addresses, progress_callback=None):
         time_module.sleep(0.2)  # Rate limit LocationIQ free: 2 req/sec
     return results
 
-# --- GPS COMPONENT ---
-def render_gps_button(button_id):
+# --- GPS COMPONENT (FUNZIONANTE CON STREAMLIT) ---
+def render_gps_button(button_id, target_key="gps_coords"):
+    """
+    Componente GPS che comunica le coordinate a Streamlit tramite query params URL.
+    Le coordinate vengono scritte nell'URL e lette da Streamlit al prossimo rerun.
+    """
     html_code = f"""
-    <div id="gps-container-{button_id}" style="width:100%;">
-        <button onclick="getLocation_{button_id}()" 
-                style="padding:12px 24px; background:#FF4B4B; color:white; border:none; 
-                       border-radius:8px; cursor:pointer; font-size:16px; width:100%; 
-                       font-weight:600; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-            🎯 Usa GPS Attuale
+    <div id="gps-container-{button_id}" style="width:100%; font-family: sans-serif;">
+        <button id="btn-{button_id}" onclick="getLocation_{button_id}()" 
+                style="padding:14px 24px; background:linear-gradient(135deg, #FF4B4B, #E63946); 
+                       color:white; border:none; border-radius:10px; cursor:pointer; 
+                       font-size:16px; width:100%; font-weight:700; 
+                       box-shadow: 0 4px 12px rgba(230,57,70,0.3); transition: all 0.3s;">
+            📍 Rileva Posizione GPS
         </button>
-        <div id="status-{button_id}" style="margin-top:12px; font-size:14px; padding:8px; 
-                                            border-radius:4px; text-align:center;"></div>
+        <div id="status-{button_id}" style="margin-top:10px; font-size:14px; padding:10px; 
+                                            border-radius:8px; text-align:center; display:none;"></div>
     </div>
     
     <script>
     function getLocation_{button_id}() {{
         const status = document.getElementById('status-{button_id}');
+        const btn = document.getElementById('btn-{button_id}');
+        status.style.display = 'block';
         
         if (!navigator.geolocation) {{
-            status.innerHTML = '❌ Geolocalizzazione non supportata';
+            status.innerHTML = '❌ Geolocalizzazione non supportata dal browser';
             status.style.backgroundColor = '#ffebee';
             status.style.color = '#c62828';
             return;
         }}
         
-        status.innerHTML = '🔄 Acquisizione GPS...';
+        btn.disabled = true;
+        btn.style.opacity = '0.6';
+        btn.innerHTML = '⏳ Acquisizione in corso...';
+        status.innerHTML = '🔄 Attendo segnale GPS... (consenti l\\'accesso alla posizione)';
         status.style.backgroundColor = '#fff3e0';
         status.style.color = '#e65100';
         
@@ -1159,42 +957,90 @@ def render_gps_button(button_id):
             function(position) {{
                 const lat = position.coords.latitude;
                 const lon = position.coords.longitude;
+                const acc = position.coords.accuracy;
                 
-                status.innerHTML = '✅ GPS: ' + lat.toFixed(6) + ', ' + lon.toFixed(6);
+                status.innerHTML = '✅ Posizione: ' + lat.toFixed(6) + ', ' + lon.toFixed(6) + ' (±' + Math.round(acc) + 'm)<br><b>Premi il pulsante qui sotto per confermare</b>';
                 status.style.backgroundColor = '#e8f5e9';
                 status.style.color = '#2e7d32';
+                btn.innerHTML = '✅ Posizione Acquisita';
+                btn.style.background = 'linear-gradient(135deg, #2e7d32, #4caf50)';
                 
-                sessionStorage.setItem('gps_data_{button_id}', JSON.stringify({{
-                    latitude: lat,
-                    longitude: lon
-                }}));
+                // Scrivi coordinate nei query params dell'URL padre (Streamlit)
+                const url = new URL(window.parent.location.href);
+                url.searchParams.set('gps_lat', lat.toFixed(8));
+                url.searchParams.set('gps_lon', lon.toFixed(8));
+                url.searchParams.set('gps_acc', Math.round(acc).toString());
+                url.searchParams.set('gps_ts', Date.now().toString());
+                window.parent.history.replaceState(null, '', url.toString());
             }},
             function(error) {{
-                status.innerHTML = '❌ Errore GPS';
+                let msg = '❌ ';
+                switch(error.code) {{
+                    case 1: msg += 'Permesso negato. Consenti la posizione nelle impostazioni del browser.'; break;
+                    case 2: msg += 'Posizione non disponibile. Verifica che il GPS sia attivo.'; break;
+                    case 3: msg += 'Timeout. Riprova in un luogo con migliore segnale GPS.'; break;
+                    default: msg += 'Errore sconosciuto.';
+                }}
+                status.innerHTML = msg;
                 status.style.backgroundColor = '#ffebee';
                 status.style.color = '#c62828';
+                btn.disabled = false;
+                btn.style.opacity = '1';
+                btn.innerHTML = '📍 Rileva Posizione GPS';
+                btn.style.background = 'linear-gradient(135deg, #FF4B4B, #E63946)';
             }},
-            {{ enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }}
+            {{ 
+                enableHighAccuracy: true, 
+                timeout: 30000, 
+                maximumAge: 0 
+            }}
         );
     }}
     </script>
     """
-    return st.components.v1.html(html_code, height=100)
+    return st.components.v1.html(html_code, height=130)
 
-# --- 5. CALCOLO GIRO OTTIMIZZATO ---
+def read_gps_from_url():
+    """Legge le coordinate GPS dai query params (scritti dal componente JS)"""
+    try:
+        lat = st.query_params.get("gps_lat")
+        lon = st.query_params.get("gps_lon")
+        acc = st.query_params.get("gps_acc")
+        ts = st.query_params.get("gps_ts")
+        
+        if lat and lon:
+            return {
+                'latitude': float(lat),
+                'longitude': float(lon),
+                'accuracy': int(acc) if acc else None,
+                'timestamp': int(ts) if ts else None
+            }
+    except (ValueError, TypeError):
+        pass
+    return None
+
+def clear_gps_from_url():
+    """Rimuove i dati GPS dall'URL mantenendo gli altri params"""
+    for key in ['gps_lat', 'gps_lon', 'gps_acc', 'gps_ts']:
+        if key in st.query_params:
+            del st.query_params[key]
+
+# --- 5. CALCOLO GIRO OTTIMIZZATO (STILE PORTATOUR) ---
 def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, variante=0):
     """
-    ALGORITMO CON:
-    1. SETTIMANE DIVERSE - Ogni settimana clienti diversi (rotazione)
-    2. ORDINE OTTIMIZZATO - 2-opt per evitare avanti-indietro
-    3. VARIANTE - Il pulsante Rigenera propone giri alternativi
+    ALGORITMO PORTATOUR-STYLE:
+    1. PUNTEGGIO URGENZA - Chi ha più bisogno di essere visitato
+    2. CLUSTERING GEOGRAFICO - Raggruppa clienti per zona (K-means semplificato)
+    3. ZONA PER GIORNO - Ogni giorno lavori in una zona specifica
+    4. OTTIMIZZAZIONE 2-OPT - Evita zig-zag dentro la zona
+    5. ESPANSIONE PROGRESSIVA - Prima le zone vicine, poi quelle lontane
     """
     if df.empty:
         return {}
     
     import random
     
-    # Parametri
+    # Parametri configurazione
     base_lat = float(config.get('lat_base', 41.9028))
     base_lon = float(config.get('lon_base', 12.4964))
     durata_visita = int(config.get('durata_visita', 45))
@@ -1237,7 +1083,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     agenda = {g: [] for g in range(7)}
     
     # ========================================
-    # 1. RACCOGLI CLIENTI VALIDI
+    # 1. RACCOGLI CLIENTI VALIDI CON PUNTEGGIO URGENZA
     # ========================================
     tutti = []
     for _, r in df.iterrows():
@@ -1253,6 +1099,36 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         if not citta:
             citta = 'ALTRO'
         
+        # --- CALCOLO URGENZA (core Portatour-style) ---
+        freq = int(r.get('frequenza_giorni', 30))
+        ultima = r.get('ultima_visita')
+        
+        if pd.isnull(ultima) or (hasattr(ultima, 'year') and ultima.year < 2001):
+            # Mai visitato → massima urgenza
+            giorni_ritardo = 999
+            urgenza = 100.0  # Priorità massima
+        else:
+            ultima_date = ultima.date() if hasattr(ultima, 'date') else ultima
+            # Calcola data prossima visita prevista
+            prossima = ultima_date + timedelta(days=freq)
+            # Giorni di ritardo: positivo = in ritardo, negativo = in anticipo
+            # Proiettato alla data del lunedì della settimana selezionata
+            giorni_ritardo = (lunedi - prossima).days
+            
+            if giorni_ritardo >= 0:
+                # In ritardo: urgenza cresce rapidamente
+                urgenza = min(100, 50 + (giorni_ritardo / freq) * 50)
+            else:
+                # Non ancora in scadenza, ma potrebbe scadere durante la settimana
+                giorni_alla_scadenza = abs(giorni_ritardo)
+                if giorni_alla_scadenza <= 7:
+                    # Scade questa settimana
+                    urgenza = 30 + (7 - giorni_alla_scadenza) * 3
+                else:
+                    urgenza = max(0, 20 - giorni_alla_scadenza)
+        
+        dist_base = haversine(base_lat, base_lon, float(lat), float(lon))
+        
         tutti.append({
             'id': r['id'],
             'nome': r['nome_cliente'],
@@ -1262,7 +1138,10 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             'citta': citta,
             'cell': str(r.get('cellulare', '')),
             'app': r.get('appuntamento'),
-            'dist_base': haversine(base_lat, base_lon, float(lat), float(lon))
+            'dist_base': dist_base,
+            'urgenza': urgenza,
+            'giorni_ritardo': giorni_ritardo,
+            'frequenza': freq
         })
     
     if not tutti:
@@ -1282,7 +1161,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         return agenda
     
     # ========================================
-    # 3. GESTISCI APPUNTAMENTI
+    # 3. GESTISCI APPUNTAMENTI FISSI
     # ========================================
     app_per_giorno = {}
     nomi_app = set()
@@ -1311,36 +1190,125 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     max_settimana = max_visite * len(giorni)
     
     # ========================================
-    # 5. CALCOLA NUMERO SETTIMANE CICLO
+    # 5. CLUSTERING GEOGRAFICO (zone di lavoro)
     # ========================================
-    tot_clienti = len(liberi)
-    num_settimane = max(1, (tot_clienti + max_settimana - 1) // max_settimana)
+    def crea_cluster_geografici(clienti, num_cluster):
+        """
+        K-means semplificato per raggruppare clienti in zone geografiche.
+        Non richiede librerie esterne.
+        """
+        if len(clienti) <= num_cluster:
+            return [[c] for c in clienti]
+        
+        # Inizializza centroidi: scegli clienti più sparsi
+        centroidi = []
+        # Primo centroide: il più vicino alla base
+        clienti_sorted = sorted(clienti, key=lambda c: c['dist_base'])
+        centroidi.append((clienti_sorted[0]['lat'], clienti_sorted[0]['lon']))
+        
+        # Centroidi successivi: il più lontano dai centroidi esistenti
+        for _ in range(num_cluster - 1):
+            max_dist = -1
+            miglior_c = None
+            for c in clienti:
+                min_dist_centro = min(haversine(c['lat'], c['lon'], ct[0], ct[1]) for ct in centroidi)
+                if min_dist_centro > max_dist:
+                    max_dist = min_dist_centro
+                    miglior_c = c
+            if miglior_c:
+                centroidi.append((miglior_c['lat'], miglior_c['lon']))
+        
+        # Iterazioni K-means (5 sono sufficienti)
+        for _ in range(5):
+            # Assegna ogni cliente al centroide più vicino
+            cluster = [[] for _ in range(num_cluster)]
+            for c in clienti:
+                min_d = float('inf')
+                best_k = 0
+                for k, ct in enumerate(centroidi):
+                    d = haversine(c['lat'], c['lon'], ct[0], ct[1])
+                    if d < min_d:
+                        min_d = d
+                        best_k = k
+                cluster[best_k].append(c)
+            
+            # Ricalcola centroidi
+            for k in range(num_cluster):
+                if cluster[k]:
+                    centroidi[k] = (
+                        sum(c['lat'] for c in cluster[k]) / len(cluster[k]),
+                        sum(c['lon'] for c in cluster[k]) / len(cluster[k])
+                    )
+        
+        # Rimuovi cluster vuoti
+        cluster = [cl for cl in cluster if cl]
+        return cluster
     
     # ========================================
-    # 6. ORDINA CLIENTI PER DISTANZA DALLA BASE
+    # 6. SELEZIONA CLIENTI PER QUESTA SETTIMANA
     # ========================================
-    liberi.sort(key=lambda x: x['dist_base'])
-    
-    # ========================================
-    # 7. SELEZIONA CLIENTI PER QUESTA SETTIMANA
-    # ========================================
-    # Dividi in fasce di distanza e ruota
+    # Calcola quante settimane servono per coprire tutti
+    num_settimane = max(1, (len(liberi) + max_settimana - 1) // max_settimana)
     settimana_nel_ciclo = settimana_offset % num_settimane
     
-    # Invece di prendere fette consecutive, prendiamo 1 ogni N
-    # Così ogni settimana abbiamo clienti sparsi geograficamente
-    clienti_settimana = []
-    for i, c in enumerate(liberi):
+    # SELEZIONE PORTATOUR: priorità per urgenza + rotazione geografica
+    # Ordina per urgenza (chi ha più bisogno viene prima)
+    liberi.sort(key=lambda x: x['urgenza'], reverse=True)
+    
+    # Prendi i più urgenti, ma anche un mix geografico
+    # Fase 1: Tutti quelli critici (urgenza > 50) vanno sempre questa settimana
+    critici = [c for c in liberi if c['urgenza'] > 50]
+    normali = [c for c in liberi if c['urgenza'] <= 50]
+    
+    # Fase 2: Dai normali, prendi la fetta della settimana
+    # usando rotazione per zona: ordina per angolo dalla base (settore)
+    import math
+    for c in normali:
+        dx = c['lon'] - base_lon
+        dy = c['lat'] - base_lat
+        c['angolo'] = math.atan2(dy, dx)
+    
+    normali.sort(key=lambda x: x['angolo'])
+    
+    # Seleziona la fetta della settimana corrente
+    normali_settimana = []
+    for i, c in enumerate(normali):
         if i % num_settimane == settimana_nel_ciclo:
-            clienti_settimana.append(c)
+            normali_settimana.append(c)
+    
+    # Combina: critici (sempre) + normali della settimana
+    clienti_settimana = critici + normali_settimana
+    
+    # Taglia se troppi
+    if len(clienti_settimana) > max_settimana:
+        # Mantieni i più urgenti
+        clienti_settimana.sort(key=lambda x: x['urgenza'], reverse=True)
+        clienti_settimana = clienti_settimana[:max_settimana]
     
     # ========================================
-    # 8. VARIANTE: cambia ordine per giro diverso
+    # 7. VARIANTE: cambia ordine per giro diverso
     # ========================================
     if variante > 0:
-        # Usa la variante come seed per mescolare
         random.seed(variante * 12345)
         random.shuffle(clienti_settimana)
+    
+    # ========================================
+    # 8. CLUSTERING: crea zone per i giorni disponibili
+    # ========================================
+    num_zone = len(giorni)
+    
+    if len(clienti_settimana) >= num_zone and num_zone > 1:
+        zone = crea_cluster_geografici(clienti_settimana, num_zone)
+    else:
+        zone = [clienti_settimana]
+    
+    # Ordina zone per distanza dalla base (prima le più vicine)
+    def distanza_media_zona(zona):
+        if not zona:
+            return float('inf')
+        return sum(c['dist_base'] for c in zona) / len(zona)
+    
+    zone.sort(key=distanza_media_zona)
     
     # ========================================
     # 9. FUNZIONE 2-OPT PER OTTIMIZZARE ORDINE
@@ -1362,17 +1330,16 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         migliorato = True
         iterazioni = 0
         
-        while migliorato and iterazioni < 50:
+        while migliorato and iterazioni < 100:
             migliorato = False
             dist_attuale = distanza_totale(percorso)
             
             for i in range(len(percorso) - 1):
                 for j in range(i + 2, len(percorso)):
-                    # Prova a invertire la sezione tra i e j
                     nuovo = percorso[:i+1] + percorso[i+1:j+1][::-1] + percorso[j+1:]
                     nuova_dist = distanza_totale(nuovo)
                     
-                    if nuova_dist < dist_attuale - 0.3:  # Migliora di almeno 300m
+                    if nuova_dist < dist_attuale - 0.1:  # Migliora di almeno 100m
                         percorso = nuovo
                         migliorato = True
                         break
@@ -1383,56 +1350,48 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         return percorso
     
     # ========================================
-    # 10. DISTRIBUISCI SUI GIORNI
+    # 10. ASSEGNA ZONE AI GIORNI
     # ========================================
-    clienti_disponibili = clienti_settimana.copy()
-    
-    for giorno in giorni:
+    for idx_giorno, giorno in enumerate(giorni):
         data_g = lunedi + timedelta(days=giorno)
         tappe = []
         
-        # Appuntamenti del giorno
+        # Appuntamenti del giorno (priorità assoluta)
         if giorno in app_per_giorno:
             for a in app_per_giorno[giorno]:
                 tappe.append(a)
         
         slot = max_visite - len(tappe)
         
-        # Determina punto di partenza
-        if tappe:
-            pos_lat, pos_lon = tappe[-1]['lat'], tappe[-1]['lon']
+        # Prendi la zona corrispondente
+        if idx_giorno < len(zone):
+            zona_clienti = zone[idx_giorno].copy()
         else:
-            pos_lat, pos_lon = base_lat, base_lon
+            zona_clienti = []
         
-        # NEAREST NEIGHBOR per selezionare
-        visite_giorno = []
-        temp = clienti_disponibili.copy()
+        # Nella zona, ordina per urgenza (i più urgenti prima)
+        zona_clienti.sort(key=lambda x: x['urgenza'], reverse=True)
         
-        while slot > 0 and temp:
-            min_dist = float('inf')
-            piu_vicino = None
-            
-            for c in temp:
-                d = haversine(pos_lat, pos_lon, c['lat'], c['lon'])
-                if d < min_dist:
-                    min_dist = d
-                    piu_vicino = c
-            
-            if piu_vicino is None:
-                break
-            
-            visite_giorno.append(piu_vicino)
-            temp.remove(piu_vicino)
-            clienti_disponibili.remove(piu_vicino)
-            
-            pos_lat, pos_lon = piu_vicino['lat'], piu_vicino['lon']
-            slot -= 1
+        # Prendi fino a max slot
+        visite_giorno = zona_clienti[:slot]
         
-        # OTTIMIZZA ORDINE CON 2-OPT
+        # OTTIMIZZA ORDINE PERCORSO CON 2-OPT
+        # Punto di partenza: base o ultimo appuntamento
+        if tappe:
+            start_lat, start_lon = tappe[-1]['lat'], tappe[-1]['lon']
+        else:
+            start_lat, start_lon = base_lat, base_lon
+        
         if len(visite_giorno) >= 3:
-            visite_giorno = ottimizza_2opt(visite_giorno, base_lat, base_lon)
+            visite_giorno = ottimizza_2opt(visite_giorno, start_lat, start_lon)
+        elif len(visite_giorno) == 2:
+            # Per 2 clienti, metti il più vicino alla partenza prima
+            d0 = haversine(start_lat, start_lon, visite_giorno[0]['lat'], visite_giorno[0]['lon'])
+            d1 = haversine(start_lat, start_lon, visite_giorno[1]['lat'], visite_giorno[1]['lon'])
+            if d1 < d0:
+                visite_giorno = [visite_giorno[1], visite_giorno[0]]
         
-        # Combina: appuntamenti + visite ottimizzate
+        # Combina appuntamenti + visite ottimizzate
         giro_finale = list(tappe) + visite_giorno
         
         # ========================================
@@ -1444,12 +1403,14 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         
         for c in giro_finale:
             dist = haversine(pos_lat, pos_lon, c['lat'], c['lon'])
+            # Stima tempo di viaggio (media 40 km/h in zona urbana/extraurbana)
             tempo = (dist / 40) * 60
             
             if c.get('is_app'):
                 ora_arr = c.get('ora_app', '09:00')
             else:
                 arrivo = ora + timedelta(minutes=tempo)
+                # Gestione pausa pranzo
                 if arrivo.time() >= pausa_da and arrivo.time() < pausa_a:
                     ora = datetime.combine(data_g, pausa_a)
                     arrivo = ora + timedelta(minutes=tempo)
@@ -1466,8 +1427,9 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 'ora_arrivo': ora_arr,
                 'tipo_tappa': '📌 APPUNTAMENTO' if c.get('is_app') else '🚗 Giro',
                 'distanza_km': round(dist, 1),
-                'ritardo': 0,
-                'citta': c.get('citta', '')
+                'ritardo': c.get('giorni_ritardo', 0),
+                'citta': c.get('citta', ''),
+                'urgenza': c.get('urgenza', 0)
             })
             
             pos_lat, pos_lon = c['lat'], c['lon']
@@ -1593,7 +1555,7 @@ def main_app():
     
     # Menu navigazione
     if 'active_tab' not in st.session_state:
-        st.session_state.active_tab = "🚀 Giro"
+        st.session_state.active_tab = "🚀 Giro Oggi"
     
     # Se è il pannello admin, mostralo
     if st.session_state.active_tab == "🔐 Admin":
@@ -1601,152 +1563,475 @@ def main_app():
             admin_panel()
             st.divider()
             if st.button("⬅️ Torna all'App", use_container_width=True):
-                st.session_state.active_tab = "🚀 Giro"
+                st.session_state.active_tab = "🚀 Giro Oggi"
                 st.rerun()
             return
         else:
-            st.session_state.active_tab = "🚀 Giro"
+            st.session_state.active_tab = "🚀 Giro Oggi"
     
-    # Menu COMPATTO - Dashboard alla fine
-    menu = ["🚀", "📅", "👤", "➕", "⚙️", "📊"]
-    menu_full = ["🚀 Giro", "📅 Agenda", "👤 Clienti", "➕ Nuovo", "⚙️ Config", "📊 Report"]
-    
-    nav = st.columns(6)
-    for i, (icon, name) in enumerate(zip(menu, menu_full)):
-        if nav[i].button(icon, key=f"nav_{i}", use_container_width=True, 
-                        type="primary" if st.session_state.active_tab == name else "secondary"):
-            st.session_state.active_tab = name
+    nav = st.columns(7)
+    menu = ["🚀 Giro Oggi", "📊 Dashboard", "📅 Agenda", "🗺️ Mappa", "👤 Anagrafica", "➕ Nuovo", "⚙️ Config"]
+    for i, m in enumerate(menu):
+        if nav[i].button(m, key=f"nav_{m}", use_container_width=True, type="primary" if st.session_state.active_tab == m else "secondary"):
+            st.session_state.active_tab = m
             st.rerun()
+    
+    st.divider()
     
     config = st.session_state.config
     giorni_lavorativi = config.get('giorni_lavorativi', [0, 1, 2, 3, 4])
     if isinstance(giorni_lavorativi, str):
         giorni_lavorativi = [int(x) for x in giorni_lavorativi.strip('{}').split(',')]
     
-    # --- TAB: GIRO ---
-    if st.session_state.active_tab == "🚀 Giro":
+    # --- TAB: GIRO OGGI ---
+    if st.session_state.active_tab == "🚀 Giro Oggi":
+        col_header, col_regen, col_refresh = st.columns([4, 1, 1])
+        with col_header:
+            st.header(f"📍 Giro di Oggi ({ora_italiana.strftime('%d/%m/%Y')})")
+        with col_regen:
+            if st.button("🔄 Rigenera", use_container_width=True, help="Propone un giro diverso"):
+                st.session_state.variante_giro = st.session_state.get('variante_giro', 0) + 1
+                st.rerun()
+        with col_refresh:
+            if st.button("🔃", use_container_width=True, help="Ricarica dati"):
+                st.session_state.reload_data = True
+                st.rerun()
+        
         idx_g = ora_italiana.weekday()
+        giorni_nomi = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"]
         
-        # Inizializza
-        if 'esclusi_oggi' not in st.session_state: st.session_state.esclusi_oggi = []
-        if 'variante_giro' not in st.session_state: st.session_state.variante_giro = 0
-        if 'visitati_oggi' not in st.session_state: st.session_state.visitati_oggi = []
-        if 'cliente_espanso' not in st.session_state: st.session_state.cliente_espanso = None
+        # Inizializza esclusi_oggi se non esiste
+        if 'esclusi_oggi' not in st.session_state:
+            st.session_state.esclusi_oggi = []
+        if 'variante_giro' not in st.session_state:
+            st.session_state.variante_giro = 0
         
-        # Calcola tappe
-        variante = st.session_state.get('variante_giro', 0)
-        tappe_oggi = calcola_piano_giornaliero(df, idx_g, config, st.session_state.esclusi_oggi, variante=variante) if idx_g in giorni_lavorativi else []
-        
-        fatte = len([t for t in tappe_oggi if t['nome_cliente'] in st.session_state.visitati_oggi])
-        
-        # === HEADER: Data + Stats + Pulsanti ===
-        st.markdown(f"""
-        <div style="display:flex; justify-content:space-between; align-items:center; background:#f8f9fa; padding:8px 12px; border-radius:8px; margin-bottom:5px;">
-            <b style="font-size:1rem;">📍 {['Lun','Mar','Mer','Gio','Ven','Sab','Dom'][idx_g]} {ora_italiana.strftime('%d/%m')}</b>
-            <span style="font-size:0.9rem;">✅ <b>{fatte}/{len(tappe_oggi)}</b></span>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Pulsanti compatti
-        c1, c2, c3 = st.columns(3)
-        c1.button("🔄", key="regen", use_container_width=True, on_click=lambda: setattr(st.session_state, 'variante_giro', variante+1))
-        if c2.button("🗺️", use_container_width=True):
-            st.session_state.show_map = not st.session_state.get('show_map', False)
-            st.rerun()
-        c3.button("⚙️", key="opts", use_container_width=True)
-        
-        # Mappa toggle
-        if st.session_state.get('show_map', False) and tappe_oggi:
-            wps = [(config.get('lat_base', 43.4), config.get('lon_base', 13.5))] + [(t['latitude'], t['longitude']) for t in tappe_oggi]
-            m = folium.Map(location=wps[0], zoom_start=10, tiles='cartodbpositron')
-            folium.Marker(wps[0], icon=folium.Icon(color="blue", icon="home")).add_to(m)
-            for i, t in enumerate(tappe_oggi, 1):
-                col = "green" if t['nome_cliente'] in st.session_state.visitati_oggi else "red"
-                folium.Marker([t['latitude'], t['longitude']], popup=f"{i}", icon=folium.Icon(color=col)).add_to(m)
-            rt = get_route_osrm(wps)
-            if len(rt) > 1: folium.PolyLine(rt, weight=2, color='#3498db').add_to(m)
-            st_folium(m, height=180, use_container_width=True, key="map1")
-        
-        # === LISTA TAPPE COMPATTA ===
-        if idx_g not in giorni_lavorativi:
-            st.info("🏖️ Oggi non è giorno lavorativo")
-        elif not tappe_oggi:
-            st.warning("Nessuna visita programmata")
-        else:
-            for i, t in enumerate(tappe_oggi, 1):
-                visitato = t['nome_cliente'] in st.session_state.visitati_oggi
-                espanso = st.session_state.cliente_espanso == t['id']
-                is_app = "APPUNTAMENTO" in t.get('tipo_tappa', '')
-                
-                # Colore riga
-                bg = "#e8f5e9" if visitato else ("#fff3e0" if is_app else "#fff")
-                border = "#4caf50" if visitato else ("#ff9800" if is_app else "#2196f3")
-                
-                # RIGA COMPATTA
-                st.markdown(f"""
-                <div style="background:{bg}; border-left:4px solid {border}; padding:6px 10px; margin:3px 0; border-radius:4px;">
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <span style="font-size:0.75rem; color:#666; width:45px;">{t['ora_arrivo']}</span>
-                        <span style="flex:1; font-weight:{'normal' if visitato else 'bold'}; font-size:0.9rem; {'text-decoration:line-through; color:#888;' if visitato else ''}">
-                            {'✅ ' if visitato else ('📌 ' if is_app else '')}{t['nome_cliente'][:22]}
-                        </span>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                # Pulsante espandi (solo se non visitato)
-                if not visitato:
-                    if st.button(f"{'▼' if espanso else '▶'} Azioni", key=f"act_{t['id']}", use_container_width=True):
-                        st.session_state.cliente_espanso = None if espanso else t['id']
-                        st.rerun()
-                
-                # === AZIONI ESPANSE ===
-                if espanso and not visitato:
-                    st.caption(f"📍 {t.get('indirizzo', t.get('citta', ''))[:40]}")
-                    
-                    # Promemoria
-                    cliente_row = df[df['nome_cliente'] == t['nome_cliente']]
-                    if not cliente_row.empty:
-                        prm = cliente_row.iloc[0].get('promemoria', '')
-                        if pd.notna(prm) and str(prm).strip():
-                            st.warning(f"📝 {prm}")
-                    
-                    # 5 pulsanti azione
-                    a1, a2, a3, a4, a5 = st.columns(5)
-                    a1.link_button("🚗", f"https://www.google.com/maps/dir/?api=1&destination={t['latitude']},{t['longitude']}", use_container_width=True)
-                    
-                    cell = str(t.get('cellulare', '')).strip()
-                    if cell: a2.link_button("📱", f"tel:{cell}", use_container_width=True)
-                    else: a2.button("📱", disabled=True, use_container_width=True)
-                    
-                    email = cliente_row.iloc[0].get('email', '') if not cliente_row.empty else ''
-                    if pd.notna(email) and str(email).strip(): a3.link_button("✉️", f"mailto:{email}", use_container_width=True)
-                    else: a3.button("✉️", disabled=True, use_container_width=True)
-                    
-                    if a4.button("👤", key=f"ana_{t['id']}", use_container_width=True):
-                        st.session_state.cliente_selezionato_id = t['id']
-                        st.session_state.active_tab = "👤 Clienti"
-                        st.rerun()
-                    
-                    if a5.button("✅", key=f"ok_{t['id']}", type="primary", use_container_width=True):
-                        st.session_state.visitati_oggi.append(t['nome_cliente'])
-                        update_cliente(t['id'], {'ultima_visita': ora_italiana.isoformat()})
-                        st.session_state.cliente_espanso = None
-                        st.rerun()
+        # === PANNELLO GESTIONE GIRO ===
+        with st.expander("⚙️ Gestisci Giro", expanded=False):
             
-            # Visita extra (compatto)
-            with st.popover("➕ Extra"):
-                clienti = sorted(df[df['visitare'] == 'SI']['nome_cliente'].tolist()) if not df.empty else []
-                sel = st.selectbox("Cliente:", clienti, key="extra_sel")
-                if st.button("✅ Registra", key="extra_btn"):
-                    if sel and sel not in st.session_state.visitati_oggi:
-                        st.session_state.visitati_oggi.append(sel)
-                        row = df[df['nome_cliente'] == sel]
-                        if not row.empty: update_cliente(row.iloc[0]['id'], {'ultima_visita': ora_italiana.isoformat()})
+            # Info variante attuale
+            variante_attuale = st.session_state.get('variante_giro', 0)
+            if variante_attuale > 0:
+                st.info(f"🔄 Giro rigenerato {variante_attuale} volta/e - Premi '🔄 Rigenera' per provare un altro percorso")
+                if st.button("↩️ Torna al giro originale"):
+                    st.session_state.variante_giro = 0
+                    st.rerun()
+            
+            st.divider()
+            
+            # --- SEZIONE: Escludi Clienti ---
+            st.write("**🚫 Escludi clienti dal giro di oggi:**")
+            
+            # Lista clienti attivi (da poter escludere)
+            clienti_attivi = df[df['visitare'] == 'SI']['nome_cliente'].tolist() if not df.empty and 'visitare' in df.columns else []
+            
+            if clienti_attivi:
+                # Multiselect per escludere clienti
+                esclusi_selezionati = st.multiselect(
+                    "Seleziona clienti da escludere:",
+                    sorted(clienti_attivi),
+                    default=st.session_state.esclusi_oggi,
+                    key="escludi_clienti_select"
+                )
+                
+                col_esc1, col_esc2 = st.columns(2)
+                
+                with col_esc1:
+                    if st.button("🔄 Ricalcola Giro", type="primary", use_container_width=True):
+                        st.session_state.esclusi_oggi = esclusi_selezionati
                         st.rerun()
-
+                
+                with col_esc2:
+                    if st.button("🗑️ Rimuovi Esclusioni", use_container_width=True):
+                        st.session_state.esclusi_oggi = []
+                        st.rerun()
+                
+                if st.session_state.esclusi_oggi:
+                    st.warning(f"⚠️ **{len(st.session_state.esclusi_oggi)} clienti esclusi** dal giro di oggi")
+            else:
+                st.info("Nessun cliente attivo da escludere")
+        
+        # Controlla se oggi è giorno di ferie
+        oggi_date = ora_italiana.date()
+        is_ferie_oggi = False
+        
+        attiva_ferie = config.get('attiva_ferie', False)
+        if attiva_ferie:
+            fi = config.get('ferie_inizio')
+            ff = config.get('ferie_fine')
+            
+            ferie_inizio = None
+            ferie_fine = None
+            
+            if fi:
+                if isinstance(fi, str):
+                    try:
+                        ferie_inizio = datetime.strptime(fi[:10], '%Y-%m-%d').date()
+                    except:
+                        pass
+                elif hasattr(fi, 'date'):
+                    ferie_inizio = fi.date()
+                elif hasattr(fi, 'year'):
+                    ferie_inizio = fi
+            
+            if ff:
+                if isinstance(ff, str):
+                    try:
+                        ferie_fine = datetime.strptime(ff[:10], '%Y-%m-%d').date()
+                    except:
+                        pass
+                elif hasattr(ff, 'date'):
+                    ferie_fine = ff.date()
+                elif hasattr(ff, 'year'):
+                    ferie_fine = ff
+            
+            if ferie_inizio and ferie_fine:
+                is_ferie_oggi = ferie_inizio <= oggi_date <= ferie_fine
+        
+        # Mostra messaggio appropriato
+        if is_ferie_oggi:
+            st.warning(f"🏖️ **Oggi sei in FERIE!** (dal {ferie_inizio.strftime('%d/%m/%Y')} al {ferie_fine.strftime('%d/%m/%Y')})")
+            st.info("Per disattivare le ferie, vai su ⚙️ Config → Ferie")
+        elif idx_g in giorni_lavorativi:
+            # Alert critici
+            critici = [c for c in get_clienti_trascurati(df) if c['livello'] == 'critico']
+            if critici:
+                st.error(f"🚨 **{len(critici)} clienti critici** da visitare urgentemente!")
+            
+            # Calcola tappe (con variante giro)
+            variante = st.session_state.get('variante_giro', 0)
+            tappe_oggi = calcola_piano_giornaliero(df, idx_g, config, st.session_state.esclusi_oggi, variante=variante)
+            
+            # Trova visitati fuori giro
+            nomi_nel_giro = [t['nome_cliente'] for t in tappe_oggi]
+            visitati_fuori_giro = [v for v in st.session_state.visitati_oggi if v not in nomi_nel_giro]
+            
+            if tappe_oggi or visitati_fuori_giro:
+                # Statistiche
+                km_tot, tempo_guida, tempo_tot = calcola_km_tempo_giro(
+                    tappe_oggi, 
+                    config.get('lat_base', 41.9028), 
+                    config.get('lon_base', 12.4964),
+                    config.get('durata_visita', 45)
+                )
+                
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("📊 Visite", len(tappe_oggi))
+                col2.metric("✅ Fatte", len(st.session_state.visitati_oggi))
+                col3.metric("🛣️ Km", f"{km_tot}")
+                col4.metric("⏱️ Tempo", f"{tempo_tot//60}h {tempo_tot%60}m")
+                
+                st.divider()
+                
+                # Mappa
+                if tappe_oggi:
+                    st.subheader("🗺️ Percorso")
+                    
+                    # Costruisci lista waypoints
+                    waypoints = [(config.get('lat_base', 41.9028), config.get('lon_base', 12.4964))]
+                    for t in tappe_oggi:
+                        waypoints.append((t['latitude'], t['longitude']))
+                    
+                    # Ottieni percorso stradale reale
+                    with st.spinner("🛣️ Calcolo percorso stradale..."):
+                        route_stradale = get_route_osrm(waypoints)
+                    
+                    m = folium.Map(location=[config.get('lat_base', 41.9028), config.get('lon_base', 12.4964)], zoom_start=10)
+                    
+                    # Marker partenza
+                    folium.Marker(
+                        [config.get('lat_base', 41.9028), config.get('lon_base', 12.4964)],
+                        popup="🏠 Partenza",
+                        icon=folium.Icon(color="blue", icon="home")
+                    ).add_to(m)
+                    
+                    # Marker tappe
+                    for i, t in enumerate(tappe_oggi, 1):
+                        visitato = t['nome_cliente'] in st.session_state.visitati_oggi
+                        color = "green" if visitato else ("red" if "APPUNTAMENTO" in t['tipo_tappa'] else "orange")
+                        
+                        folium.Marker(
+                            [t['latitude'], t['longitude']],
+                            popup=f"{i}. {t['nome_cliente']}<br>⏰ {t['ora_arrivo']}",
+                            icon=folium.Icon(color=color, icon="ok" if visitato else "user")
+                        ).add_to(m)
+                    
+                    # Disegna il percorso stradale
+                    if len(route_stradale) > 1:
+                        folium.PolyLine(
+                            route_stradale, 
+                            weight=4, 
+                            color='#3498db', 
+                            opacity=0.8,
+                            tooltip="Percorso ottimizzato"
+                        ).add_to(m)
+                    
+                    m.fit_bounds(waypoints)
+                    st_folium(m, width="100%", height=350, key="map_oggi")
+                
+                st.divider()
+                st.subheader("📋 Tappe")
+                
+                for i, t in enumerate(tappe_oggi, 1):
+                    visitato = t['nome_cliente'] in st.session_state.visitati_oggi
+                    
+                    # Trova dati completi del cliente per promemoria e email
+                    cliente_row = df[df['nome_cliente'] == t['nome_cliente']].iloc[0] if not df[df['nome_cliente'] == t['nome_cliente']].empty else None
+                    
+                    # Inizializza stato per form report
+                    if 'cliente_report_aperto' not in st.session_state:
+                        st.session_state.cliente_report_aperto = None
+                    
+                    # Stile diverso se visitato
+                    if visitato:
+                        with st.container(border=True):
+                            st.markdown(f"""
+                            <div style="background: linear-gradient(90deg, #d4edda 0%, #c3e6cb 100%); 
+                                        padding: 15px; border-radius: 10px; border-left: 5px solid #28a745;">
+                                <span style="font-size: 24px;">✅</span>
+                                <span style="font-size: 18px; margin-left: 10px; text-decoration: line-through; color: #155724;">
+                                    {i}. {t['nome_cliente']}
+                                </span>
+                                <span style="float: right; color: #155724; font-weight: bold;">VISITATO</span>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            st.caption(f"📍 {t.get('indirizzo', '')}")
+                    else:
+                        with st.container(border=True):
+                            # Controlla se il form report è aperto per questo cliente
+                            form_aperto = st.session_state.cliente_report_aperto == t['id']
+                            
+                            if not form_aperto:
+                                # Vista normale
+                                c1, c2 = st.columns([3, 2])
+                                
+                                with c1:
+                                    # Badge urgenza (usa il punteggio dal nuovo algoritmo)
+                                    ritardo = t.get('ritardo', 0)
+                                    urgenza_score = t.get('urgenza', 0)
+                                    
+                                    if ritardo == 999 or urgenza_score >= 80:
+                                        urgenza_badge = "🔴 CRITICO"
+                                        urgenza_color = "#ffebee"
+                                    elif ritardo >= 7 or urgenza_score >= 50:
+                                        urgenza_badge = "🟠 In ritardo"
+                                        urgenza_color = "#fff3e0"
+                                    elif ritardo >= 0 or urgenza_score >= 30:
+                                        urgenza_badge = "🟡 Scaduto"
+                                        urgenza_color = "#fffde7"
+                                    else:
+                                        urgenza_badge = "🟢 Preventivo"
+                                        urgenza_color = "#e8f5e9"
+                                    
+                                    st.markdown(f"### {t['tipo_tappa'].split()[0]} {i}. {t['nome_cliente']}")
+                                    
+                                    # Info orario e urgenza
+                                    col_info1, col_info2 = st.columns(2)
+                                    col_info1.caption(f"⏰ {t['ora_arrivo']}")
+                                    col_info2.caption(f"{urgenza_badge} ({ritardo:+d} gg)")
+                                    
+                                    if t.get('indirizzo'):
+                                        st.caption(f"📍 {t['indirizzo']}")
+                                    
+                                    # Mostra promemoria se presente
+                                    if cliente_row is not None and pd.notnull(cliente_row.get('promemoria')) and str(cliente_row.get('promemoria')).strip():
+                                        st.warning(f"📝 **Promemoria:** {cliente_row['promemoria']}")
+                                
+                                with c2:
+                                    # PULSANTE APRE FORM REPORT
+                                    if st.button(f"✅ REGISTRA VISITA", key=f"visita_{t['id']}", type="primary", use_container_width=True):
+                                        st.session_state.cliente_report_aperto = t['id']
+                                        st.rerun()
+                                    
+                                    # Pulsanti azione
+                                    btn_cols = st.columns(4)
+                                    
+                                    # Naviga
+                                    btn_cols[0].link_button("🚗", f"https://www.google.com/maps/dir/?api=1&destination={t['latitude']},{t['longitude']}", use_container_width=True, help="Naviga")
+                                    
+                                    # Chiama
+                                    if t.get('cellulare') and str(t.get('cellulare')).strip():
+                                        btn_cols[1].link_button("📱", f"tel:{t['cellulare']}", use_container_width=True, help="Chiama")
+                                    else:
+                                        btn_cols[1].button("📱", disabled=True, use_container_width=True, key=f"tel_dis_{t['id']}")
+                                    
+                                    # Email
+                                    if cliente_row is not None and pd.notnull(cliente_row.get('mail')) and str(cliente_row.get('mail')).strip():
+                                        btn_cols[2].link_button("📧", f"mailto:{cliente_row['mail']}", use_container_width=True, help="Email")
+                                    else:
+                                        btn_cols[2].button("📧", disabled=True, use_container_width=True, key=f"mail_dis_{t['id']}")
+                                    
+                                    # Scheda cliente
+                                    if btn_cols[3].button("👤", key=f"scheda_{t['id']}", help="Scheda", use_container_width=True):
+                                        st.session_state.cliente_selezionato = t['nome_cliente']
+                                        st.session_state.active_tab = "👤 Anagrafica"
+                                        st.rerun()
+                            
+                            else:
+                                # FORM REPORT APERTO
+                                st.markdown(f"### 📝 Report Visita: {t['nome_cliente']}")
+                                st.caption(f"📍 {t.get('indirizzo', '')}")
+                                
+                                # Mostra storico precedente se presente
+                                storico_attuale = ""
+                                if cliente_row is not None and pd.notnull(cliente_row.get('storico_report')):
+                                    storico_attuale = str(cliente_row.get('storico_report', ''))
+                                    if storico_attuale.strip():
+                                        with st.expander("📜 Storico report precedenti"):
+                                            st.text(storico_attuale)
+                                
+                                # Form per nuovo report
+                                nuovo_report = st.text_area(
+                                    "✍️ Scrivi il report della visita:",
+                                    placeholder="Es: Incontrato Mario Rossi, discusso nuovo ordine, richiesta preventivo per...",
+                                    height=120,
+                                    key=f"report_text_{t['id']}"
+                                )
+                                
+                                col_save, col_skip, col_cancel = st.columns(3)
+                                
+                                with col_save:
+                                    if st.button("💾 Salva e Completa", key=f"save_report_{t['id']}", type="primary", use_container_width=True):
+                                        # Prepara nuovo storico con data
+                                        data_oggi = ora_italiana.strftime('%d/%m/%Y')
+                                        if nuovo_report.strip():
+                                            nuovo_storico = f"[{data_oggi}] {nuovo_report.strip()}"
+                                            if storico_attuale.strip():
+                                                nuovo_storico = f"{nuovo_storico}\n\n{storico_attuale}"
+                                        else:
+                                            nuovo_storico = storico_attuale
+                                        
+                                        # Aggiorna database
+                                        update_cliente(t['id'], {
+                                            'ultima_visita': ora_italiana.date().isoformat(),
+                                            'storico_report': nuovo_storico
+                                        })
+                                        st.session_state.visitati_oggi.append(t['nome_cliente'])
+                                        st.session_state.cliente_report_aperto = None
+                                        st.session_state.reload_data = True
+                                        st.success("✅ Visita registrata con report!")
+                                        time_module.sleep(0.5)
+                                        st.rerun()
+                                
+                                with col_skip:
+                                    if st.button("⏭️ Salta Report", key=f"skip_report_{t['id']}", use_container_width=True):
+                                        # Salva senza report
+                                        update_cliente(t['id'], {
+                                            'ultima_visita': ora_italiana.date().isoformat()
+                                        })
+                                        st.session_state.visitati_oggi.append(t['nome_cliente'])
+                                        st.session_state.cliente_report_aperto = None
+                                        st.session_state.reload_data = True
+                                        st.rerun()
+                                
+                                with col_cancel:
+                                    if st.button("❌ Annulla", key=f"cancel_report_{t['id']}", use_container_width=True):
+                                        st.session_state.cliente_report_aperto = None
+                                        st.rerun()
+                
+                # Navigazione completa
+                if tappe_oggi:
+                    st.divider()
+                    tappe_rimanenti = [t for t in tappe_oggi if t['nome_cliente'] not in st.session_state.visitati_oggi]
+                    if tappe_rimanenti:
+                        waypoints = "|".join([f"{t['latitude']},{t['longitude']}" for t in tappe_rimanenti[:-1]])
+                        dest = f"{tappe_rimanenti[-1]['latitude']},{tappe_rimanenti[-1]['longitude']}"
+                        origin = f"{config.get('lat_base', 41.9028)},{config.get('lon_base', 12.4964)}"
+                        url = f"https://www.google.com/maps/dir/?api=1&origin={origin}&destination={dest}&waypoints={waypoints}&travelmode=driving"
+                        st.link_button(f"🗺️ NAVIGA ({len(tappe_rimanenti)} tappe)", url, use_container_width=True, type="primary")
+                    else:
+                        st.success("🎉 Hai completato tutte le visite programmate!")
+                
+                # === SEZIONE VISITE FUORI GIRO ===
+                st.divider()
+                nomi_nel_giro = [t['nome_cliente'] for t in tappe_oggi]
+                visitati_fuori_giro = [v for v in st.session_state.visitati_oggi if v not in nomi_nel_giro]
+                
+                # Mostra clienti visitati fuori giro
+                if visitati_fuori_giro:
+                    st.subheader("➕ Visite Fuori Giro")
+                    for nome_vfg in visitati_fuori_giro:
+                        cliente_vfg = df[df['nome_cliente'] == nome_vfg]
+                        if not cliente_vfg.empty:
+                            cliente_vfg = cliente_vfg.iloc[0]
+                            with st.container(border=True):
+                                col_vfg1, col_vfg2 = st.columns([4, 1])
+                                col_vfg1.markdown(f"### ✅ {nome_vfg}")
+                                if cliente_vfg.get('indirizzo'):
+                                    col_vfg1.caption(f"📍 {cliente_vfg['indirizzo']}")
+                                if col_vfg2.button("👤", key=f"vfg_scheda_{nome_vfg}", help="Scheda"):
+                                    st.session_state.cliente_selezionato = nome_vfg
+                                    st.session_state.active_tab = "👤 Anagrafica"
+                                    st.rerun()
+                
+                # Form per aggiungere visita fuori giro
+                with st.expander("➕ Registra visita a cliente fuori giro"):
+                    clienti_non_visitati = [c for c in df['nome_cliente'].tolist() if c not in st.session_state.visitati_oggi] if not df.empty and 'nome_cliente' in df.columns else []
+                    cliente_extra = st.selectbox("Seleziona cliente:", [""] + sorted(clienti_non_visitati), key="cliente_extra_giro")
+                    
+                    if cliente_extra:
+                        col_extra1, col_extra2 = st.columns(2)
+                        if col_extra1.button("✅ Registra Visita", type="primary", use_container_width=True):
+                            # Aggiorna ultima_visita nel database
+                            cliente_row = df[df['nome_cliente'] == cliente_extra].iloc[0]
+                            update_cliente(cliente_row['id'], {
+                                'ultima_visita': ora_italiana.date().isoformat()
+                            })
+                            st.session_state.visitati_oggi.append(cliente_extra)
+                            st.session_state.reload_data = True
+                            st.success(f"✅ Visita a {cliente_extra} registrata!")
+                            st.rerun()
+                        
+                        if col_extra2.button("👤 Vai alla Scheda", use_container_width=True):
+                            st.session_state.cliente_selezionato = cliente_extra
+                            st.session_state.active_tab = "👤 Anagrafica"
+                            st.rerun()
+                
+                # Riepilogo finale
+                st.divider()
+                tot_visitati = len(st.session_state.visitati_oggi)
+                tot_giro = len(tappe_oggi)
+                tot_fuori = len(visitati_fuori_giro)
+                
+                st.markdown(f"""
+                ### 📊 Riepilogo Giornata
+                | | |
+                |---|---|
+                | ✅ **Visitati totali** | **{tot_visitati}** |
+                | 🚗 Nel giro | {tot_visitati - tot_fuori} / {tot_giro} |
+                | ➕ Fuori giro | {tot_fuori} |
+                """)
+                
+            else:
+                st.info("📭 Nessuna visita pianificata per oggi")
+                
+                # Anche senza giro, permetti visite fuori giro
+                st.divider()
+                st.subheader("➕ Registra visita")
+                
+                if st.session_state.visitati_oggi:
+                    st.success(f"✅ Hai visitato {len(st.session_state.visitati_oggi)} clienti oggi")
+                    for nome_v in st.session_state.visitati_oggi:
+                        st.write(f"✅ {nome_v}")
+                
+                clienti_non_visitati = [c for c in df['nome_cliente'].tolist() if c not in st.session_state.visitati_oggi] if not df.empty and 'nome_cliente' in df.columns else []
+                cliente_extra = st.selectbox("Seleziona cliente da visitare:", [""] + sorted(clienti_non_visitati), key="cliente_no_giro")
+                
+                if cliente_extra:
+                    if st.button("✅ Registra Visita", type="primary"):
+                        cliente_row = df[df['nome_cliente'] == cliente_extra].iloc[0]
+                        update_cliente(cliente_row['id'], {
+                            'ultima_visita': ora_italiana.date().isoformat()
+                        })
+                        st.session_state.visitati_oggi.append(cliente_extra)
+                        st.session_state.reload_data = True
+                        st.success(f"✅ Visita a {cliente_extra} registrata!")
+                        st.rerun()
+        else:
+            st.warning(f"🏖️ Oggi è {giorni_nomi[idx_g]} - non lavorativo")
+    
     # --- TAB: DASHBOARD ---
-    elif st.session_state.active_tab == "📊 Report":
+    elif st.session_state.active_tab == "📊 Dashboard":
         st.header("📊 Dashboard")
         
         # Alert
@@ -1821,7 +2106,7 @@ def main_app():
                 col1.error(f"**{c['nome']}** - {c['messaggio']}")
                 if col2.button("👤", key=f"dash_{c['id']}"):
                     st.session_state.cliente_selezionato = c['nome']
-                    st.session_state.active_tab = "👤 Clienti"
+                    st.session_state.active_tab = "👤 Anagrafica"
                     st.rerun()
         
         # === STORICO VISITE ===
@@ -1903,7 +2188,7 @@ def main_app():
                             # Pulsante scheda
                             if col_st3.button("👤", key=f"storico_{row['id']}", help="Apri scheda"):
                                 st.session_state.cliente_selezionato = row['nome_cliente']
-                                st.session_state.active_tab = "👤 Clienti"
+                                st.session_state.active_tab = "👤 Anagrafica"
                                 st.rerun()
                 else:
                     if tipo_filtro == "Giorno singolo":
@@ -1944,51 +2229,72 @@ def main_app():
     
     # --- TAB: AGENDA ---
     elif st.session_state.active_tab == "📅 Agenda":
-        # Navigazione settimane compatta
+        st.header("📅 Agenda Settimanale Ottimizzata")
+        
+        # Navigazione settimane
         if 'current_week_index' not in st.session_state:
-            st.session_state.current_week_index = 0
+            st.session_state.current_week_index = 0  # 0 = settimana corrente
+        
+        # Inizializza giorni in ferie (lista di date)
         if 'giorni_ferie_singoli' not in st.session_state:
             st.session_state.giorni_ferie_singoli = []
+        
+        # Inizializza stato per scambio giorni
         if 'giorno_da_scambiare' not in st.session_state:
             st.session_state.giorno_da_scambiare = None
+        
+        # Inizializza scambi salvati (dizionario: chiave=settimana, valore=lista di scambi)
         if 'scambi_giorni' not in st.session_state:
             st.session_state.scambi_giorni = {}
         
-        # Calcola date
+        col_nav1, col_nav2, col_nav3, col_nav4, col_nav5 = st.columns([1, 1, 2, 1, 1])
+        
+        with col_nav1:
+            if st.button("⬅️ Sett. Prec.", use_container_width=True):
+                st.session_state.current_week_index -= 1
+                st.session_state.giorno_da_scambiare = None
+                st.rerun()
+        
+        with col_nav2:
+            # Pulsante per tornare alla settimana corrente (visibile solo se non siamo già lì)
+            if st.session_state.current_week_index != 0:
+                if st.button("🏠 Oggi", use_container_width=True, type="primary"):
+                    st.session_state.current_week_index = 0
+                    st.session_state.giorno_da_scambiare = None
+                    st.rerun()
+        
+        with col_nav5:
+            if st.button("Sett. Succ. ➡️", use_container_width=True):
+                st.session_state.current_week_index += 1
+                st.session_state.giorno_da_scambiare = None
+                st.rerun()
+        
+        # Calcola date della settimana selezionata
         oggi = ora_italiana.date()
         lunedi_corrente = oggi - timedelta(days=oggi.weekday())
         lunedi_selezionato = lunedi_corrente + timedelta(weeks=st.session_state.current_week_index)
         domenica_selezionata = lunedi_selezionato + timedelta(days=6)
         
-        # Header compatto con navigazione
-        c1, c2, c3 = st.columns([1, 3, 1])
-        with c1:
-            if st.button("⬅️", use_container_width=True):
-                st.session_state.current_week_index -= 1
-                st.rerun()
-        with c2:
-            week_label = "Questa sett." if st.session_state.current_week_index == 0 else f"+{st.session_state.current_week_index} sett." if st.session_state.current_week_index > 0 else f"{st.session_state.current_week_index} sett."
-            st.markdown(f"<h3 style='text-align:center; margin:0;'>📅 {week_label}</h3>", unsafe_allow_html=True)
-            st.markdown(f"<p style='text-align:center; font-size:0.8em; margin:0;'>{lunedi_selezionato.strftime('%d/%m')} - {domenica_selezionata.strftime('%d/%m')}</p>", unsafe_allow_html=True)
-        with c3:
-            if st.button("➡️", use_container_width=True):
-                st.session_state.current_week_index += 1
-                st.rerun()
+        with col_nav3:
+            if st.session_state.current_week_index == 0:
+                st.markdown(f"### 📆 Settimana Corrente")
+            elif st.session_state.current_week_index > 0:
+                st.markdown(f"### 📆 +{st.session_state.current_week_index} Settimana/e")
+            else:
+                st.markdown(f"### 📆 {st.session_state.current_week_index} Settimana/e")
+            st.caption(f"Dal {lunedi_selezionato.strftime('%d/%m/%Y')} al {domenica_selezionata.strftime('%d/%m/%Y')}")
         
-        # Pulsante Oggi (se non siamo nella settimana corrente)
-        if st.session_state.current_week_index != 0:
-            if st.button("🏠 Torna a Oggi", use_container_width=True, type="primary"):
-                st.session_state.current_week_index = 0
-                st.rerun()
-        
-        # Info clienti compatta
+        # Info distribuzione clienti
         if not df.empty and 'visitare' in df.columns:
             clienti_attivi = len(df[df['visitare'] == 'SI'])
+            # Stima settimane necessarie (circa 30-40 clienti a settimana)
             settimane_stimate = max(1, (clienti_attivi + 34) // 35)
-            st.caption(f"📊 {clienti_attivi} clienti | ~{settimane_stimate} settimane per ciclo")
+            ciclo_attuale = (st.session_state.current_week_index // settimane_stimate) + 1
+            settimana_nel_ciclo = (st.session_state.current_week_index % settimane_stimate) + 1
+            st.info(f"📊 **{clienti_attivi} clienti** da visitare in **~{settimane_stimate} settimane** | Ciclo {ciclo_attuale}, Settimana {settimana_nel_ciclo}/{settimane_stimate}")
         
         # === PANNELLO DEBUG ===
-        with st.expander("🔧 DEBUG - Verifica Configurazione Giro", expanded=False):
+        with st.expander("🔧 DEBUG - Verifica Configurazione Giro (Motore Portatour)", expanded=False):
             base_lat = float(config.get('lat_base', 0))
             base_lon = float(config.get('lon_base', 0))
             
@@ -2004,7 +2310,7 @@ def main_app():
                     st.caption("Vai in ⚙️ Config → Imposta punto di partenza")
             
             with col_dbg2:
-                st.write("**⚙️ Parametri Giro:**")
+                st.write("**⚙️ Parametri Giro (Portatour Engine):**")
                 st.write(f"- Durata visita: **{config.get('durata_visita', 45)} min**")
                 st.write(f"- Orario: **{str(config.get('h_inizio', '09:00'))[:5]} - {str(config.get('h_fine', '18:00'))[:5]}**")
                 giorni_cfg = config.get('giorni_lavorativi', [0,1,2,3,4])
@@ -2012,6 +2318,17 @@ def main_app():
                     giorni_cfg = [int(x) for x in giorni_cfg.strip('{}').split(',')]
                 nomi_g = ["Lun","Mar","Mer","Gio","Ven","Sab","Dom"]
                 st.write(f"- Giorni: **{', '.join([nomi_g[g] for g in giorni_cfg])}**")
+                st.write("- Algoritmo: **Clustering + Urgenza + 2-Opt**")
+            
+            st.divider()
+            st.write("**🎯 Come funziona il nuovo algoritmo:**")
+            st.markdown("""
+            1. **Punteggio urgenza** - Ogni cliente riceve un punteggio 0-100 basato su quanto è in ritardo rispetto alla frequenza di visita
+            2. **Clustering geografico** - I clienti vengono raggruppati in zone (K-means) — una zona per ogni giorno lavorativo
+            3. **Zone ordinate** - Le zone più vicine alla base vengono visitate prima
+            4. **Priorità nella zona** - Dentro ogni zona, i clienti più urgenti vengono visitati prima
+            5. **Ottimizzazione 2-opt** - L'ordine delle visite viene ottimizzato per minimizzare i km
+            """)
             
             st.divider()
             
@@ -2291,7 +2608,7 @@ def main_app():
                                 nome_display = tappa['nome_cliente'][:15] + "..." if len(tappa['nome_cliente']) > 15 else tappa['nome_cliente']
                                 if st.button(nome_display, key=f"ag_{data_giorno}_{tappa['nome_cliente']}", use_container_width=True):
                                     st.session_state.cliente_selezionato = tappa['nome_cliente']
-                                    st.session_state.active_tab = "👤 Clienti"
+                                    st.session_state.active_tab = "👤 Anagrafica"
                                     st.rerun()
                                 
                                 # Mostra ritardo
@@ -2565,7 +2882,7 @@ def main_app():
                         col2.link_button("🚗", f"https://www.google.com/maps/dir/?api=1&destination={row['latitude']},{row['longitude']}", use_container_width=True)
                         if col3.button("👤", key=f"mappa_cliente_{row['id']}"):
                             st.session_state.cliente_selezionato = row['nome_cliente']
-                            st.session_state.active_tab = "👤 Clienti"
+                            st.session_state.active_tab = "👤 Anagrafica"
                             st.rerun()
             else:
                 st.warning("⚠️ Nessun cliente trovato con i filtri selezionati")
@@ -2573,7 +2890,7 @@ def main_app():
             st.info("Nessun cliente da mostrare")
     
     # --- TAB: ANAGRAFICA ---
-    elif st.session_state.active_tab == "👤 Clienti":
+    elif st.session_state.active_tab == "👤 Anagrafica":
         st.header("👤 Anagrafica Cliente")
         
         if not df.empty:
@@ -3017,29 +3334,62 @@ def main_app():
         
         # === SEZIONE GPS ===
         st.subheader("📍 Posizione GPS")
-        st.caption("Usa il GPS per compilare automaticamente l'indirizzo del cliente")
+        st.caption("Usa il GPS del dispositivo oppure incolla le coordinate da Google Maps")
         
-        col_gps1, col_gps2 = st.columns([2, 1])
+        # Controlla se ci sono coordinate GPS dai query params
+        gps_data = read_gps_from_url()
+        if gps_data and 'gps_acquisito_nuovo' not in st.session_state:
+            st.session_state.gps_acquisito_nuovo = True
+            # Reverse geocoding per ottenere indirizzo
+            addr = reverse_geocode(gps_data['latitude'], gps_data['longitude'])
+            if addr:
+                st.session_state.nuovo_cliente_indirizzo = addr.get('via', '')
+                st.session_state.nuovo_cliente_cap = addr.get('cap', '')
+                st.session_state.nuovo_cliente_citta = addr.get('citta', '')
+                st.session_state.nuovo_cliente_provincia = addr.get('provincia', '')
+            st.session_state.nuovo_cliente_lat = gps_data['latitude']
+            st.session_state.nuovo_cliente_lon = gps_data['longitude']
+            clear_gps_from_url()
+            st.rerun()
+        
+        col_gps1, col_gps2 = st.columns([1, 1])
         
         with col_gps1:
+            # Pulsante GPS nativo del browser
+            render_gps_button("nuovo_cliente")
+            if st.button("🔄 Conferma posizione GPS", use_container_width=True, 
+                         help="Dopo aver premuto 'Rileva GPS', premi qui per caricare la posizione"):
+                gps_check = read_gps_from_url()
+                if gps_check:
+                    with st.spinner("🔄 Ricerca indirizzo..."):
+                        addr = reverse_geocode(gps_check['latitude'], gps_check['longitude'])
+                    if addr:
+                        st.session_state.nuovo_cliente_indirizzo = addr.get('via', '')
+                        st.session_state.nuovo_cliente_cap = addr.get('cap', '')
+                        st.session_state.nuovo_cliente_citta = addr.get('citta', '')
+                        st.session_state.nuovo_cliente_provincia = addr.get('provincia', '')
+                    st.session_state.nuovo_cliente_lat = gps_check['latitude']
+                    st.session_state.nuovo_cliente_lon = gps_check['longitude']
+                    clear_gps_from_url()
+                    st.success("✅ Posizione GPS acquisita!")
+                    st.rerun()
+                else:
+                    st.warning("⚠️ Premi prima '📍 Rileva Posizione GPS' e poi questo pulsante")
+
+        with col_gps2:
             # Input manuale coordinate (può essere compilato da GPS o manualmente)
             coords_input = st.text_input(
-                "📍 Coordinate (lat, lon):",
-                placeholder="Es: 45.4642, 9.1900 - Incolla da Google Maps o usa GPS",
+                "📍 Oppure incolla coordinate (lat, lon):",
+                placeholder="Es: 45.4642, 9.1900 - Da Google Maps",
                 key="coords_input_nuovo"
             )
-        
-        with col_gps2:
-            st.write("")  # Spacer
-            if st.button("🔍 Cerca Indirizzo", use_container_width=True, type="primary"):
+            if st.button("🔍 Cerca Indirizzo da Coordinate", use_container_width=True, type="primary"):
                 if coords_input:
                     try:
-                        # Parse delle coordinate
                         parts = coords_input.replace(" ", "").split(",")
                         lat = float(parts[0])
                         lon = float(parts[1])
                         
-                        # Reverse geocoding
                         with st.spinner("🔄 Ricerca indirizzo..."):
                             addr = reverse_geocode(lat, lon)
                         
@@ -3050,29 +3400,29 @@ def main_app():
                             st.session_state.nuovo_cliente_provincia = addr.get('provincia', '')
                             st.session_state.nuovo_cliente_lat = lat
                             st.session_state.nuovo_cliente_lon = lon
-                            st.success(f"✅ Indirizzo trovato!")
+                            st.success("✅ Indirizzo trovato!")
                             st.rerun()
                         else:
-                            st.error("❌ Indirizzo non trovato")
+                            st.error("❌ Indirizzo non trovato per queste coordinate")
                     except:
-                        st.error("❌ Formato coordinate non valido. Usa: lat, lon")
+                        st.error("❌ Formato non valido. Usa: latitudine, longitudine")
                 else:
                     st.warning("⚠️ Inserisci le coordinate")
         
         # Istruzioni per ottenere coordinate
         with st.expander("💡 Come ottenere le coordinate"):
             st.markdown("""
-            **Da smartphone (sul posto):**
+            **Metodo 1 - GPS automatico (da smartphone):**
+            1. Premi **📍 Rileva Posizione GPS** qui sopra
+            2. Consenti l'accesso alla posizione
+            3. Premi **🔄 Conferma posizione GPS**
+            
+            **Metodo 2 - Da Google Maps (smartphone o PC):**
             1. Apri **Google Maps**
             2. Tieni premuto sulla posizione esatta
-            3. Tocca le coordinate che appaiono in basso
-            4. Incollale qui sopra
-            
-            **Da PC:**
-            1. Vai su [Google Maps](https://maps.google.com)
-            2. Clicca con il destro sul punto
-            3. Clicca sulle coordinate per copiarle
-            4. Incollale qui sopra
+            3. Tocca/clicca sulle coordinate che appaiono
+            4. Incollale nel campo "Coordinate"
+            5. Premi **🔍 Cerca Indirizzo**
             """)
         
         # Mostra indirizzo trovato
@@ -3179,6 +3529,42 @@ def main_app():
         citta_attuale = config.get('citta_base', 'Roma')
         
         st.info(f"📍 **Posizione attuale:** {citta_attuale} ({lat_attuale:.6f}, {lon_attuale:.6f})")
+        
+        # Controlla se ci sono coordinate GPS dai query params (per la base)
+        gps_data_config = read_gps_from_url()
+        if gps_data_config:
+            with st.spinner("🔄 Aggiornamento posizione base da GPS..."):
+                addr_info = reverse_geocode(gps_data_config['latitude'], gps_data_config['longitude'])
+                citta_nome = addr_info['citta'] if addr_info and addr_info.get('citta') else "Posizione GPS"
+            
+            config['citta_base'] = citta_nome
+            config['lat_base'] = gps_data_config['latitude']
+            config['lon_base'] = gps_data_config['longitude']
+            save_config(config)
+            st.session_state.config = config
+            clear_gps_from_url()
+            st.success(f"✅ Posizione base aggiornata via GPS: {citta_nome}")
+            st.rerun()
+        
+        # Opzione 0: GPS
+        with st.expander("📍 Usa GPS per impostare posizione base"):
+            render_gps_button("config_base")
+            if st.button("🔄 Conferma posizione GPS come base", use_container_width=True, type="primary",
+                         help="Dopo aver premuto 'Rileva GPS', premi qui"):
+                gps_check = read_gps_from_url()
+                if gps_check:
+                    addr_info = reverse_geocode(gps_check['latitude'], gps_check['longitude'])
+                    citta_nome = addr_info['citta'] if addr_info and addr_info.get('citta') else "Posizione GPS"
+                    config['citta_base'] = citta_nome
+                    config['lat_base'] = gps_check['latitude']
+                    config['lon_base'] = gps_check['longitude']
+                    save_config(config)
+                    st.session_state.config = config
+                    clear_gps_from_url()
+                    st.success(f"✅ Base aggiornata: {citta_nome}")
+                    st.rerun()
+                else:
+                    st.warning("⚠️ Premi prima il pulsante GPS, poi conferma qui")
         
         # Opzione 1: Inserisci città
         col_part1, col_part2 = st.columns(2)
@@ -3933,7 +4319,7 @@ def main_app():
     
     # Footer
     st.divider()
-    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 3.1")
+    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 4.0 (Portatour Engine)")
 
 # --- RUN APP ---
 init_auth_state()
