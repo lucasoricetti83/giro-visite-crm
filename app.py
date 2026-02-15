@@ -1025,22 +1025,35 @@ def clear_gps_from_url():
         if key in st.query_params:
             del st.query_params[key]
 
-# --- 5. CALCOLO GIRO OTTIMIZZATO (STILE PORTATOUR) ---
+# --- 5. CALCOLO GIRO OTTIMIZZATO (PORTATOUR v2) ---
 def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, variante=0):
     """
-    ALGORITMO PORTATOUR-STYLE:
-    1. PUNTEGGIO URGENZA - Chi ha più bisogno di essere visitato
-    2. CLUSTERING GEOGRAFICO - Raggruppa clienti per zona (K-means semplificato)
-    3. ZONA PER GIORNO - Ogni giorno lavori in una zona specifica
-    4. OTTIMIZZAZIONE 2-OPT - Evita zig-zag dentro la zona
-    5. ESPANSIONE PROGRESSIVA - Prima le zone vicine, poi quelle lontane
+    ALGORITMO PORTATOUR v2 - Principi:
+    
+    1. VICINANZA GEOGRAFICA È LA REGOLA #1
+       - I clienti di ogni giorno devono essere VICINI tra loro
+       - Mai mischiare clienti di zone diverse nello stesso giorno
+    
+    2. ZONE STABILI CON SWEEP ANGOLARE
+       - Dividi l'area intorno alla base in N settori (come una pizza)
+       - Ogni settore = 1 giorno lavorativo
+       - Le zone sono STABILI (non cambiano ogni settimana)
+    
+    3. ROTAZIONE SETTIMANALE REALE
+       - Usa il numero della settimana del calendario (ISO)
+       - Ogni settimana si ruotano le zone sui giorni
+       - Dentro ogni zona, si alternano i clienti per urgenza
+    
+    4. NEAREST NEIGHBOR + 2-OPT
+       - Costruisci il percorso del giorno partendo dal più vicino
+       - Ottimizza con 2-opt per eliminare incroci
     """
     if df.empty:
         return {}
     
     import random
     
-    # Parametri configurazione
+    # === PARAMETRI ===
     base_lat = float(config.get('lat_base', 41.9028))
     base_lon = float(config.get('lon_base', 12.4964))
     durata_visita = int(config.get('durata_visita', 45))
@@ -1079,11 +1092,13 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     oggi = ora_italiana.date()
     lunedi = oggi - timedelta(days=oggi.weekday()) + timedelta(weeks=settimana_offset)
     
-    # Agenda vuota
+    # Numero settimana REALE per rotazione (cambia ogni settimana!)
+    numero_settimana = lunedi.isocalendar()[1]
+    
     agenda = {g: [] for g in range(7)}
     
     # ========================================
-    # 1. RACCOGLI CLIENTI VALIDI CON PUNTEGGIO URGENZA
+    # 1. RACCOGLI TUTTI I CLIENTI VALIDI
     # ========================================
     tutti = []
     for _, r in df.iterrows():
@@ -1095,50 +1110,47 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         if pd.isna(lat) or pd.isna(lon) or lat == 0 or lon == 0:
             continue
         
-        citta = str(r.get('citta', '') or '').strip().upper()
-        if not citta:
-            citta = 'ALTRO'
+        citta = str(r.get('citta', '') or '').strip().upper() or 'ALTRO'
         
-        # --- CALCOLO URGENZA (core Portatour-style) ---
+        # --- URGENZA ---
         freq = int(r.get('frequenza_giorni', 30))
         ultima = r.get('ultima_visita')
         
         if pd.isnull(ultima) or (hasattr(ultima, 'year') and ultima.year < 2001):
-            # Mai visitato → massima urgenza
             giorni_ritardo = 999
-            urgenza = 100.0  # Priorità massima
+            urgenza = 100.0
         else:
             ultima_date = ultima.date() if hasattr(ultima, 'date') else ultima
-            # Calcola data prossima visita prevista
             prossima = ultima_date + timedelta(days=freq)
-            # Giorni di ritardo: positivo = in ritardo, negativo = in anticipo
-            # Proiettato alla data del lunedì della settimana selezionata
             giorni_ritardo = (lunedi - prossima).days
             
             if giorni_ritardo >= 0:
-                # In ritardo: urgenza cresce rapidamente
-                urgenza = min(100, 50 + (giorni_ritardo / freq) * 50)
+                urgenza = min(100, 50 + (giorni_ritardo / max(freq, 1)) * 50)
             else:
-                # Non ancora in scadenza, ma potrebbe scadere durante la settimana
                 giorni_alla_scadenza = abs(giorni_ritardo)
                 if giorni_alla_scadenza <= 7:
-                    # Scade questa settimana
                     urgenza = 30 + (7 - giorni_alla_scadenza) * 3
+                elif giorni_alla_scadenza <= 14:
+                    urgenza = 15
                 else:
-                    urgenza = max(0, 20 - giorni_alla_scadenza)
+                    urgenza = max(0, 10 - (giorni_alla_scadenza - 14))
         
-        dist_base = haversine(base_lat, base_lon, float(lat), float(lon))
+        flat, flon = float(lat), float(lon)
+        dist_base = haversine(base_lat, base_lon, flat, flon)
+        
+        # Angolo dalla base (per lo sweep)
+        angolo = math.atan2(flat - base_lat, flon - base_lon)
         
         tutti.append({
             'id': r['id'],
             'nome': r['nome_cliente'],
-            'lat': float(lat),
-            'lon': float(lon),
+            'lat': flat, 'lon': flon,
             'ind': r.get('indirizzo', ''),
             'citta': citta,
             'cell': str(r.get('cellulare', '')),
             'app': r.get('appuntamento'),
             'dist_base': dist_base,
+            'angolo': angolo,
             'urgenza': urgenza,
             'giorni_ritardo': giorni_ritardo,
             'frequenza': freq
@@ -1161,7 +1173,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         return agenda
     
     # ========================================
-    # 3. GESTISCI APPUNTAMENTI FISSI
+    # 3. APPUNTAMENTI FISSI
     # ========================================
     app_per_giorno = {}
     nomi_app = set()
@@ -1185,136 +1197,65 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     # 4. MAX VISITE AL GIORNO
     # ========================================
     ore = (datetime.combine(oggi, ora_fine) - datetime.combine(oggi, ora_inizio)).seconds / 3600
-    pausa = (datetime.combine(oggi, pausa_a) - datetime.combine(oggi, pausa_da)).seconds / 3600
-    max_visite = max(4, min(10, int(ore - pausa)))
+    pausa_ore = (datetime.combine(oggi, pausa_a) - datetime.combine(oggi, pausa_da)).seconds / 3600
+    max_visite = max(4, min(10, int(ore - pausa_ore)))
     max_settimana = max_visite * len(giorni)
     
     # ========================================
-    # 5. CLUSTERING GEOGRAFICO (zone di lavoro)
+    # 5. SWEEP ANGOLARE → ZONE GEOGRAFICHE
     # ========================================
-    def crea_cluster_geografici(clienti, num_cluster):
-        """
-        K-means semplificato per raggruppare clienti in zone geografiche.
-        Non richiede librerie esterne.
-        """
-        if len(clienti) <= num_cluster:
-            return [[c] for c in clienti]
-        
-        # Inizializza centroidi: scegli clienti più sparsi
-        centroidi = []
-        # Primo centroide: il più vicino alla base
-        clienti_sorted = sorted(clienti, key=lambda c: c['dist_base'])
-        centroidi.append((clienti_sorted[0]['lat'], clienti_sorted[0]['lon']))
-        
-        # Centroidi successivi: il più lontano dai centroidi esistenti
-        for _ in range(num_cluster - 1):
-            max_dist = -1
-            miglior_c = None
-            for c in clienti:
-                min_dist_centro = min(haversine(c['lat'], c['lon'], ct[0], ct[1]) for ct in centroidi)
-                if min_dist_centro > max_dist:
-                    max_dist = min_dist_centro
-                    miglior_c = c
-            if miglior_c:
-                centroidi.append((miglior_c['lat'], miglior_c['lon']))
-        
-        # Iterazioni K-means (5 sono sufficienti)
-        for _ in range(5):
-            # Assegna ogni cliente al centroide più vicino
-            cluster = [[] for _ in range(num_cluster)]
-            for c in clienti:
-                min_d = float('inf')
-                best_k = 0
-                for k, ct in enumerate(centroidi):
-                    d = haversine(c['lat'], c['lon'], ct[0], ct[1])
-                    if d < min_d:
-                        min_d = d
-                        best_k = k
-                cluster[best_k].append(c)
-            
-            # Ricalcola centroidi
-            for k in range(num_cluster):
-                if cluster[k]:
-                    centroidi[k] = (
-                        sum(c['lat'] for c in cluster[k]) / len(cluster[k]),
-                        sum(c['lon'] for c in cluster[k]) / len(cluster[k])
-                    )
-        
-        # Rimuovi cluster vuoti
-        cluster = [cl for cl in cluster if cl]
-        return cluster
+    # Ordina TUTTI i clienti per angolo dalla base
+    # Questo crea una "spirale" attorno alla base
+    liberi.sort(key=lambda x: x['angolo'])
     
-    # ========================================
-    # 6. SELEZIONA CLIENTI PER QUESTA SETTIMANA
-    # ========================================
-    # Calcola quante settimane servono per coprire tutti
-    num_settimane = max(1, (len(liberi) + max_settimana - 1) // max_settimana)
-    settimana_nel_ciclo = settimana_offset % num_settimane
-    
-    # SELEZIONE PORTATOUR: priorità per urgenza + rotazione geografica
-    # Ordina per urgenza (chi ha più bisogno viene prima)
-    liberi.sort(key=lambda x: x['urgenza'], reverse=True)
-    
-    # Prendi i più urgenti, ma anche un mix geografico
-    # Fase 1: Tutti quelli critici (urgenza > 50) vanno sempre questa settimana
-    critici = [c for c in liberi if c['urgenza'] > 50]
-    normali = [c for c in liberi if c['urgenza'] <= 50]
-    
-    # Fase 2: Dai normali, prendi la fetta della settimana
-    # usando rotazione per zona: ordina per angolo dalla base (settore)
-    import math
-    for c in normali:
-        dx = c['lon'] - base_lon
-        dy = c['lat'] - base_lat
-        c['angolo'] = math.atan2(dy, dx)
-    
-    normali.sort(key=lambda x: x['angolo'])
-    
-    # Seleziona la fetta della settimana corrente
-    normali_settimana = []
-    for i, c in enumerate(normali):
-        if i % num_settimane == settimana_nel_ciclo:
-            normali_settimana.append(c)
-    
-    # Combina: critici (sempre) + normali della settimana
-    clienti_settimana = critici + normali_settimana
-    
-    # Taglia se troppi
-    if len(clienti_settimana) > max_settimana:
-        # Mantieni i più urgenti
-        clienti_settimana.sort(key=lambda x: x['urgenza'], reverse=True)
-        clienti_settimana = clienti_settimana[:max_settimana]
-    
-    # ========================================
-    # 7. VARIANTE: cambia ordine per giro diverso
-    # ========================================
-    if variante > 0:
-        random.seed(variante * 12345)
-        random.shuffle(clienti_settimana)
-    
-    # ========================================
-    # 8. CLUSTERING: crea zone per i giorni disponibili
-    # ========================================
     num_zone = len(giorni)
     
-    if len(clienti_settimana) >= num_zone and num_zone > 1:
-        zone = crea_cluster_geografici(clienti_settimana, num_zone)
-    else:
-        zone = [clienti_settimana]
+    # Dividi in zone di dimensione uguale (sweep)
+    # Ogni zona contiene clienti vicini tra loro perché hanno angoli simili
+    zone_complete = [[] for _ in range(num_zone)]
+    for i, c in enumerate(liberi):
+        zona_idx = i % num_zone
+        zone_complete[zona_idx].append(c)
     
-    # Ordina zone per distanza dalla base (prima le più vicine)
-    def distanza_media_zona(zona):
-        if not zona:
-            return float('inf')
-        return sum(c['dist_base'] for c in zona) / len(zona)
-    
-    zone.sort(key=distanza_media_zona)
+    # Ma il semplice modulo può sparpagliare! Meglio fette contigue:
+    if len(liberi) >= num_zone:
+        dim_zona = len(liberi) / num_zone
+        zone_complete = [[] for _ in range(num_zone)]
+        for i, c in enumerate(liberi):
+            zona_idx = min(int(i / dim_zona), num_zone - 1)
+            zone_complete[zona_idx].append(c)
     
     # ========================================
-    # 9. FUNZIONE 2-OPT PER OTTIMIZZARE ORDINE
+    # 6. ROTAZIONE SETTIMANALE
+    # ========================================
+    # Ogni settimana, le zone ruotano: la zona del lunedì della settimana 1
+    # diventa la zona del martedì nella settimana 2, ecc.
+    # Questo garantisce che ogni settimana il giro sia DIVERSO
+    rotazione = numero_settimana % num_zone
+    zone_ruotate = zone_complete[rotazione:] + zone_complete[:rotazione]
+    
+    # ========================================
+    # 7. DENTRO OGNI ZONA: SELEZIONA PER URGENZA
+    # ========================================
+    # Se una zona ha più clienti di max_visite, teniamo i più urgenti
+    # Il resto verrà coperto nelle settimane successive
+    
+    # Calcola quante settimane servono per ogni zona
+    cicli_per_zona = []
+    for zona in zone_ruotate:
+        cicli = max(1, (len(zona) + max_visite - 1) // max_visite)
+        cicli_per_zona.append(cicli)
+    
+    # ========================================
+    # 8. VARIANTE: giro alternativo
+    # ========================================
+    # La variante cambia l'ordine di selezione dentro ogni zona
+    seed_variante = variante * 7919 if variante > 0 else 0
+    
+    # ========================================
+    # 9. FUNZIONE 2-OPT
     # ========================================
     def ottimizza_2opt(percorso, lat_start, lon_start):
-        """Ottimizza l'ordine per minimizzare km ed evitare avanti-indietro"""
         if len(percorso) < 3:
             return percorso
         
@@ -1333,66 +1274,129 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         while migliorato and iterazioni < 100:
             migliorato = False
             dist_attuale = distanza_totale(percorso)
-            
             for i in range(len(percorso) - 1):
                 for j in range(i + 2, len(percorso)):
                     nuovo = percorso[:i+1] + percorso[i+1:j+1][::-1] + percorso[j+1:]
-                    nuova_dist = distanza_totale(nuovo)
-                    
-                    if nuova_dist < dist_attuale - 0.1:  # Migliora di almeno 100m
+                    if distanza_totale(nuovo) < dist_attuale - 0.1:
                         percorso = nuovo
                         migliorato = True
                         break
                 if migliorato:
                     break
             iterazioni += 1
+        return percorso
+    
+    # ========================================
+    # 10. NEAREST NEIGHBOR (costruisci percorso per vicinanza)
+    # ========================================
+    def nearest_neighbor_route(clienti, lat_start, lon_start, max_n):
+        """Seleziona fino a max_n clienti, sempre scegliendo il più vicino"""
+        if not clienti:
+            return []
+        
+        disponibili = clienti.copy()
+        percorso = []
+        pos_lat, pos_lon = lat_start, lon_start
+        
+        while disponibili and len(percorso) < max_n:
+            # Trova il più vicino alla posizione corrente
+            min_dist = float('inf')
+            piu_vicino = None
+            for c in disponibili:
+                d = haversine(pos_lat, pos_lon, c['lat'], c['lon'])
+                if d < min_dist:
+                    min_dist = d
+                    piu_vicino = c
+            
+            if piu_vicino is None:
+                break
+            
+            percorso.append(piu_vicino)
+            disponibili.remove(piu_vicino)
+            pos_lat, pos_lon = piu_vicino['lat'], piu_vicino['lon']
         
         return percorso
     
     # ========================================
-    # 10. ASSEGNA ZONE AI GIORNI
+    # 11. ASSEGNA ZONE AI GIORNI E COSTRUISCI PERCORSI
     # ========================================
     for idx_giorno, giorno in enumerate(giorni):
         data_g = lunedi + timedelta(days=giorno)
-        tappe = []
+        tappe_appuntamenti = []
         
         # Appuntamenti del giorno (priorità assoluta)
         if giorno in app_per_giorno:
-            for a in app_per_giorno[giorno]:
-                tappe.append(a)
+            tappe_appuntamenti = list(app_per_giorno[giorno])
         
-        slot = max_visite - len(tappe)
+        slot = max_visite - len(tappe_appuntamenti)
         
-        # Prendi la zona corrispondente
-        if idx_giorno < len(zone):
-            zona_clienti = zone[idx_giorno].copy()
+        # Prendi la zona per questo giorno
+        if idx_giorno < len(zone_ruotate):
+            zona = zone_ruotate[idx_giorno].copy()
         else:
-            zona_clienti = []
+            zona = []
         
-        # Nella zona, ordina per urgenza (i più urgenti prima)
-        zona_clienti.sort(key=lambda x: x['urgenza'], reverse=True)
-        
-        # Prendi fino a max slot
-        visite_giorno = zona_clienti[:slot]
-        
-        # OTTIMIZZA ORDINE PERCORSO CON 2-OPT
-        # Punto di partenza: base o ultimo appuntamento
-        if tappe:
-            start_lat, start_lon = tappe[-1]['lat'], tappe[-1]['lon']
+        if not zona:
+            # Solo appuntamenti per questo giorno
+            giro_finale = tappe_appuntamenti
         else:
-            start_lat, start_lon = base_lat, base_lon
-        
-        if len(visite_giorno) >= 3:
-            visite_giorno = ottimizza_2opt(visite_giorno, start_lat, start_lon)
-        elif len(visite_giorno) == 2:
-            # Per 2 clienti, metti il più vicino alla partenza prima
-            d0 = haversine(start_lat, start_lon, visite_giorno[0]['lat'], visite_giorno[0]['lon'])
-            d1 = haversine(start_lat, start_lon, visite_giorno[1]['lat'], visite_giorno[1]['lon'])
-            if d1 < d0:
-                visite_giorno = [visite_giorno[1], visite_giorno[0]]
-        
-        # Combina appuntamenti + visite ottimizzate
-        giro_finale = list(tappe) + visite_giorno
+            # Dentro la zona, se troppi clienti → seleziona sottoinsieme
+            if len(zona) > slot:
+                # Ordina per urgenza
+                zona.sort(key=lambda x: x['urgenza'], reverse=True)
+                
+                # Sotto-rotazione dentro la zona: ogni settimana un gruppo diverso
+                cicli_zona = max(1, (len(zona) + slot - 1) // slot)
+                sotto_ciclo = numero_settimana % cicli_zona
+                
+                # Prendi i più urgenti + una fetta a rotazione dei normali
+                urgenti = [c for c in zona if c['urgenza'] >= 50]
+                normali = [c for c in zona if c['urgenza'] < 50]
+                
+                # Dai normali, prendi la fetta di questa sotto-rotazione
+                if len(normali) > 0 and cicli_zona > 1:
+                    fetta = len(normali) // cicli_zona
+                    inizio = sotto_ciclo * fetta
+                    normali_sett = normali[inizio:inizio + fetta]
+                else:
+                    normali_sett = normali
+                
+                # Combina: urgenti prima, poi normali della settimana
+                candidati = urgenti + normali_sett
+                
+                # Variante: mescola se richiesto
+                if seed_variante > 0:
+                    random.seed(seed_variante + idx_giorno)
+                    random.shuffle(candidati)
+                
+                # Taglia a slot disponibili
+                candidati = candidati[:slot * 2]  # prendi il doppio, nearest neighbor selezionerà
+            else:
+                candidati = zona
+                if seed_variante > 0:
+                    random.seed(seed_variante + idx_giorno)
+                    random.shuffle(candidati)
+            
+            # Punto di partenza per il routing
+            if tappe_appuntamenti:
+                start_lat = tappe_appuntamenti[-1]['lat']
+                start_lon = tappe_appuntamenti[-1]['lon']
+            else:
+                start_lat, start_lon = base_lat, base_lon
+            
+            # NEAREST NEIGHBOR: costruisci percorso per prossimità
+            visite_giorno = nearest_neighbor_route(candidati, start_lat, start_lon, slot)
+            
+            # 2-OPT: ottimizza ordine per eliminare incroci
+            if len(visite_giorno) >= 3:
+                visite_giorno = ottimizza_2opt(visite_giorno, start_lat, start_lon)
+            elif len(visite_giorno) == 2:
+                d0 = haversine(start_lat, start_lon, visite_giorno[0]['lat'], visite_giorno[0]['lon'])
+                d1 = haversine(start_lat, start_lon, visite_giorno[1]['lat'], visite_giorno[1]['lon'])
+                if d1 < d0:
+                    visite_giorno = [visite_giorno[1], visite_giorno[0]]
+            
+            giro_finale = tappe_appuntamenti + visite_giorno
         
         # ========================================
         # CALCOLA ORARI
@@ -1403,14 +1407,12 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         
         for c in giro_finale:
             dist = haversine(pos_lat, pos_lon, c['lat'], c['lon'])
-            # Stima tempo di viaggio (media 40 km/h in zona urbana/extraurbana)
             tempo = (dist / 40) * 60
             
             if c.get('is_app'):
                 ora_arr = c.get('ora_app', '09:00')
             else:
                 arrivo = ora + timedelta(minutes=tempo)
-                # Gestione pausa pranzo
                 if arrivo.time() >= pausa_da and arrivo.time() < pausa_a:
                     ora = datetime.combine(data_g, pausa_a)
                     arrivo = ora + timedelta(minutes=tempo)
@@ -2321,13 +2323,13 @@ def main_app():
                 st.write("- Algoritmo: **Clustering + Urgenza + 2-Opt**")
             
             st.divider()
-            st.write("**🎯 Come funziona il nuovo algoritmo:**")
+            st.write("**🎯 Come funziona l'algoritmo Portatour v2:**")
             st.markdown("""
-            1. **Punteggio urgenza** - Ogni cliente riceve un punteggio 0-100 basato su quanto è in ritardo rispetto alla frequenza di visita
-            2. **Clustering geografico** - I clienti vengono raggruppati in zone (K-means) — una zona per ogni giorno lavorativo
-            3. **Zone ordinate** - Le zone più vicine alla base vengono visitate prima
-            4. **Priorità nella zona** - Dentro ogni zona, i clienti più urgenti vengono visitati prima
-            5. **Ottimizzazione 2-opt** - L'ordine delle visite viene ottimizzato per minimizzare i km
+            1. **Zone geografiche stabili (Sweep)** — I clienti sono divisi in N settori angolari attorno alla base (come fette di pizza). Ogni settore = 1 giorno lavorativo. I clienti in ogni settore sono SEMPRE vicini tra loro.
+            2. **Rotazione settimanale** — Ogni settimana le zone ruotano sui giorni (usando il numero settimana ISO). Questo garantisce giri diversi ogni settimana.
+            3. **Selezione per urgenza** — Se una zona ha troppi clienti, vengono scelti quelli con più urgenza (in ritardo sulla frequenza visite).
+            4. **Nearest Neighbor** — Il percorso del giorno si costruisce partendo dalla base e scegliendo sempre il cliente più vicino.
+            5. **2-Opt** — L'ordine finale viene ottimizzato per eliminare zig-zag e incroci.
             """)
             
             st.divider()
@@ -4319,7 +4321,7 @@ def main_app():
     
     # Footer
     st.divider()
-    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 4.0 (Portatour Engine)")
+    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 4.1 (Portatour v2 Engine)")
 
 # --- RUN APP ---
 init_auth_state()
