@@ -1653,7 +1653,7 @@ def main_app():
             visitati_fuori_giro = [v for v in st.session_state.visitati_oggi if v not in nomi_nel_giro]
             
             if tappe_oggi or visitati_fuori_giro:
-                # Statistiche
+                # Statistiche compatte + pulsante mappa
                 km_tot, tempo_guida, tempo_tot = calcola_km_tempo_giro(
                     tappe_oggi, 
                     config.get('lat_base', 41.9028), 
@@ -1661,75 +1661,28 @@ def main_app():
                     config.get('durata_visita', 45)
                 )
                 
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("📊 Visite", len(tappe_oggi))
-                col2.metric("✅ Fatte", len(st.session_state.visitati_oggi))
-                col3.metric("🛣️ Km", f"{km_tot}")
-                col4.metric("⏱️ Tempo", f"{tempo_tot//60}h {tempo_tot%60}m")
+                col_stats, col_mappa = st.columns([4, 1])
+                with col_stats:
+                    st.caption(f"📊 **{len(tappe_oggi)}** visite · ✅ **{len(st.session_state.visitati_oggi)}** fatte · 🛣️ **{km_tot}** km · ⏱️ **{tempo_tot//60}h{tempo_tot%60:02d}m**")
+                with col_mappa:
+                    if st.button("🗺️ Mappa", use_container_width=True, help="Vedi clienti del giorno sulla mappa"):
+                        st.session_state.active_tab = "🗺️ Mappa"
+                        st.rerun()
                 
                 st.divider()
                 
-                # Mappa
-                if tappe_oggi:
-                    st.subheader("🗺️ Percorso")
-                    
-                    # Costruisci lista waypoints
-                    waypoints = [(config.get('lat_base', 41.9028), config.get('lon_base', 12.4964))]
-                    for t in tappe_oggi:
-                        waypoints.append((t['latitude'], t['longitude']))
-                    
-                    # Ottieni percorso stradale reale
-                    with st.spinner("🛣️ Calcolo percorso stradale..."):
-                        route_stradale = get_route_osrm(waypoints)
-                    
-                    m = folium.Map(location=[config.get('lat_base', 41.9028), config.get('lon_base', 12.4964)], zoom_start=10)
-                    
-                    # Marker partenza
-                    folium.Marker(
-                        [config.get('lat_base', 41.9028), config.get('lon_base', 12.4964)],
-                        popup="🏠 Partenza",
-                        icon=folium.Icon(color="blue", icon="home")
-                    ).add_to(m)
-                    
-                    # Marker tappe
-                    for i, t in enumerate(tappe_oggi, 1):
-                        visitato = t['nome_cliente'] in st.session_state.visitati_oggi
-                        color = "green" if visitato else ("red" if "APPUNTAMENTO" in t['tipo_tappa'] else "orange")
-                        
-                        folium.Marker(
-                            [t['latitude'], t['longitude']],
-                            popup=f"{i}. {t['nome_cliente']}<br>⏰ {t['ora_arrivo']}",
-                            icon=folium.Icon(color=color, icon="ok" if visitato else "user")
-                        ).add_to(m)
-                    
-                    # Disegna il percorso stradale
-                    if len(route_stradale) > 1:
-                        folium.PolyLine(
-                            route_stradale, 
-                            weight=4, 
-                            color='#3498db', 
-                            opacity=0.8,
-                            tooltip="Percorso ottimizzato"
-                        ).add_to(m)
-                    
-                    m.fit_bounds(waypoints)
-                    st_folium(m, width="100%", height=350, key="map_oggi")
-                
-                st.divider()
-                st.subheader("📋 Tappe")
-                
+                # === LISTA TAPPE ===
                 for i, t in enumerate(tappe_oggi, 1):
                     visitato = t['nome_cliente'] in st.session_state.visitati_oggi
                     
-                    # Trova dati completi del cliente per promemoria e email
+                    # Dati completi del cliente
                     cliente_row = df[df['nome_cliente'] == t['nome_cliente']].iloc[0] if not df[df['nome_cliente'] == t['nome_cliente']].empty else None
                     
-                    # Inizializza stato per form report
                     if 'cliente_report_aperto' not in st.session_state:
                         st.session_state.cliente_report_aperto = None
                     
-                    # Stile diverso se visitato
                     if visitato:
+                        # --- VISITATO ---
                         with st.container(border=True):
                             st.markdown(f"""
                             <div style="background: linear-gradient(90deg, #d4edda 0%, #c3e6cb 100%); 
@@ -1743,75 +1696,62 @@ def main_app():
                             """, unsafe_allow_html=True)
                             st.caption(f"📍 {t.get('indirizzo', '')}")
                     else:
+                        # --- DA VISITARE ---
                         with st.container(border=True):
-                            # Controlla se il form report è aperto per questo cliente
                             form_aperto = st.session_state.cliente_report_aperto == t['id']
                             
                             if not form_aperto:
-                                # Vista normale
-                                c1, c2 = st.columns([3, 2])
+                                # Badge urgenza
+                                ritardo = t.get('ritardo', 0)
+                                urgenza_score = t.get('urgenza', 0)
                                 
-                                with c1:
-                                    # Badge urgenza (usa il punteggio dal nuovo algoritmo)
-                                    ritardo = t.get('ritardo', 0)
-                                    urgenza_score = t.get('urgenza', 0)
-                                    
-                                    if ritardo == 999 or urgenza_score >= 80:
-                                        urgenza_badge = "🔴 CRITICO"
-                                        urgenza_color = "#ffebee"
-                                    elif ritardo >= 7 or urgenza_score >= 50:
-                                        urgenza_badge = "🟠 In ritardo"
-                                        urgenza_color = "#fff3e0"
-                                    elif ritardo >= 0 or urgenza_score >= 30:
-                                        urgenza_badge = "🟡 Scaduto"
-                                        urgenza_color = "#fffde7"
-                                    else:
-                                        urgenza_badge = "🟢 Preventivo"
-                                        urgenza_color = "#e8f5e9"
-                                    
-                                    st.markdown(f"### {t['tipo_tappa'].split()[0]} {i}. {t['nome_cliente']}")
-                                    
-                                    # Info orario e urgenza
-                                    col_info1, col_info2 = st.columns(2)
-                                    col_info1.caption(f"⏰ {t['ora_arrivo']}")
-                                    col_info2.caption(f"{urgenza_badge} ({ritardo:+d} gg)")
-                                    
-                                    if t.get('indirizzo'):
-                                        st.caption(f"📍 {t['indirizzo']}")
-                                    
-                                    # Mostra promemoria se presente
-                                    if cliente_row is not None and pd.notnull(cliente_row.get('promemoria')) and str(cliente_row.get('promemoria')).strip():
-                                        st.warning(f"📝 **Promemoria:** {cliente_row['promemoria']}")
+                                if ritardo == 999 or urgenza_score >= 80:
+                                    urgenza_badge = "🔴"
+                                elif ritardo >= 7 or urgenza_score >= 50:
+                                    urgenza_badge = "🟠"
+                                elif ritardo >= 0 or urgenza_score >= 30:
+                                    urgenza_badge = "🟡"
+                                else:
+                                    urgenza_badge = "🟢"
                                 
-                                with c2:
-                                    # PULSANTE APRE FORM REPORT
-                                    if st.button(f"✅ REGISTRA VISITA", key=f"visita_{t['id']}", type="primary", use_container_width=True):
-                                        st.session_state.cliente_report_aperto = t['id']
-                                        st.rerun()
-                                    
-                                    # Pulsanti azione
-                                    btn_cols = st.columns(4)
-                                    
-                                    # Naviga
-                                    btn_cols[0].link_button("🚗", f"https://www.google.com/maps/dir/?api=1&destination={t['latitude']},{t['longitude']}", use_container_width=True, help="Naviga")
-                                    
-                                    # Chiama
-                                    if t.get('cellulare') and str(t.get('cellulare')).strip():
-                                        btn_cols[1].link_button("📱", f"tel:{t['cellulare']}", use_container_width=True, help="Chiama")
-                                    else:
-                                        btn_cols[1].button("📱", disabled=True, use_container_width=True, key=f"tel_dis_{t['id']}")
-                                    
-                                    # Email
-                                    if cliente_row is not None and pd.notnull(cliente_row.get('mail')) and str(cliente_row.get('mail')).strip():
-                                        btn_cols[2].link_button("📧", f"mailto:{cliente_row['mail']}", use_container_width=True, help="Email")
-                                    else:
-                                        btn_cols[2].button("📧", disabled=True, use_container_width=True, key=f"mail_dis_{t['id']}")
-                                    
-                                    # Scheda cliente
-                                    if btn_cols[3].button("👤", key=f"scheda_{t['id']}", help="Scheda", use_container_width=True):
-                                        st.session_state.cliente_selezionato = t['nome_cliente']
-                                        st.session_state.active_tab = "👤 Anagrafica"
-                                        st.rerun()
+                                # Info cliente — riga unica compatta
+                                st.markdown(f"**{t['tipo_tappa'].split()[0]} {i}. {t['nome_cliente']}** — ⏰ {t['ora_arrivo']} · {urgenza_badge} {ritardo:+d}gg · {t.get('distanza_km', 0)}km")
+                                
+                                if t.get('indirizzo'):
+                                    st.caption(f"📍 {t['indirizzo']}")
+                                
+                                # Promemoria
+                                if cliente_row is not None and pd.notnull(cliente_row.get('promemoria')) and str(cliente_row.get('promemoria')).strip():
+                                    st.warning(f"📝 **Promemoria:** {cliente_row['promemoria']}")
+                                
+                                # === 5 PULSANTI IN RIGA ORIZZONTALE ===
+                                b1, b2, b3, b4, b5 = st.columns(5)
+                                
+                                # 1. Registra Visita
+                                if b1.button("✅ Visita", key=f"visita_{t['id']}", type="primary", use_container_width=True):
+                                    st.session_state.cliente_report_aperto = t['id']
+                                    st.rerun()
+                                
+                                # 2. Naviga
+                                b2.link_button("🚗 Vai", f"https://www.google.com/maps/dir/?api=1&destination={t['latitude']},{t['longitude']}", use_container_width=True)
+                                
+                                # 3. Chiama
+                                if t.get('cellulare') and str(t.get('cellulare')).strip():
+                                    b3.link_button("📱 Chiama", f"tel:{t['cellulare']}", use_container_width=True)
+                                else:
+                                    b3.button("📱", disabled=True, use_container_width=True, key=f"tel_dis_{t['id']}")
+                                
+                                # 4. Email
+                                if cliente_row is not None and pd.notnull(cliente_row.get('mail')) and str(cliente_row.get('mail')).strip():
+                                    b4.link_button("📧 Mail", f"mailto:{cliente_row['mail']}", use_container_width=True)
+                                else:
+                                    b4.button("📧", disabled=True, use_container_width=True, key=f"mail_dis_{t['id']}")
+                                
+                                # 5. Scheda cliente
+                                if b5.button("👤 Scheda", key=f"scheda_{t['id']}", use_container_width=True):
+                                    st.session_state.cliente_selezionato = t['nome_cliente']
+                                    st.session_state.active_tab = "👤 Anagrafica"
+                                    st.rerun()
                             
                             else:
                                 # FORM REPORT APERTO
