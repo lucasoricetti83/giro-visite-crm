@@ -1401,6 +1401,10 @@ def main_app():
     subscription = st.session_state.get('subscription')
     user_is_admin = is_admin(st.session_state.user.id) if st.session_state.user else False
     
+    # Inizializza navigazione PRIMA della sidebar
+    if 'active_tab' not in st.session_state:
+        st.session_state.active_tab = "🚀 Giro Oggi"
+    
     # Sidebar con info utente + NAVIGAZIONE
     with st.sidebar:
         st.markdown(f"### 👤 {st.session_state.user.email}")
@@ -1498,10 +1502,6 @@ def main_app():
                 if row['ultima_visita'].strftime('%Y-%m-%d') == oggi_str:
                     if row['nome_cliente'] not in st.session_state.visitati_oggi:
                         st.session_state.visitati_oggi.append(row['nome_cliente'])
-    
-    # Menu navigazione
-    if 'active_tab' not in st.session_state:
-        st.session_state.active_tab = "🚀 Giro Oggi"
     
     # Se è il pannello admin, mostralo
     if st.session_state.active_tab == "🔐 Admin":
