@@ -1401,7 +1401,7 @@ def main_app():
     subscription = st.session_state.get('subscription')
     user_is_admin = is_admin(st.session_state.user.id) if st.session_state.user else False
     
-    # Sidebar con info utente
+    # Sidebar con info utente + NAVIGAZIONE
     with st.sidebar:
         st.markdown(f"### 👤 {st.session_state.user.email}")
         
@@ -1430,6 +1430,23 @@ def main_app():
                 if days_left <= 30:
                     st.warning(f"📅 Abbonamento scade tra {days_left} giorni")
         
+        st.divider()
+        
+        # === MENU NAVIGAZIONE (nella sidebar) ===
+        menu_keys =   ["🚀 Giro Oggi", "📊 Dashboard", "📅 Agenda", "🗺️ Mappa", "👤 Anagrafica", "➕ Nuovo", "⚙️ Config"]
+        menu_labels = ["🚀 Giro Oggi", "📊 Dashboard", "📅 Agenda", "🗺️ Mappa", "👤 Anagrafica", "➕ Nuovo Cliente", "⚙️ Configurazione"]
+        
+        current_key = st.session_state.get('active_tab', "🚀 Giro Oggi")
+        current_idx = menu_keys.index(current_key) if current_key in menu_keys else 0
+        
+        scelta = st.radio("Menu", menu_labels, index=current_idx, label_visibility="collapsed")
+        nuovo_idx = menu_labels.index(scelta)
+        if menu_keys[nuovo_idx] != st.session_state.active_tab:
+            st.session_state.active_tab = menu_keys[nuovo_idx]
+            st.rerun()
+        
+        st.divider()
+        
         if st.button("🚪 Logout", use_container_width=True):
             logout()
         
@@ -1439,8 +1456,6 @@ def main_app():
             if st.button("🔐 Pannello Admin", use_container_width=True, type="primary"):
                 st.session_state.active_tab = "🔐 Admin"
                 st.rerun()
-        
-        st.divider()
     
     # Carica dati
     if 'df_clienti' not in st.session_state or st.session_state.get('reload_data', False):
@@ -1499,30 +1514,6 @@ def main_app():
             return
         else:
             st.session_state.active_tab = "🚀 Giro Oggi"
-    
-    # Navigazione — radio orizzontale (si adatta da solo su iPhone e Mac)
-    menu_keys =   ["🚀 Giro Oggi", "📊 Dashboard", "📅 Agenda", "🗺️ Mappa", "👤 Anagrafica", "➕ Nuovo", "⚙️ Config"]
-    menu_labels = ["🚀 Giro",      "📊 Stats",     "📅 Agenda", "🗺️ Mappa", "👤 Clienti",    "➕ Nuovo", "⚙️ Config"]
-    
-    # Trova indice corrente
-    current_key = st.session_state.active_tab
-    current_idx = menu_keys.index(current_key) if current_key in menu_keys else 0
-    
-    scelta = st.radio(
-        "Navigazione",
-        menu_labels,
-        index=current_idx,
-        horizontal=True,
-        label_visibility="collapsed"
-    )
-    
-    # Se cambia selezione → aggiorna tab
-    nuovo_idx = menu_labels.index(scelta)
-    if menu_keys[nuovo_idx] != st.session_state.active_tab:
-        st.session_state.active_tab = menu_keys[nuovo_idx]
-        st.rerun()
-    
-    st.divider()
     
     config = st.session_state.config
     giorni_lavorativi = config.get('giorni_lavorativi', [0, 1, 2, 3, 4])
@@ -1724,31 +1715,43 @@ def main_app():
                                 if cliente_row is not None and pd.notnull(cliente_row.get('promemoria')) and str(cliente_row.get('promemoria')).strip():
                                     st.warning(f"📝 **Promemoria:** {cliente_row['promemoria']}")
                                 
-                                # === 5 PULSANTI IN RIGA ORIZZONTALE ===
-                                b1, b2, b3, b4, b5 = st.columns(5)
-                                
-                                # 1. Registra Visita
-                                if b1.button("✅ Visita", key=f"visita_{t['id']}", type="primary", use_container_width=True):
+                                # === PULSANTE VISITA ===
+                                if st.button("✅ Registra Visita", key=f"visita_{t['id']}", type="primary", use_container_width=True):
                                     st.session_state.cliente_report_aperto = t['id']
                                     st.rerun()
                                 
-                                # 2. Naviga
-                                b2.link_button("🚗 Vai", f"https://www.google.com/maps/dir/?api=1&destination={t['latitude']},{t['longitude']}", use_container_width=True)
+                                # === 4 PULSANTI AZIONE IN LINEA (HTML flex = sempre orizzontali su iPhone) ===
+                                nav_url = f"https://www.google.com/maps/dir/?api=1&destination={t['latitude']},{t['longitude']}"
+                                cell_val = str(t.get('cellulare', '')).strip()
+                                tel_url = f"tel:{cell_val}" if cell_val else ""
+                                mail_val = ""
+                                if cliente_row is not None and pd.notnull(cliente_row.get('mail')):
+                                    mail_val = str(cliente_row.get('mail', '')).strip()
+                                mail_url = f"mailto:{mail_val}" if mail_val else ""
                                 
-                                # 3. Chiama
-                                if t.get('cellulare') and str(t.get('cellulare')).strip():
-                                    b3.link_button("📱 Chiama", f"tel:{t['cellulare']}", use_container_width=True)
+                                btn_style = (
+                                    "display:inline-flex;align-items:center;justify-content:center;"
+                                    "padding:8px 4px;border-radius:8px;text-decoration:none;"
+                                    "font-size:14px;font-weight:500;flex:1;text-align:center;"
+                                    "min-height:38px;border:1px solid #ddd;color:#333;background:#f8f9fa;"
+                                )
+                                btn_disabled = btn_style + "opacity:0.35;pointer-events:none;color:#999;"
+                                
+                                html_btns = f'<div style="display:flex;gap:6px;margin:4px 0 2px 0;">'
+                                html_btns += f'<a href="{nav_url}" target="_blank" style="{btn_style}">🚗 Vai</a>'
+                                if tel_url:
+                                    html_btns += f'<a href="{tel_url}" style="{btn_style}">📱 Chiama</a>'
                                 else:
-                                    b3.button("📱", disabled=True, use_container_width=True, key=f"tel_dis_{t['id']}")
-                                
-                                # 4. Email
-                                if cliente_row is not None and pd.notnull(cliente_row.get('mail')) and str(cliente_row.get('mail')).strip():
-                                    b4.link_button("📧 Mail", f"mailto:{cliente_row['mail']}", use_container_width=True)
+                                    html_btns += f'<span style="{btn_disabled}">📱 Chiama</span>'
+                                if mail_url:
+                                    html_btns += f'<a href="{mail_url}" style="{btn_style}">📧 Mail</a>'
                                 else:
-                                    b4.button("📧", disabled=True, use_container_width=True, key=f"mail_dis_{t['id']}")
+                                    html_btns += f'<span style="{btn_disabled}">📧 Mail</span>'
+                                html_btns += '</div>'
+                                st.markdown(html_btns, unsafe_allow_html=True)
                                 
-                                # 5. Scheda cliente
-                                if b5.button("👤 Scheda", key=f"scheda_{t['id']}", use_container_width=True):
+                                # Scheda cliente (richiede Streamlit per navigazione)
+                                if st.button("👤 Scheda cliente", key=f"scheda_{t['id']}", use_container_width=True):
                                     st.session_state.cliente_selezionato = t['nome_cliente']
                                     st.session_state.active_tab = "👤 Anagrafica"
                                     st.rerun()
