@@ -1477,11 +1477,17 @@ def main_app():
         menu_labels = ["🚀 Giro Oggi", "📊 Dashboard", "📅 Agenda", "🗺️ Mappa", "👤 Anagrafica", "➕ Nuovo Cliente", "⚙️ Configurazione"]
         
         current_key = st.session_state.get('active_tab', "🚀 Giro Oggi")
+        # Se siamo in Admin, il radio punta a indice 0 ma NON deve sovrascrivere
+        in_admin = (current_key == "🔐 Admin")
         current_idx = menu_keys.index(current_key) if current_key in menu_keys else 0
         
         scelta = st.radio("Menu", menu_labels, index=current_idx, label_visibility="collapsed")
         nuovo_idx = menu_labels.index(scelta)
-        if menu_keys[nuovo_idx] != st.session_state.active_tab:
+        if not in_admin and menu_keys[nuovo_idx] != st.session_state.active_tab:
+            st.session_state.active_tab = menu_keys[nuovo_idx]
+            st.rerun()
+        elif in_admin and menu_keys[nuovo_idx] != "🚀 Giro Oggi":
+            # L'utente ha cliccato una voce diversa dal radio → esci da Admin
             st.session_state.active_tab = menu_keys[nuovo_idx]
             st.rerun()
         
