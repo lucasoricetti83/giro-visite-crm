@@ -15,148 +15,6 @@ from supabase import create_client, Client
 # --- 1. CONFIGURAZIONE ---
 st.set_page_config(page_title="Giro Visite CRM Pro", layout="wide", page_icon="🚀")
 
-# --- CSS MOBILE-RESPONSIVE (iPhone-first) ---
-st.markdown("""
-<style>
-/* ===== GLOBALE: padding compatto ===== */
-.block-container {
-    padding-top: 1rem !important;
-    padding-bottom: 1rem !important;
-}
-
-/* ===== MOBILE (< 768px) ===== */
-@media (max-width: 768px) {
-    /* Padding principale ridotto */
-    .block-container {
-        padding-left: 0.5rem !important;
-        padding-right: 0.5rem !important;
-        padding-top: 0.5rem !important;
-    }
-    
-    /* Sidebar nascosta di default su mobile */
-    [data-testid="stSidebar"] {
-        min-width: 0px !important;
-    }
-    
-    /* Colonne: gap ridotto */
-    [data-testid="column"] {
-        padding-left: 0.15rem !important;
-        padding-right: 0.15rem !important;
-    }
-    
-    /* Bottoni compatti */
-    .stButton > button {
-        padding: 0.3rem 0.2rem !important;
-        font-size: 0.82rem !important;
-        min-height: 2.2rem !important;
-    }
-    
-    /* Header/Subheader più piccoli */
-    h1 { font-size: 1.3rem !important; }
-    h2 { font-size: 1.15rem !important; }
-    h3 { font-size: 1.0rem !important; }
-    
-    /* Metriche compatte */
-    [data-testid="stMetricValue"] {
-        font-size: 1.1rem !important;
-    }
-    [data-testid="stMetricLabel"] {
-        font-size: 0.7rem !important;
-    }
-    [data-testid="stMetricDelta"] {
-        font-size: 0.65rem !important;
-    }
-    
-    /* Expander compatto */
-    .streamlit-expanderHeader {
-        font-size: 0.85rem !important;
-        padding: 0.4rem 0.6rem !important;
-    }
-    
-    /* Divider meno spazio */
-    hr {
-        margin-top: 0.5rem !important;
-        margin-bottom: 0.5rem !important;
-    }
-    
-    /* Selectbox/Input compatti */
-    .stSelectbox, .stTextInput, .stNumberInput, .stDateInput {
-        margin-bottom: 0.3rem !important;
-    }
-    
-    /* Tabs compatti */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 0.2rem !important;
-    }
-    .stTabs [data-baseweb="tab"] {
-        padding: 0.3rem 0.5rem !important;
-        font-size: 0.8rem !important;
-    }
-    
-    /* Alert/Info box compatti */
-    .stAlert {
-        padding: 0.5rem !important;
-        font-size: 0.82rem !important;
-    }
-    
-    /* Mappa: altezza ridotta su mobile */
-    iframe[title="st_folium.st_folium"] {
-        height: 280px !important;
-    }
-    
-    /* Caption */
-    .stCaption {
-        font-size: 0.65rem !important;
-    }
-}
-
-/* ===== NAVBAR STILE BOTTOM-BAR ===== */
-div[data-testid="column"] .stButton > button[kind="secondary"] {
-    border-color: #e0e0e0 !important;
-    background: #fafafa !important;
-}
-div[data-testid="column"] .stButton > button[kind="primary"] {
-    font-weight: 700 !important;
-}
-
-/* ===== iPhone SE / piccoli (< 400px) ===== */
-@media (max-width: 400px) {
-    .block-container {
-        padding-left: 0.3rem !important;
-        padding-right: 0.3rem !important;
-    }
-    .stButton > button {
-        padding: 0.25rem 0.1rem !important;
-        font-size: 0.78rem !important;
-        min-height: 2rem !important;
-    }
-    h1 { font-size: 1.15rem !important; }
-    h2 { font-size: 1rem !important; }
-    [data-testid="stMetricValue"] {
-        font-size: 0.95rem !important;
-    }
-}
-
-/* ===== Columns: prevent overflow ===== */
-[data-testid="stHorizontalBlock"] {
-    flex-wrap: nowrap !important;
-    gap: 0.3rem !important;
-    overflow-x: auto !important;
-}
-
-/* ===== Link buttons compact ===== */
-.stLinkButton > a {
-    font-size: 0.85rem !important;
-}
-@media (max-width: 768px) {
-    .stLinkButton > a {
-        padding: 0.3rem 0.2rem !important;
-        font-size: 0.8rem !important;
-    }
-}
-</style>
-""", unsafe_allow_html=True)
-
 # --- FUNZIONI PER PERSISTENZA SESSIONE ---
 def generate_session_token(user_id, email):
     """Genera un token di sessione sicuro"""
@@ -1343,21 +1201,17 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     # ========================================
     # 5. SELEZIONA CHI VISITARE QUESTA SETTIMANA
     # ========================================
-    # Separa urgenti (DEVONO essere visitati) da normali
     urgenti = [c for c in liberi if c['urgenza'] >= 40]
     normali = [c for c in liberi if c['urgenza'] < 40]
     
-    # Dai normali, ruota un sottoinsieme ogni settimana
-    # così in N settimane copriamo tutti
     if normali:
-        normali.sort(key=lambda x: x['dist_base'])  # ordine stabile per distanza
+        normali.sort(key=lambda x: x['dist_base'])
         num_cicli = max(1, (len(normali) + (max_settimana - len(urgenti)) - 1) //
                         max(1, (max_settimana - len(urgenti))))
         ciclo = numero_settimana % num_cicli
         posti_normali = max(0, max_settimana - len(urgenti))
         inizio = ciclo * posti_normali
         normali_settimana = normali[inizio:inizio + posti_normali]
-        # Se la fetta è corta, aggiungi dall'inizio (wrap-around)
         if len(normali_settimana) < posti_normali:
             mancanti = posti_normali - len(normali_settimana)
             normali_settimana += normali[:mancanti]
@@ -1366,7 +1220,6 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     
     pool = urgenti + normali_settimana
     
-    # Taglia se troppi
     if len(pool) > max_settimana:
         pool.sort(key=lambda x: x['urgenza'], reverse=True)
         pool = pool[:max_settimana]
@@ -1416,17 +1269,13 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     # 8. COSTRUISCI I PERCORSI GIORNO PER GIORNO
     #    (Nearest Neighbor dal pool condiviso)
     # ========================================
-    # Calcola su TUTTA la settimana per stabilità,
-    # poi restituisci solo i giorni futuri
-    
     pool_rimanente = list(pool)
-    risultati_calcolo = {}  # giorno → lista tappe
+    risultati_calcolo = {}
     
     for giorno in giorni_calcolo:
         data_g = lunedi + timedelta(days=giorno)
         tappe_app = []
         
-        # Appuntamenti del giorno (priorità assoluta)
         if giorno in app_per_giorno:
             tappe_app = list(app_per_giorno[giorno])
         
@@ -1435,17 +1284,12 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         if not pool_rimanente or slot <= 0:
             giro_finale = tappe_app
         else:
-            # Punto di partenza
             if tappe_app:
                 start_lat, start_lon = tappe_app[-1]['lat'], tappe_app[-1]['lon']
             else:
                 start_lat, start_lon = base_lat, base_lon
             
             # --- NEAREST NEIGHBOR dal pool rimanente ---
-            # Parti dalla base (o ultimo appuntamento), scegli il più vicino,
-            # poi il più vicino a quello, e così via.
-            # Questo garantisce che tutti i clienti del giorno siano
-            # geograficamente concatenati = VICINI tra loro.
             visite_giorno = []
             pos_lat, pos_lon = start_lat, start_lon
             
@@ -1453,7 +1297,6 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 if not pool_rimanente:
                     break
                 
-                # Trova il più vicino alla posizione corrente
                 min_dist = float('inf')
                 piu_vicino = None
                 piu_vicino_idx = -1
@@ -1471,7 +1314,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 pool_rimanente.pop(piu_vicino_idx)
                 pos_lat, pos_lon = piu_vicino['lat'], piu_vicino['lon']
             
-            # 2-OPT: ottimizza ordine per eliminare incroci
+            # 2-OPT
             if len(visite_giorno) >= 3:
                 visite_giorno = ottimizza_2opt(visite_giorno, start_lat, start_lon)
             elif len(visite_giorno) == 2:
@@ -1482,9 +1325,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             
             giro_finale = tappe_app + visite_giorno
         
-        # ========================================
         # CALCOLA ORARI
-        # ========================================
         tappe_finali = []
         pos_lat, pos_lon = base_lat, base_lon
         ora = datetime.combine(data_g, ora_inizio)
@@ -1659,16 +1500,27 @@ def main_app():
         else:
             st.session_state.active_tab = "🚀 Giro Oggi"
     
-    nav = st.columns(7)
-    menu_keys =    ["🚀 Giro Oggi", "📊 Dashboard", "📅 Agenda", "🗺️ Mappa", "👤 Anagrafica", "➕ Nuovo", "⚙️ Config"]
-    menu_display = ["🚀 Giro",      "📊 Stats",     "📅 Agenda", "🗺️ Mappa", "👤 Clienti",    "➕ Nuovo", "⚙️"]
-    menu_help =    ["Giro di Oggi",  "Dashboard",    "Agenda Settimanale", "Mappa Clienti", "Anagrafica Cliente", "Nuovo Cliente", "Configurazione"]
-    for i, (key, label, tip) in enumerate(zip(menu_keys, menu_display, menu_help)):
-        if nav[i].button(label, key=f"nav_{key}", use_container_width=True,
-                         type="primary" if st.session_state.active_tab == key else "secondary",
-                         help=tip):
-            st.session_state.active_tab = key
-            st.rerun()
+    # Navigazione — radio orizzontale (si adatta da solo su iPhone e Mac)
+    menu_keys =   ["🚀 Giro Oggi", "📊 Dashboard", "📅 Agenda", "🗺️ Mappa", "👤 Anagrafica", "➕ Nuovo", "⚙️ Config"]
+    menu_labels = ["🚀 Giro",      "📊 Stats",     "📅 Agenda", "🗺️ Mappa", "👤 Clienti",    "➕ Nuovo", "⚙️ Config"]
+    
+    # Trova indice corrente
+    current_key = st.session_state.active_tab
+    current_idx = menu_keys.index(current_key) if current_key in menu_keys else 0
+    
+    scelta = st.radio(
+        "Navigazione",
+        menu_labels,
+        index=current_idx,
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+    
+    # Se cambia selezione → aggiorna tab
+    nuovo_idx = menu_labels.index(scelta)
+    if menu_keys[nuovo_idx] != st.session_state.active_tab:
+        st.session_state.active_tab = menu_keys[nuovo_idx]
+        st.rerun()
     
     st.divider()
     
@@ -1679,9 +1531,9 @@ def main_app():
     
     # --- TAB: GIRO OGGI ---
     if st.session_state.active_tab == "🚀 Giro Oggi":
-        col_header, col_regen, col_refresh = st.columns([5, 2, 1])
+        col_header, col_regen, col_refresh = st.columns([4, 1, 1])
         with col_header:
-            st.header(f"📍 Giro Oggi")
+            st.header(f"📍 Giro di Oggi ({ora_italiana.strftime('%d/%m/%Y')})")
         with col_regen:
             if st.button("🔄 Rigenera", use_container_width=True, help="Propone un giro diverso"):
                 st.session_state.variante_giro = st.session_state.get('variante_giro', 0) + 1
@@ -1707,7 +1559,7 @@ def main_app():
             variante_attuale = st.session_state.get('variante_giro', 0)
             if variante_attuale > 0:
                 st.info(f"🔄 Giro rigenerato {variante_attuale} volta/e - Premi '🔄 Rigenera' per provare un altro percorso")
-                if st.button("↩️ Giro originale"):
+                if st.button("↩️ Torna al giro originale"):
                     st.session_state.variante_giro = 0
                     st.rerun()
             
@@ -1731,12 +1583,12 @@ def main_app():
                 col_esc1, col_esc2 = st.columns(2)
                 
                 with col_esc1:
-                    if st.button("🔄 Ricalcola", type="primary", use_container_width=True):
+                    if st.button("🔄 Ricalcola Giro", type="primary", use_container_width=True):
                         st.session_state.esclusi_oggi = esclusi_selezionati
                         st.rerun()
                 
                 with col_esc2:
-                    if st.button("🗑️ Reset esclusi", use_container_width=True):
+                    if st.button("🗑️ Rimuovi Esclusioni", use_container_width=True):
                         st.session_state.esclusi_oggi = []
                         st.rerun()
                 
@@ -1933,7 +1785,7 @@ def main_app():
                                 
                                 with c2:
                                     # PULSANTE APRE FORM REPORT
-                                    if st.button(f"✅ VISITA", key=f"visita_{t['id']}", type="primary", use_container_width=True):
+                                    if st.button(f"✅ REGISTRA VISITA", key=f"visita_{t['id']}", type="primary", use_container_width=True):
                                         st.session_state.cliente_report_aperto = t['id']
                                         st.rerun()
                                     
@@ -2341,10 +2193,10 @@ def main_app():
         if 'scambi_giorni' not in st.session_state:
             st.session_state.scambi_giorni = {}
         
-        col_nav1, col_nav2, col_nav3, col_nav4, col_nav5 = st.columns([1, 1, 3, 1, 1])
+        col_nav1, col_nav2, col_nav3, col_nav4, col_nav5 = st.columns([1, 1, 2, 1, 1])
         
         with col_nav1:
-            if st.button("⬅️", use_container_width=True, help="Settimana precedente"):
+            if st.button("⬅️ Sett. Prec.", use_container_width=True):
                 st.session_state.current_week_index -= 1
                 st.session_state.giorno_da_scambiare = None
                 st.rerun()
@@ -2352,13 +2204,13 @@ def main_app():
         with col_nav2:
             # Pulsante per tornare alla settimana corrente (visibile solo se non siamo già lì)
             if st.session_state.current_week_index != 0:
-                if st.button("🏠", use_container_width=True, type="primary", help="Torna a questa settimana"):
+                if st.button("🏠 Oggi", use_container_width=True, type="primary"):
                     st.session_state.current_week_index = 0
                     st.session_state.giorno_da_scambiare = None
                     st.rerun()
         
         with col_nav5:
-            if st.button("➡️", use_container_width=True, help="Settimana successiva"):
+            if st.button("Sett. Succ. ➡️", use_container_width=True):
                 st.session_state.current_week_index += 1
                 st.session_state.giorno_da_scambiare = None
                 st.rerun()
@@ -2371,12 +2223,12 @@ def main_app():
         
         with col_nav3:
             if st.session_state.current_week_index == 0:
-                st.markdown(f"**📆 Questa settimana**")
+                st.markdown(f"### 📆 Settimana Corrente")
             elif st.session_state.current_week_index > 0:
-                st.markdown(f"**📆 +{st.session_state.current_week_index} sett.**")
+                st.markdown(f"### 📆 +{st.session_state.current_week_index} Settimana/e")
             else:
-                st.markdown(f"**📆 {st.session_state.current_week_index} sett.**")
-            st.caption(f"{lunedi_selezionato.strftime('%d/%m')} — {domenica_selezionata.strftime('%d/%m/%Y')}")
+                st.markdown(f"### 📆 {st.session_state.current_week_index} Settimana/e")
+            st.caption(f"Dal {lunedi_selezionato.strftime('%d/%m/%Y')} al {domenica_selezionata.strftime('%d/%m/%Y')}")
         
         # Info distribuzione clienti
         if not df.empty and 'visitare' in df.columns:
@@ -2417,11 +2269,11 @@ def main_app():
             st.divider()
             st.write("**🎯 Come funziona l'algoritmo Portatour v3 (Prossimità Pura):**")
             st.markdown("""
-            1. **Nessuna zona/cella/spicchio** — L'algoritmo NON divide il territorio. Costruisce il percorso cliente per cliente, sempre scegliendo il più vicino.
-            2. **Pool settimanale** — Si selezionano i clienti da visitare questa settimana (urgenti sempre + rotazione dei normali). Ogni settimana il pool cambia.
-            3. **Nearest Neighbor giorno per giorno** — Giorno 1: parti dalla base, prendi il più vicino, poi il più vicino a quello, finché il giorno è pieno. Giorno 2: dalla base, prendi il più vicino tra i RIMANENTI. E così via.
-            4. **2-Opt** — L'ordine di ogni giornata viene ottimizzato per eliminare zig-zag e incroci.
-            5. **Stabilità** — Il calcolo avviene sempre sulla settimana intera, così aprendo l'app a metà settimana il giro non cambia.
+            1. **Nessuna zona** — L'algoritmo NON divide il territorio. Costruisce il percorso cliente per cliente.
+            2. **Pool settimanale** — Si selezionano i clienti da visitare (urgenti sempre + rotazione dei normali).
+            3. **Nearest Neighbor** — Giorno 1: parti dalla base, prendi il più vicino, poi il più vicino a quello. Giorno 2: stessa cosa coi rimanenti.
+            4. **2-Opt** — L'ordine viene ottimizzato per eliminare zig-zag.
+            5. **Stabilità** — Il calcolo avviene sulla settimana intera, aprendo a metà settimana il giro non cambia.
             """)
             
             st.divider()
@@ -4413,7 +4265,7 @@ def main_app():
     
     # Footer
     st.divider()
-    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 4.2 (Portatour v3 — Prossimità Pura)")
+    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 4.3 (Portatour v3)")
 
 # --- RUN APP ---
 init_auth_state()
