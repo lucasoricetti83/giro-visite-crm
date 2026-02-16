@@ -548,19 +548,43 @@ def admin_panel():
                             if approve_user(user['user_id']):
                                 st.success("✅ Trial attivato!")
                                 st.rerun()
-                        
-                        # Attiva abbonamento
-                        if st.button("✅ Attiva Abbonamento", key=f"active_{user['user_id']}", use_container_width=True):
-                            today = datetime.now().date()
-                            update_user_subscription(user['user_id'], {
-                                'status': 'active',
-                                'approved': True,
-                                'subscription_start': today.isoformat(),
-                                'subscription_end': (today + timedelta(days=365)).isoformat(),
-                                'blocked_reason': None
-                            })
-                            st.success("✅ Abbonamento attivato (1 anno)!")
-                            st.rerun()
+                    
+                    # === GESTIONE ABBONAMENTO CON DATA ===
+                    if status in ['trial', 'active', 'expired', 'blocked', 'pending']:
+                        with st.expander("📅 Gestisci Abbonamento"):
+                            # Mostra stato attuale
+                            if status == 'trial' and user.get('trial_end'):
+                                st.info(f"🎁 Trial fino al: **{user['trial_end']}**")
+                            elif status == 'active' and user.get('subscription_end'):
+                                st.info(f"✅ Abbonamento fino al: **{user['subscription_end']}**")
+                            
+                            # Data scadenza personalizzata
+                            default_date = datetime.now().date() + timedelta(days=365)
+                            if status == 'active' and user.get('subscription_end'):
+                                try:
+                                    se = user['subscription_end']
+                                    default_date = datetime.strptime(se, '%Y-%m-%d').date() if isinstance(se, str) else se
+                                except:
+                                    pass
+                            
+                            nuova_scadenza = st.date_input(
+                                "📅 Scadenza abbonamento:",
+                                value=default_date,
+                                min_value=datetime.now().date(),
+                                key=f"sub_date_{user['user_id']}"
+                            )
+                            
+                            if st.button("✅ Attiva/Prolunga Abbonamento", key=f"set_sub_{user['user_id']}", type="primary", use_container_width=True):
+                                update_user_subscription(user['user_id'], {
+                                    'status': 'active',
+                                    'approved': True,
+                                    'subscription_start': datetime.now().date().isoformat(),
+                                    'subscription_end': nuova_scadenza.isoformat(),
+                                    'blocked_reason': None
+                                })
+                                st.success(f"✅ Abbonamento attivo fino al {nuova_scadenza.strftime('%d/%m/%Y')}")
+                                time_module.sleep(1)
+                                st.rerun()
                     
                     if status in ['active', 'trial']:
                         # Blocca
