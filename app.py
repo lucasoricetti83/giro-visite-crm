@@ -15,6 +15,148 @@ from supabase import create_client, Client
 # --- 1. CONFIGURAZIONE ---
 st.set_page_config(page_title="Giro Visite CRM Pro", layout="wide", page_icon="🚀")
 
+# --- CSS MOBILE-RESPONSIVE (iPhone-first) ---
+st.markdown("""
+<style>
+/* ===== GLOBALE: padding compatto ===== */
+.block-container {
+    padding-top: 1rem !important;
+    padding-bottom: 1rem !important;
+}
+
+/* ===== MOBILE (< 768px) ===== */
+@media (max-width: 768px) {
+    /* Padding principale ridotto */
+    .block-container {
+        padding-left: 0.5rem !important;
+        padding-right: 0.5rem !important;
+        padding-top: 0.5rem !important;
+    }
+    
+    /* Sidebar nascosta di default su mobile */
+    [data-testid="stSidebar"] {
+        min-width: 0px !important;
+    }
+    
+    /* Colonne: gap ridotto */
+    [data-testid="column"] {
+        padding-left: 0.15rem !important;
+        padding-right: 0.15rem !important;
+    }
+    
+    /* Bottoni compatti */
+    .stButton > button {
+        padding: 0.3rem 0.2rem !important;
+        font-size: 0.82rem !important;
+        min-height: 2.2rem !important;
+    }
+    
+    /* Header/Subheader più piccoli */
+    h1 { font-size: 1.3rem !important; }
+    h2 { font-size: 1.15rem !important; }
+    h3 { font-size: 1.0rem !important; }
+    
+    /* Metriche compatte */
+    [data-testid="stMetricValue"] {
+        font-size: 1.1rem !important;
+    }
+    [data-testid="stMetricLabel"] {
+        font-size: 0.7rem !important;
+    }
+    [data-testid="stMetricDelta"] {
+        font-size: 0.65rem !important;
+    }
+    
+    /* Expander compatto */
+    .streamlit-expanderHeader {
+        font-size: 0.85rem !important;
+        padding: 0.4rem 0.6rem !important;
+    }
+    
+    /* Divider meno spazio */
+    hr {
+        margin-top: 0.5rem !important;
+        margin-bottom: 0.5rem !important;
+    }
+    
+    /* Selectbox/Input compatti */
+    .stSelectbox, .stTextInput, .stNumberInput, .stDateInput {
+        margin-bottom: 0.3rem !important;
+    }
+    
+    /* Tabs compatti */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 0.2rem !important;
+    }
+    .stTabs [data-baseweb="tab"] {
+        padding: 0.3rem 0.5rem !important;
+        font-size: 0.8rem !important;
+    }
+    
+    /* Alert/Info box compatti */
+    .stAlert {
+        padding: 0.5rem !important;
+        font-size: 0.82rem !important;
+    }
+    
+    /* Mappa: altezza ridotta su mobile */
+    iframe[title="st_folium.st_folium"] {
+        height: 280px !important;
+    }
+    
+    /* Caption */
+    .stCaption {
+        font-size: 0.65rem !important;
+    }
+}
+
+/* ===== NAVBAR STILE BOTTOM-BAR ===== */
+div[data-testid="column"] .stButton > button[kind="secondary"] {
+    border-color: #e0e0e0 !important;
+    background: #fafafa !important;
+}
+div[data-testid="column"] .stButton > button[kind="primary"] {
+    font-weight: 700 !important;
+}
+
+/* ===== iPhone SE / piccoli (< 400px) ===== */
+@media (max-width: 400px) {
+    .block-container {
+        padding-left: 0.3rem !important;
+        padding-right: 0.3rem !important;
+    }
+    .stButton > button {
+        padding: 0.25rem 0.1rem !important;
+        font-size: 0.78rem !important;
+        min-height: 2rem !important;
+    }
+    h1 { font-size: 1.15rem !important; }
+    h2 { font-size: 1rem !important; }
+    [data-testid="stMetricValue"] {
+        font-size: 0.95rem !important;
+    }
+}
+
+/* ===== Columns: prevent overflow ===== */
+[data-testid="stHorizontalBlock"] {
+    flex-wrap: nowrap !important;
+    gap: 0.3rem !important;
+    overflow-x: auto !important;
+}
+
+/* ===== Link buttons compact ===== */
+.stLinkButton > a {
+    font-size: 0.85rem !important;
+}
+@media (max-width: 768px) {
+    .stLinkButton > a {
+        padding: 0.3rem 0.2rem !important;
+        font-size: 0.8rem !important;
+    }
+}
+</style>
+""", unsafe_allow_html=True)
+
 # --- FUNZIONI PER PERSISTENZA SESSIONE ---
 def generate_session_token(user_id, email):
     """Genera un token di sessione sicuro"""
@@ -1518,10 +1660,14 @@ def main_app():
             st.session_state.active_tab = "🚀 Giro Oggi"
     
     nav = st.columns(7)
-    menu = ["🚀 Giro Oggi", "📊 Dashboard", "📅 Agenda", "🗺️ Mappa", "👤 Anagrafica", "➕ Nuovo", "⚙️ Config"]
-    for i, m in enumerate(menu):
-        if nav[i].button(m, key=f"nav_{m}", use_container_width=True, type="primary" if st.session_state.active_tab == m else "secondary"):
-            st.session_state.active_tab = m
+    menu_keys =    ["🚀 Giro Oggi", "📊 Dashboard", "📅 Agenda", "🗺️ Mappa", "👤 Anagrafica", "➕ Nuovo", "⚙️ Config"]
+    menu_display = ["🚀 Giro",      "📊 Stats",     "📅 Agenda", "🗺️ Mappa", "👤 Clienti",    "➕ Nuovo", "⚙️"]
+    menu_help =    ["Giro di Oggi",  "Dashboard",    "Agenda Settimanale", "Mappa Clienti", "Anagrafica Cliente", "Nuovo Cliente", "Configurazione"]
+    for i, (key, label, tip) in enumerate(zip(menu_keys, menu_display, menu_help)):
+        if nav[i].button(label, key=f"nav_{key}", use_container_width=True,
+                         type="primary" if st.session_state.active_tab == key else "secondary",
+                         help=tip):
+            st.session_state.active_tab = key
             st.rerun()
     
     st.divider()
@@ -1533,9 +1679,9 @@ def main_app():
     
     # --- TAB: GIRO OGGI ---
     if st.session_state.active_tab == "🚀 Giro Oggi":
-        col_header, col_regen, col_refresh = st.columns([4, 1, 1])
+        col_header, col_regen, col_refresh = st.columns([5, 2, 1])
         with col_header:
-            st.header(f"📍 Giro di Oggi ({ora_italiana.strftime('%d/%m/%Y')})")
+            st.header(f"📍 Giro Oggi")
         with col_regen:
             if st.button("🔄 Rigenera", use_container_width=True, help="Propone un giro diverso"):
                 st.session_state.variante_giro = st.session_state.get('variante_giro', 0) + 1
@@ -1561,7 +1707,7 @@ def main_app():
             variante_attuale = st.session_state.get('variante_giro', 0)
             if variante_attuale > 0:
                 st.info(f"🔄 Giro rigenerato {variante_attuale} volta/e - Premi '🔄 Rigenera' per provare un altro percorso")
-                if st.button("↩️ Torna al giro originale"):
+                if st.button("↩️ Giro originale"):
                     st.session_state.variante_giro = 0
                     st.rerun()
             
@@ -1585,12 +1731,12 @@ def main_app():
                 col_esc1, col_esc2 = st.columns(2)
                 
                 with col_esc1:
-                    if st.button("🔄 Ricalcola Giro", type="primary", use_container_width=True):
+                    if st.button("🔄 Ricalcola", type="primary", use_container_width=True):
                         st.session_state.esclusi_oggi = esclusi_selezionati
                         st.rerun()
                 
                 with col_esc2:
-                    if st.button("🗑️ Rimuovi Esclusioni", use_container_width=True):
+                    if st.button("🗑️ Reset esclusi", use_container_width=True):
                         st.session_state.esclusi_oggi = []
                         st.rerun()
                 
@@ -1787,7 +1933,7 @@ def main_app():
                                 
                                 with c2:
                                     # PULSANTE APRE FORM REPORT
-                                    if st.button(f"✅ REGISTRA VISITA", key=f"visita_{t['id']}", type="primary", use_container_width=True):
+                                    if st.button(f"✅ VISITA", key=f"visita_{t['id']}", type="primary", use_container_width=True):
                                         st.session_state.cliente_report_aperto = t['id']
                                         st.rerun()
                                     
@@ -2195,10 +2341,10 @@ def main_app():
         if 'scambi_giorni' not in st.session_state:
             st.session_state.scambi_giorni = {}
         
-        col_nav1, col_nav2, col_nav3, col_nav4, col_nav5 = st.columns([1, 1, 2, 1, 1])
+        col_nav1, col_nav2, col_nav3, col_nav4, col_nav5 = st.columns([1, 1, 3, 1, 1])
         
         with col_nav1:
-            if st.button("⬅️ Sett. Prec.", use_container_width=True):
+            if st.button("⬅️", use_container_width=True, help="Settimana precedente"):
                 st.session_state.current_week_index -= 1
                 st.session_state.giorno_da_scambiare = None
                 st.rerun()
@@ -2206,13 +2352,13 @@ def main_app():
         with col_nav2:
             # Pulsante per tornare alla settimana corrente (visibile solo se non siamo già lì)
             if st.session_state.current_week_index != 0:
-                if st.button("🏠 Oggi", use_container_width=True, type="primary"):
+                if st.button("🏠", use_container_width=True, type="primary", help="Torna a questa settimana"):
                     st.session_state.current_week_index = 0
                     st.session_state.giorno_da_scambiare = None
                     st.rerun()
         
         with col_nav5:
-            if st.button("Sett. Succ. ➡️", use_container_width=True):
+            if st.button("➡️", use_container_width=True, help="Settimana successiva"):
                 st.session_state.current_week_index += 1
                 st.session_state.giorno_da_scambiare = None
                 st.rerun()
@@ -2225,12 +2371,12 @@ def main_app():
         
         with col_nav3:
             if st.session_state.current_week_index == 0:
-                st.markdown(f"### 📆 Settimana Corrente")
+                st.markdown(f"**📆 Questa settimana**")
             elif st.session_state.current_week_index > 0:
-                st.markdown(f"### 📆 +{st.session_state.current_week_index} Settimana/e")
+                st.markdown(f"**📆 +{st.session_state.current_week_index} sett.**")
             else:
-                st.markdown(f"### 📆 {st.session_state.current_week_index} Settimana/e")
-            st.caption(f"Dal {lunedi_selezionato.strftime('%d/%m/%Y')} al {domenica_selezionata.strftime('%d/%m/%Y')}")
+                st.markdown(f"**📆 {st.session_state.current_week_index} sett.**")
+            st.caption(f"{lunedi_selezionato.strftime('%d/%m')} — {domenica_selezionata.strftime('%d/%m/%Y')}")
         
         # Info distribuzione clienti
         if not df.empty and 'visitare' in df.columns:
