@@ -3096,6 +3096,81 @@ def main_app():
         st.header("👤 Anagrafica Cliente")
         
         if not df.empty:
+            # =============================================
+            # GESTIONE RAPIDA GIRO — toggle visitare SI/NO
+            # =============================================
+            with st.expander("⚡ Gestione Rapida — Includi/Escludi dal Giro", expanded=False):
+                st.caption("Attiva/disattiva velocemente i clienti nel giro visite")
+                
+                # Filtri per la gestione rapida
+                col_qf1, col_qf2, col_qf3 = st.columns(3)
+                with col_qf1:
+                    q_filtro = st.selectbox("Mostra:", ["Tutti", "Nel giro", "Fuori giro"], key="q_filtro_giro")
+                with col_qf2:
+                    q_citta = st.selectbox("Città:", ["Tutte"] + sorted(df['citta'].dropna().unique().tolist()), key="q_filtro_citta")
+                with col_qf3:
+                    q_cerca = st.text_input("🔍 Cerca:", key="q_cerca_nome", placeholder="Nome cliente...")
+                
+                df_quick = df.copy()
+                if q_filtro == "Nel giro":
+                    df_quick = df_quick[df_quick['visitare'] == 'SI']
+                elif q_filtro == "Fuori giro":
+                    df_quick = df_quick[df_quick['visitare'] != 'SI']
+                if q_citta != "Tutte":
+                    df_quick = df_quick[df_quick['citta'] == q_citta]
+                if q_cerca:
+                    df_quick = df_quick[df_quick['nome_cliente'].str.contains(q_cerca, case=False, na=False)]
+                
+                df_quick = df_quick.sort_values('nome_cliente')
+                
+                st.write(f"**{len(df_quick)} clienti**")
+                
+                # Pulsanti "Seleziona/Deseleziona tutti" filtrati
+                col_all1, col_all2 = st.columns(2)
+                with col_all1:
+                    if st.button("✅ Tutti nel giro", key="q_tutti_si", use_container_width=True):
+                        ids_da_attivare = df_quick['id'].tolist()
+                        for cid in ids_da_attivare:
+                            update_cliente(cid, {'visitare': 'SI'})
+                        st.session_state.reload_data = True
+                        st.success(f"✅ {len(ids_da_attivare)} clienti attivati!")
+                        time_module.sleep(0.5)
+                        st.rerun()
+                with col_all2:
+                    if st.button("❌ Tutti fuori giro", key="q_tutti_no", use_container_width=True):
+                        ids_da_disattivare = df_quick['id'].tolist()
+                        for cid in ids_da_disattivare:
+                            update_cliente(cid, {'visitare': 'NO'})
+                        st.session_state.reload_data = True
+                        st.warning(f"❌ {len(ids_da_disattivare)} clienti disattivati!")
+                        time_module.sleep(0.5)
+                        st.rerun()
+                
+                st.divider()
+                
+                # Lista clienti con toggle
+                for _, row in df_quick.iterrows():
+                    cid = row['id']
+                    nome = row['nome_cliente']
+                    citta = row.get('citta', '') or ''
+                    attivo = str(row.get('visitare', 'SI')).upper() == 'SI'
+                    
+                    col_nome, col_toggle = st.columns([3, 1])
+                    with col_nome:
+                        badge = "🟢" if attivo else "⚪"
+                        st.write(f"{badge} **{nome}**  \n{citta}")
+                    with col_toggle:
+                        nuovo_stato = st.toggle(
+                            "Giro",
+                            value=attivo,
+                            key=f"q_toggle_{cid}",
+                            label_visibility="collapsed"
+                        )
+                        if nuovo_stato != attivo:
+                            update_cliente(cid, {'visitare': 'SI' if nuovo_stato else 'NO'})
+                            st.session_state.reload_data = True
+                            st.rerun()
+            
             # === 1. BARRA RICERCA CLIENTE ===
             col_filtro1, col_filtro2, col_filtro3 = st.columns([2, 1, 1])
             
