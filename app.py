@@ -1225,26 +1225,58 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 nomi_app.add(c['nome'])
     
     # ========================================
-    # 4. FILTRA PER FREQUENZA
+    # 4. FILTRA PER FREQUENZA (RIGOROSO)
     # ========================================
-    # Escludi chi è stato visitato di recente e la cui
-    # prossima visita cade DOPO questa settimana.
+    # REGOLA: un cliente entra nel giro SOLO se:
+    #   a) Non è mai stato visitato (prossima_visita = None) → prima visita
+    #   b) La sua prossima_visita cade ENTRO questa settimana (scaduto o in scadenza)
+    #
+    # Se un cliente è stato visitato e la prossima visita è DOPO domenica,
+    # NON entra nel giro → meglio giorni vuoti che visite anticipate.
     
-    pool = []
+    scaduti = []       # clienti con prossima_visita <= fine_settimana (da visitare)
+    mai_visitati = []  # clienti mai visitati (prima visita necessaria)
+    
     for c in tutti:
         if c['nome'] in nomi_app:
             continue  # gestito come appuntamento
         pv = c.get('prossima_visita')
-        if pv is not None and pv > fine_settimana:
-            continue  # non ancora da visitare
-        pool.append(c)
+        if pv is None:
+            mai_visitati.append(c)
+        elif pv <= fine_settimana:
+            scaduti.append(c)
+        # else: pv > fine_settimana → NON inserire, rispetta la frequenza
     
-    # ========================================
-    # 5. CAPACITÀ
-    # ========================================
+    # Per i mai visitati: non buttarli TUTTI nel pool.
+    # Distribuiscili gradualmente nelle settimane usando il numero settimana.
+    # Es: 60 mai visitati, cap 35 → settimana 1 prende i primi 35, settimana 2 i successivi.
+    numero_settimana = lunedi.isocalendar()[1]
+    
+    # Ordina i mai visitati per distanza dalla base (stabile)
+    mai_visitati.sort(key=lambda c: c['dist_base'])
+    
+    # Quanti slot rimangono dopo gli scaduti?
     ore = (datetime.combine(oggi, ora_fine) - datetime.combine(oggi, ora_inizio)).seconds / 3600
     pausa_ore = (datetime.combine(oggi, pausa_a) - datetime.combine(oggi, pausa_da)).seconds / 3600
     max_visite = max(4, min(10, int(ore - pausa_ore)))
+    num_giorni_calc = len(giorni_calcolo)
+    cap_settimana = max_visite * num_giorni_calc
+    
+    slot_per_mai_visitati = max(0, cap_settimana - len(scaduti))
+    
+    if mai_visitati and slot_per_mai_visitati > 0:
+        # Dividi in blocchi e ruota per settimana
+        n_blocchi = max(1, -(-len(mai_visitati) // slot_per_mai_visitati))
+        blocco = numero_settimana % n_blocchi
+        start = blocco * slot_per_mai_visitati
+        mv_settimana = mai_visitati[start : start + slot_per_mai_visitati]
+        # Wrap se blocco corto
+        if len(mv_settimana) < slot_per_mai_visitati and len(mai_visitati) > slot_per_mai_visitati:
+            mv_settimana += mai_visitati[:slot_per_mai_visitati - len(mv_settimana)]
+    else:
+        mv_settimana = []
+    
+    pool = scaduti + mv_settimana
     
     if not pool and not app_per_giorno:
         return agenda
@@ -2284,11 +2316,11 @@ def main_app():
             st.divider()
             st.write("**🎯 Come funziona l'algoritmo v6:**")
             st.markdown("""
-            1. **Filtro frequenza** — Clienti visitati di recente (prossima visita oltre questa settimana) vengono esclusi.
-            2. **Appuntamenti = ÀNCORA** — Per i giorni con appuntamento, si cercano i clienti più vicini all'appuntamento da TUTTO il pool. Il giro del giorno è costruito intorno all'appuntamento.
-            3. **Giorni senza appuntamento** — Nearest-neighbor dalla base sui clienti rimasti nel pool. Ogni giorno prende i più vicini al punto di partenza.
-            4. **2-Opt** — Ogni percorso giornaliero è ottimizzato per eliminare zig-zag.
-            5. **Nessun taglio a blocchi** — Ogni giorno pesca dal pool condiviso. Niente catena master, niente slice.
+            1. **Filtro frequenza RIGOROSO** — Solo clienti scaduti o in scadenza questa settimana. Visitato 7gg fa con freq 30gg? Non compare per altre 3 settimane. Meglio giorni vuoti che visite anticipate.
+            2. **Mai visitati graduali** — I clienti mai visitati vengono distribuiti nelle settimane, non tutti insieme.
+            3. **Appuntamenti = ÀNCORA** — Giorni con appuntamento: il giro si riempie con i clienti più vicini all'appuntamento.
+            4. **Giorni senza appuntamento** — Nearest-neighbor dalla base, segmenti consecutivi → clienti vicini = stesso giorno.
+            5. **2-Opt** — Ogni percorso giornaliero è ottimizzato per eliminare zig-zag.
             """)
             
             st.divider()
@@ -4280,7 +4312,7 @@ def main_app():
     
     # Footer
     st.divider()
-    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 6.0")
+    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 6.1")
 
 # --- RUN APP ---
 init_auth_state()
