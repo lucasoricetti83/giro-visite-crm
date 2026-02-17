@@ -2652,9 +2652,26 @@ def main_app():
     elif st.session_state.active_tab == "🗺️ Mappa":
         st.header("🗺️ Mappa Clienti")
         
-        # Inizializza stato per mappa giorno
+        # Inizializza stato mappa
         if 'mappa_giorno_selezionato' not in st.session_state:
             st.session_state.mappa_giorno_selezionato = None
+        if 'mappa_cliente_cliccato' not in st.session_state:
+            st.session_state.mappa_cliente_cliccato = None
+        
+        # ============================================
+        # GEOLOCALIZZAZIONE BROWSER
+        # ============================================
+        # Usa le funzioni GPS già presenti nell'app
+        
+        if 'geo_lat' not in st.session_state:
+            st.session_state.geo_lat = None
+            st.session_state.geo_lon = None
+        
+        # Leggi GPS da query params (scritti dal componente JS)
+        gps_data = read_gps_from_url()
+        if gps_data:
+            st.session_state.geo_lat = gps_data['latitude']
+            st.session_state.geo_lon = gps_data['longitude']
         
         # === MAPPA GIRO DEL GIORNO (dall'Agenda) ===
         if st.session_state.mappa_giorno_selezionato:
@@ -2665,30 +2682,46 @@ def main_app():
             
             st.success(f"🗺️ **Giro di {giorno_nome} {data_giorno.strftime('%d/%m/%Y')}** - {len(tappe)} visite")
             
-            col_back, col_info = st.columns([1, 3])
-            with col_back:
-                if st.button("⬅️ Torna a tutti i clienti", use_container_width=True):
-                    st.session_state.mappa_giorno_selezionato = None
-                    st.rerun()
+            if st.button("⬅️ Torna a tutti i clienti", use_container_width=True):
+                st.session_state.mappa_giorno_selezionato = None
+                st.session_state.mappa_cliente_cliccato = None
+                st.rerun()
             
-            # Crea mappa del giro
             if tappe:
                 lat_center = sum(t['latitude'] for t in tappe) / len(tappe)
                 lon_center = sum(t['longitude'] for t in tappe) / len(tappe)
                 
-                m = folium.Map(location=[lat_center, lon_center], zoom_start=11)
+                m = folium.Map(location=[lat_center, lon_center], zoom_start=12)
                 
-                # Aggiungi punto di partenza
-                lat_base = config.get('lat_base', lat_center)
-                lon_base = config.get('lon_base', lon_center)
+                # Posizione utente
+                try:
+                    from folium.plugins import LocateControl
+                    LocateControl(auto_start=True, strings={"title": "La mia posizione"}).add_to(m)
+                except:
+                    pass
+                
+                # Marker posizione GPS se disponibile
+                if st.session_state.geo_lat and st.session_state.geo_lon:
+                    folium.Marker(
+                        [st.session_state.geo_lat, st.session_state.geo_lon],
+                        popup="📍 La mia posizione",
+                        tooltip="📍 IO SONO QUI",
+                        icon=folium.Icon(color='blue', icon='user', prefix='fa')
+                    ).add_to(m)
+                
+                # Punto di partenza (base)
+                lat_base = float(config.get('lat_base', lat_center))
+                lon_base = float(config.get('lon_base', lon_center))
                 folium.Marker(
                     [lat_base, lon_base],
                     popup="🏠 Partenza",
+                    tooltip="🏠 BASE",
                     icon=folium.Icon(color='green', icon='home', prefix='fa')
                 ).add_to(m)
                 
-                # Aggiungi tappe numerate
+                # Tappe numerate con tooltip (nome) e popup (dettagli)
                 coords_percorso = [[lat_base, lon_base]]
+                lookup_tappe = {}  # per match click
                 
                 for idx, tappa in enumerate(tappe, 1):
                     lat = tappa['latitude']
@@ -2697,8 +2730,8 @@ def main_app():
                     indirizzo = tappa.get('indirizzo', '')
                     ora = tappa.get('ora_arrivo', '--:--')
                     ritardo = tappa.get('ritardo', 0)
+                    dist_km = tappa.get('distanza_km', 0)
                     
-                    # Colore in base al ritardo
                     if ritardo >= 14:
                         color = 'red'
                     elif ritardo >= 7:
@@ -2708,98 +2741,157 @@ def main_app():
                     else:
                         color = 'green'
                     
-                    popup_html = f"""
+                    badge = '🔴' if ritardo >= 14 else '🟡' if ritardo >= 0 else '🟢'
+                    
+                    popup_html = f"""<div style="min-width:200px">
                     <b>{idx}. {nome}</b><br>
                     📍 {indirizzo}<br>
-                    ⏰ {ora}<br>
-                    {'🔴' if ritardo >= 14 else '🟡' if ritardo >= 0 else '🟢'} Ritardo: {ritardo}gg
-                    """
+                    ⏰ Arrivo: {ora}<br>
+                    🚗 {dist_km} km<br>
+                    {badge} Ritardo: {ritardo}gg
+                    </div>"""
                     
                     folium.Marker(
                         [lat, lon],
-                        popup=folium.Popup(popup_html, max_width=250),
+                        popup=folium.Popup(popup_html, max_width=280),
+                        tooltip=f"{idx}. {nome}",
                         icon=folium.DivIcon(
-                            html=f'<div style="font-size: 12pt; color: white; background-color: {color}; border-radius: 50%; width: 24px; height: 24px; text-align: center; line-height: 24px; font-weight: bold;">{idx}</div>'
+                            html=f'<div style="font-size:12pt;color:white;background:{color};border-radius:50%;width:26px;height:26px;text-align:center;line-height:26px;font-weight:bold;border:2px solid white;box-shadow:0 1px 3px rgba(0,0,0,0.3);">{idx}</div>'
                         )
                     ).add_to(m)
                     
                     coords_percorso.append([lat, lon])
+                    lookup_tappe[f"{lat:.6f},{lon:.6f}"] = tappa
                 
-                # Aggiungi linea del percorso
-                coords_percorso.append([lat_base, lon_base])  # Ritorno
-                folium.PolyLine(
-                    coords_percorso,
-                    color='blue',
-                    weight=3,
-                    opacity=0.7,
-                    dash_array='10'
-                ).add_to(m)
+                # Linea percorso
+                coords_percorso.append([lat_base, lon_base])
+                folium.PolyLine(coords_percorso, color='blue', weight=3, opacity=0.7, dash_array='10').add_to(m)
                 
-                # Mostra mappa
-                st_folium(m, width=None, height=500, use_container_width=True)
+                # Mostra mappa e cattura click
+                map_data = st_folium(m, width=None, height=500, use_container_width=True, key="mappa_giro")
+                
+                # Rileva click su marker
+                clicked = map_data.get('last_object_clicked') if map_data else None
+                if clicked:
+                    click_lat = clicked.get('lat', 0)
+                    click_lon = clicked.get('lng', 0)
+                    
+                    # Trova il cliente più vicino al punto cliccato
+                    min_d = float('inf')
+                    found = None
+                    for t in tappe:
+                        d = haversine(click_lat, click_lon, t['latitude'], t['longitude'])
+                        if d < min_d:
+                            min_d = d
+                            found = t
+                    
+                    if found and min_d < 1:  # entro 1km = è il marker cliccato
+                        st.session_state.mappa_cliente_cliccato = found['nome_cliente']
+                
+                # Mostra scheda del cliente cliccato
+                if st.session_state.mappa_cliente_cliccato:
+                    nome_click = st.session_state.mappa_cliente_cliccato
+                    tappa_click = next((t for t in tappe if t['nome_cliente'] == nome_click), None)
+                    
+                    if tappa_click:
+                        with st.container(border=True):
+                            st.markdown(f"### 📍 {tappa_click['nome_cliente']}")
+                            
+                            info_parts = []
+                            if tappa_click.get('indirizzo'):
+                                info_parts.append(f"📍 {tappa_click['indirizzo']}")
+                            if tappa_click.get('ora_arrivo'):
+                                info_parts.append(f"⏰ Arrivo: {tappa_click['ora_arrivo']}")
+                            if tappa_click.get('distanza_km'):
+                                info_parts.append(f"🚗 {tappa_click['distanza_km']} km")
+                            ritardo = tappa_click.get('ritardo', 0)
+                            badge = '🔴' if ritardo >= 14 else '🟡' if ritardo >= 0 else '🟢'
+                            info_parts.append(f"{badge} Ritardo: {ritardo}gg")
+                            st.write(" · ".join(info_parts))
+                            
+                            # Pulsanti azione
+                            nav_url = f"https://www.google.com/maps/dir/?api=1&destination={tappa_click['latitude']},{tappa_click['longitude']}"
+                            cell = tappa_click.get('cellulare', '')
+                            
+                            btn_style = "display:inline-flex;align-items:center;justify-content:center;padding:8px 12px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:500;flex:1;text-align:center;min-height:38px;border:1px solid #ddd;color:#333;background:#f8f9fa;"
+                            
+                            html_btns = f'<div style="display:flex;gap:6px;margin:4px 0;">'
+                            html_btns += f'<a href="{nav_url}" target="_blank" style="{btn_style}">🚗 Vai</a>'
+                            if cell and cell.strip() and cell != 'nan':
+                                html_btns += f'<a href="tel:{cell}" style="{btn_style}">📱 Chiama</a>'
+                            html_btns += '</div>'
+                            st.markdown(html_btns, unsafe_allow_html=True)
+                            
+                            if st.button("👤 Apri Scheda Cliente", key="apri_scheda_mappa_giro", type="primary", use_container_width=True):
+                                st.session_state.cliente_selezionato = nome_click
+                                st.session_state.active_tab = "👤 Anagrafica"
+                                st.session_state.mappa_cliente_cliccato = None
+                                st.rerun()
                 
                 # Lista tappe sotto la mappa
+                st.divider()
                 st.subheader("📋 Ordine Visite")
                 for idx, tappa in enumerate(tappe, 1):
                     ritardo = tappa.get('ritardo', 0)
                     badge = "🔴" if ritardo >= 14 else "🟡" if ritardo >= 0 else "🟢"
-                    col_t1, col_t2, col_t3 = st.columns([1, 3, 1])
-                    col_t1.write(f"**{idx}.**")
-                    col_t2.write(f"{tappa['nome_cliente']} - {tappa.get('indirizzo', '')}")
-                    col_t3.write(f"{badge} {tappa.get('ora_arrivo', '--:--')}")
+                    with st.container(border=True):
+                        st.markdown(f"**{idx}. {tappa['nome_cliente']}** — {tappa.get('indirizzo', '')}  \n{badge} {tappa.get('ora_arrivo', '--:--')} · 🚗 {tappa.get('distanza_km', 0)} km")
+                        if st.button("👤 Scheda", key=f"giro_scheda_{tappa['id']}", use_container_width=True):
+                            st.session_state.cliente_selezionato = tappa['nome_cliente']
+                            st.session_state.active_tab = "👤 Anagrafica"
+                            st.rerun()
             
             return  # Non mostrare la mappa normale
         
-        # === MAPPA NORMALE (tutti i clienti) ===
+        # ============================================
+        # MAPPA TUTTI I CLIENTI
+        # ============================================
         if not df.empty:
-            # Filtri
-            col_filtri1, col_filtri2, col_filtri3 = st.columns(3)
+            # --- Geolocalizzazione ---
+            geo_lat = st.session_state.geo_lat
+            geo_lon = st.session_state.geo_lon
             
-            with col_filtri1:
-                filtro_stato = st.selectbox("📊 Stato:", ["Tutti", "Solo Attivi", "Solo Inattivi"], key="filtro_stato_mappa")
+            if geo_lat and geo_lon:
+                st.success(f"📍 Posizione rilevata: {geo_lat:.4f}, {geo_lon:.4f}")
+            else:
+                render_gps_button("mappa_gps_btn")
             
-            with col_filtri2:
-                usa_posizione = st.checkbox("📍 Filtra per distanza dalla mia posizione", key="usa_pos_mappa")
+            col_f1, col_f2 = st.columns(2)
+            with col_f1:
+                filtro_stato = st.selectbox("📊 Stato:", ["Tutti", "Solo nel giro", "Fuori giro"], key="filtro_stato_mappa")
+            with col_f2:
+                if geo_lat:
+                    raggio_km = st.slider("🎯 Raggio (km)", 1, 100, 30, key="raggio_mappa")
+                else:
+                    raggio_km = 100
             
-            with col_filtri3:
-                if usa_posizione:
-                    raggio_km = st.slider("🎯 Raggio (km)", 5, 100, 30, key="raggio_mappa")
-            
-            # Se usa posizione, mostra input coordinate
-            if usa_posizione:
-                st.divider()
-                col_pos1, col_pos2, col_pos3 = st.columns([2, 2, 1])
-                
-                # Default: usa punto di partenza
-                default_lat = config.get('lat_base', 41.9028)
-                default_lon = config.get('lon_base', 12.4964)
-                
-                with col_pos1:
-                    mia_lat = st.number_input("📍 Mia Latitudine", value=float(default_lat), format="%.6f", key="mia_lat_mappa")
-                with col_pos2:
-                    mia_lon = st.number_input("📍 Mia Longitudine", value=float(default_lon), format="%.6f", key="mia_lon_mappa")
-                with col_pos3:
+            # Posizione manuale
+            with st.expander("📍 Posizione manuale"):
+                col_m1, col_m2, col_m3 = st.columns([2, 2, 1])
+                with col_m1:
+                    manual_lat = st.number_input("Latitudine", value=float(geo_lat or config.get('lat_base', 39.22)), format="%.6f", key="manual_lat")
+                with col_m2:
+                    manual_lon = st.number_input("Longitudine", value=float(geo_lon or config.get('lon_base', 9.12)), format="%.6f", key="manual_lon")
+                with col_m3:
                     st.write("")
-                    st.write("")
-                    if st.button("🏠 Usa Partenza", key="usa_partenza_mappa"):
-                        st.session_state.mia_lat_mappa = default_lat
-                        st.session_state.mia_lon_mappa = default_lon
+                    if st.button("📍 Usa", key="usa_manual"):
+                        st.session_state.geo_lat = manual_lat
+                        st.session_state.geo_lon = manual_lon
                         st.rerun()
-                
-                st.caption("💡 Apri Google Maps sul telefono, tieni premuto sulla tua posizione, e copia le coordinate qui")
+                    if st.button("🏠 Base", key="usa_base"):
+                        st.session_state.geo_lat = float(config.get('lat_base', 39.22))
+                        st.session_state.geo_lon = float(config.get('lon_base', 9.12))
+                        st.rerun()
             
             st.divider()
             
-            # Filtra dataframe
+            # Filtra
             df_filtered = df.copy()
-            
-            # Filtra per stato
-            if filtro_stato == "Solo Attivi":
+            if filtro_stato == "Solo nel giro":
                 df_filtered = df_filtered[df_filtered['visitare'] == 'SI']
-            elif filtro_stato == "Solo Inattivi":
+            elif filtro_stato == "Fuori giro":
                 df_filtered = df_filtered[df_filtered['visitare'] != 'SI']
             
-            # Filtra solo con coordinate valide
             df_filtered = df_filtered[
                 (df_filtered['latitude'].notna()) & 
                 (df_filtered['longitude'].notna()) &
@@ -2807,74 +2899,191 @@ def main_app():
                 (df_filtered['longitude'] != 0)
             ]
             
-            # Se usa posizione, calcola distanza e filtra
-            if usa_posizione and mia_lat != 0 and mia_lon != 0:
-                df_filtered['distanza_km'] = df_filtered.apply(
-                    lambda row: haversine(mia_lat, mia_lon, row['latitude'], row['longitude']), axis=1
-                )
+            # Calcola distanze dalla posizione
+            pos_lat = geo_lat or float(config.get('lat_base', 39.22))
+            pos_lon = geo_lon or float(config.get('lon_base', 9.12))
+            
+            df_filtered['distanza_km'] = df_filtered.apply(
+                lambda row: haversine(pos_lat, pos_lon, row['latitude'], row['longitude']), axis=1
+            )
+            
+            if geo_lat:
                 df_filtered = df_filtered[df_filtered['distanza_km'] <= raggio_km]
-                df_filtered = df_filtered.sort_values('distanza_km')
-                
-                st.success(f"🎯 **{len(df_filtered)} clienti** nel raggio di {raggio_km} km dalla tua posizione")
+            
+            df_filtered = df_filtered.sort_values('distanza_km')
+            
+            st.write(f"📍 **{len(df_filtered)} clienti** nel raggio di {raggio_km} km")
             
             if not df_filtered.empty:
-                # Centro mappa
-                if usa_posizione and mia_lat != 0:
-                    center_lat, center_lon = mia_lat, mia_lon
-                    zoom = 10
-                else:
-                    center_lat = df_filtered['latitude'].mean()
-                    center_lon = df_filtered['longitude'].mean()
-                    zoom = 8
+                # Costruisci mappa
+                m = folium.Map(location=[pos_lat, pos_lon], zoom_start=12 if geo_lat else 9)
                 
-                m = folium.Map(location=[center_lat, center_lon], zoom_start=zoom)
+                # Locate control (pulsante GPS nativo nella mappa)
+                try:
+                    from folium.plugins import LocateControl
+                    LocateControl(
+                        auto_start=True,
+                        strings={"title": "Mostra la mia posizione"}
+                    ).add_to(m)
+                except:
+                    pass
                 
                 # Marker posizione utente
-                if usa_posizione and mia_lat != 0:
-                    folium.Marker(
-                        [mia_lat, mia_lon],
-                        popup="📍 La mia posizione",
-                        icon=folium.Icon(color="blue", icon="user")
-                    ).add_to(m)
-                    
-                    # Cerchio del raggio
+                folium.Marker(
+                    [pos_lat, pos_lon],
+                    popup="📍 La mia posizione",
+                    tooltip="📍 IO SONO QUI",
+                    icon=folium.Icon(color='blue', icon='user', prefix='fa')
+                ).add_to(m)
+                
+                # Cerchio raggio
+                if geo_lat:
                     folium.Circle(
-                        [mia_lat, mia_lon],
+                        [pos_lat, pos_lon],
                         radius=raggio_km * 1000,
-                        color='blue',
-                        fill=True,
-                        fillOpacity=0.1
+                        color='blue', fill=True, fillOpacity=0.05, weight=1
                     ).add_to(m)
                 
-                # Marker clienti
+                # Marker clienti con tooltip (nome) e popup (dettagli)
                 for _, row in df_filtered.iterrows():
-                    color = "green" if row['visitare'] == "SI" else "red"
+                    lat_c = row['latitude']
+                    lon_c = row['longitude']
+                    nome_c = row['nome_cliente']
+                    ind_c = row.get('indirizzo', '') or ''
+                    dist_c = row.get('distanza_km', 0)
+                    visitare = str(row.get('visitare', 'SI')).upper()
                     
-                    popup_text = f"<b>{row['nome_cliente']}</b><br>"
-                    if row.get('indirizzo'):
-                        popup_text += f"📍 {row['indirizzo']}<br>"
-                    if usa_posizione and 'distanza_km' in row:
-                        popup_text += f"🚗 {row['distanza_km']:.1f} km"
+                    # Colore: verde = nel giro, grigio = fuori giro
+                    color = 'green' if visitare == 'SI' else 'lightgray'
+                    
+                    # Ritardo
+                    ultima = row.get('ultima_visita')
+                    freq = int(row.get('frequenza_giorni', 30))
+                    if pd.isnull(ultima) or (hasattr(ultima, 'year') and ultima.year < 2001):
+                        ritardo_str = "Mai visitato"
+                        badge = "🔵"
+                    else:
+                        ultima_date = ultima.date() if hasattr(ultima, 'date') else ultima
+                        prossima = ultima_date + timedelta(days=freq)
+                        ritardo_gg = (ora_italiana.date() - prossima).days
+                        if ritardo_gg > 0:
+                            ritardo_str = f"In ritardo di {ritardo_gg}gg"
+                            badge = "🔴"
+                        elif ritardo_gg >= -7:
+                            ritardo_str = f"Scade tra {abs(ritardo_gg)}gg"
+                            badge = "🟡"
+                        else:
+                            ritardo_str = f"OK (tra {abs(ritardo_gg)}gg)"
+                            badge = "🟢"
+                    
+                    popup_html = f"""<div style="min-width:180px;font-size:13px;">
+                    <b>{nome_c}</b><br>
+                    📍 {ind_c}<br>
+                    🚗 {dist_c:.1f} km da te<br>
+                    {badge} {ritardo_str}
+                    </div>"""
                     
                     folium.Marker(
-                        [row['latitude'], row['longitude']],
-                        popup=popup_text,
-                        icon=folium.Icon(color=color)
+                        [lat_c, lon_c],
+                        popup=folium.Popup(popup_html, max_width=250),
+                        tooltip=f"{nome_c} ({dist_c:.1f}km)",
+                        icon=folium.Icon(color=color, icon='briefcase', prefix='fa')
                     ).add_to(m)
                 
-                st_folium(m, width="100%", height=450, key="mappa_clienti")
+                # Mostra mappa e cattura click
+                map_data = st_folium(m, width=None, height=500, use_container_width=True, key="mappa_clienti")
                 
-                # Lista clienti vicini
-                if usa_posizione and 'distanza_km' in df_filtered.columns:
-                    st.divider()
-                    st.subheader(f"📋 Clienti più vicini ({len(df_filtered)})")
+                # Rileva click su marker
+                clicked = map_data.get('last_object_clicked') if map_data else None
+                if clicked:
+                    click_lat = clicked.get('lat', 0)
+                    click_lon = clicked.get('lng', 0)
                     
-                    for _, row in df_filtered.head(10).iterrows():
-                        col1, col2, col3 = st.columns([3, 1, 1])
-                        col1.write(f"**{row['nome_cliente']}** - {row['distanza_km']:.1f} km")
-                        col2.link_button("🚗", f"https://www.google.com/maps/dir/?api=1&destination={row['latitude']},{row['longitude']}", use_container_width=True)
-                        if col3.button("👤", key=f"mappa_cliente_{row['id']}"):
-                            st.session_state.cliente_selezionato = row['nome_cliente']
+                    # Trova il cliente più vicino al punto cliccato
+                    min_d = float('inf')
+                    found_nome = None
+                    for _, row in df_filtered.iterrows():
+                        d = haversine(click_lat, click_lon, row['latitude'], row['longitude'])
+                        if d < min_d:
+                            min_d = d
+                            found_nome = row['nome_cliente']
+                    
+                    if found_nome and min_d < 1:  # entro 1km
+                        st.session_state.mappa_cliente_cliccato = found_nome
+                
+                # === SCHEDA CLIENTE CLICCATO ===
+                if st.session_state.mappa_cliente_cliccato:
+                    nome_sel = st.session_state.mappa_cliente_cliccato
+                    cliente_row = df_filtered[df_filtered['nome_cliente'] == nome_sel]
+                    
+                    if not cliente_row.empty:
+                        c = cliente_row.iloc[0]
+                        with st.container(border=True):
+                            st.markdown(f"### 📍 {c['nome_cliente']}")
+                            
+                            info = []
+                            if c.get('indirizzo'):
+                                info.append(f"📍 {c['indirizzo']}")
+                            if c.get('citta'):
+                                info.append(f"🏙️ {c['citta']}")
+                            dist_c = c.get('distanza_km', 0)
+                            info.append(f"🚗 {dist_c:.1f} km da te")
+                            
+                            ultima = c.get('ultima_visita')
+                            if pd.notnull(ultima) and hasattr(ultima, 'strftime'):
+                                info.append(f"📅 Ultima visita: {ultima.strftime('%d/%m/%Y')}")
+                            else:
+                                info.append("📅 Mai visitato")
+                            
+                            st.write(" · ".join(info))
+                            
+                            # Pulsanti azione (HTML flex per mobile)
+                            nav_url = f"https://www.google.com/maps/dir/?api=1&destination={c['latitude']},{c['longitude']}"
+                            cell_val = str(c.get('cellulare', '')) if pd.notna(c.get('cellulare')) else ''
+                            mail_val = str(c.get('email', '')) if pd.notna(c.get('email')) else ''
+                            
+                            btn_s = "display:inline-flex;align-items:center;justify-content:center;padding:8px 12px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:500;flex:1;text-align:center;min-height:38px;border:1px solid #ddd;color:#333;background:#f8f9fa;"
+                            btn_d = btn_s + "opacity:0.35;pointer-events:none;color:#999;"
+                            
+                            html_btns = '<div style="display:flex;gap:6px;margin:4px 0;">'
+                            html_btns += f'<a href="{nav_url}" target="_blank" style="{btn_s}">🚗 Vai</a>'
+                            html_btns += f'<a href="tel:{cell_val}" style="{btn_s}">📱 Chiama</a>' if cell_val and cell_val.strip() and cell_val != 'nan' else f'<span style="{btn_d}">📱 Chiama</span>'
+                            html_btns += f'<a href="mailto:{mail_val}" style="{btn_s}">📧 Mail</a>' if mail_val and mail_val.strip() and mail_val != 'nan' else f'<span style="{btn_d}">📧 Mail</span>'
+                            html_btns += '</div>'
+                            st.markdown(html_btns, unsafe_allow_html=True)
+                            
+                            if st.button("👤 Apri Scheda Cliente", key="apri_scheda_mappa", type="primary", use_container_width=True):
+                                st.session_state.cliente_selezionato = nome_sel
+                                st.session_state.active_tab = "👤 Anagrafica"
+                                st.session_state.mappa_cliente_cliccato = None
+                                st.rerun()
+                
+                # === LISTA CLIENTI VICINI ===
+                st.divider()
+                st.subheader(f"📋 Clienti più vicini ({min(15, len(df_filtered))} di {len(df_filtered)})")
+                
+                for _, row in df_filtered.head(15).iterrows():
+                    dist_c = row.get('distanza_km', 0)
+                    nome_c = row['nome_cliente']
+                    ind_c = row.get('indirizzo', '') or ''
+                    
+                    with st.container(border=True):
+                        st.markdown(f"**{nome_c}** — 🚗 {dist_c:.1f} km  \n📍 {ind_c}")
+                        
+                        nav_url = f"https://www.google.com/maps/dir/?api=1&destination={row['latitude']},{row['longitude']}"
+                        cell_v = str(row.get('cellulare', '')) if pd.notna(row.get('cellulare')) else ''
+                        
+                        btn_s = "display:inline-flex;align-items:center;justify-content:center;padding:8px 4px;border-radius:8px;text-decoration:none;font-size:13px;font-weight:500;flex:1;text-align:center;min-height:36px;border:1px solid #ddd;color:#333;background:#f8f9fa;"
+                        btn_d = btn_s + "opacity:0.35;pointer-events:none;color:#999;"
+                        
+                        h = '<div style="display:flex;gap:5px;margin:2px 0;">'
+                        h += f'<a href="{nav_url}" target="_blank" style="{btn_s}">🚗 Vai</a>'
+                        h += f'<a href="tel:{cell_v}" style="{btn_s}">📱</a>' if cell_v and cell_v.strip() and cell_v != 'nan' else f'<span style="{btn_d}">📱</span>'
+                        h += '</div>'
+                        st.markdown(h, unsafe_allow_html=True)
+                        
+                        if st.button("👤 Scheda", key=f"lista_scheda_{row['id']}", use_container_width=True):
+                            st.session_state.cliente_selezionato = nome_c
                             st.session_state.active_tab = "👤 Anagrafica"
                             st.rerun()
             else:
