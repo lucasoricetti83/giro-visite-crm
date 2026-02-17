@@ -1049,16 +1049,23 @@ def clear_gps_from_url():
         if key in st.query_params:
             del st.query_params[key]
 
-# --- 5. CALCOLO GIRO OTTIMIZZATO (PORTATOUR v5 — BLOCCHI GEOGRAFICI) ---
+# --- 5. CALCOLO GIRO OTTIMIZZATO (v6 — ÀNCORA APPUNTAMENTI + CLUSTER GIORNALIERI) ---
 def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, variante=0):
     """
-    ALGORITMO PORTATOUR v5 — Blocchi geografici puri.
+    ALGORITMO v6 — Semplice, diretto, efficace.
     
-    Una catena master definisce l'ordine geografico di TUTTI i clienti.
-    La catena viene tagliata in blocchi settimanali e giornalieri.
-    Clienti adiacenti nella catena = vicini = stesso giorno.
+    PRINCIPIO: ogni giorno si costruisce DA ZERO partendo da un punto.
     
-    NESSUN override urgenza. La rotazione geografica è SACRA.
+    PASSI:
+      1. Filtra: escludi chi è stato visitato di recente (frequenza)
+      2. Giorni CON appuntamento → l'appuntamento è l'ÀNCORA:
+         si cercano i clienti più vicini all'appuntamento da TUTTO il pool
+      3. Giorni SENZA appuntamento → nearest-neighbor dalla base
+         attraverso i clienti RIMASTI nel pool
+      4. 2-opt su ogni giorno
+    
+    NESSUNA catena master, NESSUN blocco, NESSUN taglio.
+    Ogni giorno prende i clienti che gli servono dal pool condiviso.
     """
     if df.empty:
         return {}
@@ -1101,12 +1108,12 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     
     oggi = ora_italiana.date()
     lunedi = oggi - timedelta(days=oggi.weekday()) + timedelta(weeks=settimana_offset)
-    numero_settimana = lunedi.isocalendar()[1]
+    fine_settimana = lunedi + timedelta(days=6)
     
     agenda = {g: [] for g in range(7)}
     
     # ========================================
-    # 1. RACCOGLI TUTTI I CLIENTI VALIDI
+    # 1. RACCOGLI CLIENTI + PARSE APPUNTAMENTI
     # ========================================
     tutti = []
     for _, r in df.iterrows():
@@ -1122,10 +1129,11 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         freq = int(r.get('frequenza_giorni', 30))
         ultima = r.get('ultima_visita')
         
+        # Calcolo urgenza e prossima visita
         if pd.isnull(ultima) or (hasattr(ultima, 'year') and ultima.year < 2001):
             giorni_ritardo = 999
             urgenza = 100.0
-            prossima_visita = None  # mai visitato → da visitare
+            prossima_visita = None
         else:
             ultima_date = ultima.date() if hasattr(ultima, 'date') else ultima
             if isinstance(ultima_date, str):
@@ -1146,23 +1154,21 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 else:
                     urgenza = max(0, 10 - (giorni_alla_scadenza - 14))
         
-        # --- PARSE APPUNTAMENTO (stringa o datetime) ---
+        # Parse appuntamento (stringa o datetime)
         app_raw = r.get('appuntamento')
         app_parsed = None
         if pd.notna(app_raw):
-            if hasattr(app_raw, 'date'):
-                app_parsed = app_raw  # già datetime
+            if hasattr(app_raw, 'date') and hasattr(app_raw, 'hour'):
+                app_parsed = app_raw
             elif isinstance(app_raw, str) and app_raw.strip():
-                try:
-                    app_parsed = datetime.strptime(app_raw[:16].strip(), '%Y-%m-%dT%H:%M')
-                except:
+                s = app_raw.strip()
+                for sl, fmt in [(16, '%Y-%m-%dT%H:%M'), (19, '%Y-%m-%dT%H:%M:%S'),
+                                (19, '%Y-%m-%d %H:%M:%S'), (10, '%Y-%m-%d')]:
                     try:
-                        app_parsed = datetime.strptime(app_raw[:19].strip(), '%Y-%m-%d %H:%M:%S')
+                        app_parsed = datetime.strptime(s[:sl], fmt)
+                        break
                     except:
-                        try:
-                            app_parsed = datetime.strptime(app_raw[:10].strip(), '%Y-%m-%d')
-                        except:
-                            pass
+                        continue
         
         flat, flon = float(lat), float(lon)
         tutti.append({
@@ -1200,7 +1206,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         return agenda
     
     # ========================================
-    # 3. APPUNTAMENTI FISSI
+    # 3. SEPARA APPUNTAMENTI DAL POOL
     # ========================================
     app_per_giorno = {}
     nomi_app = set()
@@ -1219,55 +1225,48 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 nomi_app.add(c['nome'])
     
     # ========================================
-    # 3b. FILTRA CLIENTI GIÀ VISITATI DI RECENTE
+    # 4. FILTRA PER FREQUENZA
     # ========================================
-    # Un cliente con frequenza 30gg visitato la settimana scorsa
-    # NON deve comparire nel giro per altre 3 settimane.
-    # Escludiamo chi ha prossima_visita > fine della settimana corrente
-    # (tranne chi ha appuntamento questa settimana).
+    # Escludi chi è stato visitato di recente e la cui
+    # prossima visita cade DOPO questa settimana.
     
-    fine_settimana = lunedi + timedelta(days=6)
-    
-    liberi = []
+    pool = []
     for c in tutti:
         if c['nome'] in nomi_app:
-            continue  # ha appuntamento, gestito separatamente
-        
+            continue  # gestito come appuntamento
         pv = c.get('prossima_visita')
         if pv is not None and pv > fine_settimana:
-            continue  # visitato di recente, la prossima visita è DOPO questa settimana
-        
-        # Cliente da includere: mai visitato (pv=None) oppure scaduto/in scadenza
-        liberi.append(c)
+            continue  # non ancora da visitare
+        pool.append(c)
     
     # ========================================
-    # 4. CAPACITÀ
+    # 5. CAPACITÀ
     # ========================================
     ore = (datetime.combine(oggi, ora_fine) - datetime.combine(oggi, ora_inizio)).seconds / 3600
     pausa_ore = (datetime.combine(oggi, pausa_a) - datetime.combine(oggi, pausa_da)).seconds / 3600
     max_visite = max(4, min(10, int(ore - pausa_ore)))
-    num_giorni_calc = len(giorni_calcolo)
-    cap_settimana = max_visite * num_giorni_calc
     
-    if not liberi and not app_per_giorno:
-        return agenda
-    
-    if cap_settimana <= 0:
+    if not pool and not app_per_giorno:
         return agenda
     
     # ========================================
-    # 5. CATENA MASTER — nearest-neighbor da base
+    # 6. VARIANTE (giro alternativo)
     # ========================================
-    # Ordina i clienti da visitare in sequenza di prossimità geografica.
-    # Se non ci sono clienti liberi (solo appuntamenti), catena vuota.
+    if variante > 0:
+        random.seed(variante * 7919)
+        random.shuffle(pool)
     
-    week_chain = []  # default: nessun cliente libero
-    
-    if liberi:
-        remaining = list(liberi)
-        master_chain = []
-        pos_lat, pos_lon = base_lat, base_lon
-        while remaining:
+    # ========================================
+    # 7. FUNZIONI HELPER
+    # ========================================
+    def nearest_neighbor_from(clienti, start_lat, start_lon, max_n):
+        """Prendi i max_n clienti più vicini in ordine NN da un punto."""
+        result = []
+        remaining = list(clienti)
+        pos_lat, pos_lon = start_lat, start_lon
+        for _ in range(min(max_n, len(remaining))):
+            if not remaining:
+                break
             min_d = float('inf')
             best_idx = -1
             for idx, c in enumerate(remaining):
@@ -1276,54 +1275,18 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                     min_d = d
                     best_idx = idx
             picked = remaining.pop(best_idx)
-            master_chain.append(picked)
+            result.append(picked)
             pos_lat, pos_lon = picked['lat'], picked['lon']
-        
-        # ========================================
-        # 6. ROTAZIONE SETTIMANALE — blocchi dalla catena master
-        # ========================================
-        n_clienti = len(master_chain)
-        num_blocchi = max(1, -(-n_clienti // cap_settimana))  # ceil division
-        blocco_idx = numero_settimana % num_blocchi
-        
-        start = blocco_idx * cap_settimana
-        week_pool = master_chain[start : start + cap_settimana]
-        
-        # Se l'ultimo blocco è troppo corto, riempi con i primi della catena
-        if len(week_pool) < cap_settimana and n_clienti > cap_settimana:
-            mancanti = cap_settimana - len(week_pool)
-            nomi_pool = {c['nome'] for c in week_pool}
-            extra = [c for c in master_chain if c['nome'] not in nomi_pool][:mancanti]
-            week_pool += extra
-        
-        # ========================================
-        # 7. VARIANTE (giro alternativo)
-        # ========================================
-        if variante > 0:
-            random.seed(variante * 7919)
-            random.shuffle(week_pool)
-        
-        # ========================================
-        # 8. RI-CATENA dalla base per ordine di percorrenza
-        # ========================================
-        remaining = list(week_pool)
-        week_chain = []
-        pos_lat, pos_lon = base_lat, base_lon
-        while remaining:
-            min_d = float('inf')
-            best_idx = -1
-            for idx, c in enumerate(remaining):
-                d = haversine(pos_lat, pos_lon, c['lat'], c['lon'])
-                if d < min_d:
-                    min_d = d
-                    best_idx = idx
-            picked = remaining.pop(best_idx)
-            week_chain.append(picked)
-            pos_lat, pos_lon = picked['lat'], picked['lon']
+        return result, remaining
     
-    # ========================================
-    # 9. 2-OPT
-    # ========================================
+    def closest_to_point(clienti, lat, lon, max_n):
+        """Prendi i max_n clienti più vicini a un punto (in linea d'aria)."""
+        scored = [(haversine(lat, lon, c['lat'], c['lon']), c) for c in clienti]
+        scored.sort(key=lambda x: x[0])
+        selected = [c for _, c in scored[:max_n]]
+        remaining = [c for _, c in scored[max_n:]]
+        return selected, remaining
+    
     def ottimizza_2opt(percorso, lat_start, lon_start):
         if len(percorso) < 3:
             return percorso
@@ -1355,84 +1318,87 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         return percorso
     
     # ========================================
-    # 10. ASSEGNAZIONE GIORNALIERA
+    # 8. COSTRUISCI IL GIRO GIORNO PER GIORNO
     # ========================================
-    # LOGICA:
-    #   - Giorni CON appuntamento: l'appuntamento è l'ÀNCORA.
-    #     Si prendono dal pool i clienti più vicini all'appuntamento.
-    #   - Giorni SENZA appuntamento: taglio consecutivo dalla catena.
-    #
-    # Questo garantisce che il giro del giorno sia coerente con
-    # la posizione dell'appuntamento.
+    # PRIMA: giorni con appuntamento (l'appuntamento ÀNCORA il giro)
+    # POI: giorni senza appuntamento (NN dalla base con pool rimanente)
     
-    risultati_calcolo = {}
-    pool_rimanente = list(week_chain)  # pool condiviso, si svuota giorno per giorno
+    pool_rimanente = list(pool)
+    risultati = {}
     
-    # PRIMA PASSATA: giorni CON appuntamento (àncora geografica)
+    # --- PRIMA PASSATA: giorni CON appuntamento ---
     giorni_con_app = [g for g in giorni_calcolo if g in app_per_giorno]
-    giorni_senza_app = [g for g in giorni_calcolo if g not in app_per_giorno]
     
     for giorno in giorni_con_app:
-        data_g = lunedi + timedelta(days=giorno)
         tappe_app = list(app_per_giorno[giorno])
         slot = max_visite - len(tappe_app)
         
         if slot > 0 and pool_rimanente:
-            # Centro di gravità degli appuntamenti del giorno
+            # Centro di gravità degli appuntamenti
             app_lat = sum(a['lat'] for a in tappe_app) / len(tappe_app)
             app_lon = sum(a['lon'] for a in tappe_app) / len(tappe_app)
             
-            # Ordina il pool per distanza dall'appuntamento
-            pool_rimanente.sort(key=lambda c: haversine(app_lat, app_lon, c['lat'], c['lon']))
-            
-            # Prendi i più vicini
-            day_clients = pool_rimanente[:slot]
-            pool_rimanente = pool_rimanente[slot:]
+            # Prendi i clienti più vicini all'appuntamento
+            day_clients, pool_rimanente = closest_to_point(
+                pool_rimanente, app_lat, app_lon, slot
+            )
         else:
             day_clients = []
         
-        # 2-opt sul percorso del giorno
-        # L'ordine è: base → clienti prima dell'app → APPUNTAMENTO → clienti dopo
-        # Per semplicità: 2-opt sull'intero set (app + liberi), l'appuntamento
-        # verrà piazzato all'orario giusto nel calcolo orari
-        tutti_giorno = day_clients + tappe_app
+        # Unisci appuntamenti + clienti, ordina con 2-opt dalla base
+        giro = tappe_app + day_clients
+        if len(giro) >= 3:
+            giro = ottimizza_2opt(giro, base_lat, base_lon)
         
-        if len(tutti_giorno) >= 3:
-            tutti_giorno = ottimizza_2opt(tutti_giorno, base_lat, base_lon)
-        
-        risultati_calcolo[giorno] = (data_g, tutti_giorno)
+        risultati[giorno] = giro
     
-    # SECONDA PASSATA: giorni SENZA appuntamento (taglio consecutivo)
-    for giorno in giorni_senza_app:
-        data_g = lunedi + timedelta(days=giorno)
-        slot = max_visite
+    # --- SECONDA PASSATA: giorni SENZA appuntamento ---
+    # Costruiamo UNA catena continua dalla base attraverso TUTTI i clienti
+    # rimasti, poi la tagliamo in segmenti giornalieri consecutivi.
+    # Così giorno 1 = zona A, giorno 2 = zona B adiacente, etc.
+    
+    giorni_senza_app = [g for g in giorni_calcolo if g not in app_per_giorno]
+    
+    if pool_rimanente and giorni_senza_app:
+        # Catena unica dalla base
+        catena_completa, _ = nearest_neighbor_from(
+            pool_rimanente, base_lat, base_lon, len(pool_rimanente)
+        )
         
-        day_clients = pool_rimanente[:slot]
-        pool_rimanente = pool_rimanente[slot:]
-        
-        if len(day_clients) >= 3:
-            day_clients = ottimizza_2opt(day_clients, base_lat, base_lon)
-        elif len(day_clients) == 2:
-            d0 = haversine(base_lat, base_lon, day_clients[0]['lat'], day_clients[0]['lon'])
-            d1 = haversine(base_lat, base_lon, day_clients[1]['lat'], day_clients[1]['lon'])
-            if d1 < d0:
-                day_clients = [day_clients[1], day_clients[0]]
-        
-        risultati_calcolo[giorno] = (data_g, day_clients)
+        # Taglia in segmenti giornalieri
+        idx = 0
+        for giorno in giorni_senza_app:
+            segmento = catena_completa[idx : idx + max_visite]
+            idx += len(segmento)
+            
+            # 2-opt sul segmento
+            if len(segmento) >= 3:
+                segmento = ottimizza_2opt(segmento, base_lat, base_lon)
+            elif len(segmento) == 2:
+                d0 = haversine(base_lat, base_lon, segmento[0]['lat'], segmento[0]['lon'])
+                d1 = haversine(base_lat, base_lon, segmento[1]['lat'], segmento[1]['lon'])
+                if d1 < d0:
+                    segmento = [segmento[1], segmento[0]]
+            
+            risultati[giorno] = segmento
+    else:
+        for giorno in giorni_senza_app:
+            risultati[giorno] = []
     
     # ========================================
-    # 11. CALCOLO ORARI per tutti i giorni
+    # 9. CALCOLO ORARI
     # ========================================
     risultati_finali = {}
     
     for giorno in giorni_calcolo:
-        data_g, giro_finale = risultati_calcolo.get(giorno, (lunedi + timedelta(days=giorno), []))
+        data_g = lunedi + timedelta(days=giorno)
+        giro = risultati.get(giorno, [])
         
         tappe_finali = []
         pos_lat, pos_lon = base_lat, base_lon
         ora = datetime.combine(data_g, ora_inizio)
         
-        for c in giro_finale:
+        for c in giro:
             dist = haversine(pos_lat, pos_lon, c['lat'], c['lon'])
             tempo = (dist / 40) * 60
             
@@ -2316,14 +2282,13 @@ def main_app():
                 st.write("- Algoritmo: **Clustering + Urgenza + 2-Opt**")
             
             st.divider()
-            st.write("**🎯 Come funziona l'algoritmo Portatour v5:**")
+            st.write("**🎯 Come funziona l'algoritmo v6:**")
             st.markdown("""
             1. **Filtro frequenza** — Clienti visitati di recente (prossima visita oltre questa settimana) vengono esclusi.
-            2. **Catena master** — Nearest-neighbor da base ordina i clienti per prossimità geografica.
-            3. **Blocchi settimanali** — La catena è tagliata in blocchi. Ogni settimana = un blocco diverso.
-            4. **Appuntamenti come àncora** — Nei giorni con appuntamento, il giro si riempie con i clienti PIÙ VICINI all'appuntamento.
-            5. **Taglio giornaliero** — I giorni senza appuntamento prendono segmenti consecutivi dalla catena → clienti vicini = stesso giorno.
-            6. **2-Opt** — Ogni percorso giornaliero è ottimizzato per eliminare zig-zag.
+            2. **Appuntamenti = ÀNCORA** — Per i giorni con appuntamento, si cercano i clienti più vicini all'appuntamento da TUTTO il pool. Il giro del giorno è costruito intorno all'appuntamento.
+            3. **Giorni senza appuntamento** — Nearest-neighbor dalla base sui clienti rimasti nel pool. Ogni giorno prende i più vicini al punto di partenza.
+            4. **2-Opt** — Ogni percorso giornaliero è ottimizzato per eliminare zig-zag.
+            5. **Nessun taglio a blocchi** — Ogni giorno pesca dal pool condiviso. Niente catena master, niente slice.
             """)
             
             st.divider()
@@ -4315,7 +4280,7 @@ def main_app():
     
     # Footer
     st.divider()
-    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 5.2 (Portatour v5)")
+    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 6.0")
 
 # --- RUN APP ---
 init_auth_state()
