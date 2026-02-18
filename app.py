@@ -1049,25 +1049,31 @@ def clear_gps_from_url():
         if key in st.query_params:
             del st.query_params[key]
 
-# --- 5. CALCOLO GIRO OTTIMIZZATO (v7 — CLUSTER CITTÀ + ROTAZIONE) ---
+# --- 5. CALCOLO GIRO OTTIMIZZATO (v8 — SETTORI ANGOLARI + ANELLI) ---
 def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, variante=0):
     """
-    ALGORITMO v7 — Cluster per città + rotazione settimanale.
+    ALGORITMO v8 — Settori angolari + costruzione anelli.
     
-    1. Raggruppa clienti per CITTÀ (cluster geografico naturale)
-    2. Catena NN tra baricentri delle città → ordine di prossimità
-    3. Taglia la catena in N_GIORNI segmenti BILANCIATI per numero clienti
-       → città adiacenti nella catena = vicine = STESSO GIORNO
-    4. ROTAZIONE settimanale: offset sul numero settimana ISO
-    5. APPUNTAMENTO: SWAP del segmento per portare la zona dell'app nel giorno giusto
-    6. RIGENERA (variante): inversione o shift della catena → segmenti diversi
-    7. Filtro frequenza: clienti visitati di recente escono dal pool
-    8. 2-opt su ogni giorno per ottimizzare il percorso
+    Regole apprese dai giri reali dell'utente:
+    1. Un giorno = UNA DIRETTRICE dalla base (non mescolare zone)
+    2. Costruisci ANELLI (circuiti): vai al lontano, lavora tornando
+    3. Clienti vicini TUTTI nello stesso giorno
+    4. Il RITORNO conta: minimizza il circuito completo
+    
+    PASSI:
+      1. Filtra: frequenza rigorosa
+      2. Calcola ANGOLO di ogni cliente dalla base
+      3. Ordina per angolo → taglia in N_GIORNI settori
+      4. Per ogni settore: costruisci ANELLO ottimale (3 strategie + 2-opt)
+      5. Rotazione settimanale: offset sul numero settimana ISO
+      6. Appuntamento: SWAP settore nel giorno giusto
+      7. Rigenera (variante): shift angolare dei settori
     """
     if df.empty:
         return {}
     
     from collections import defaultdict
+    from math import atan2, degrees as math_degrees
     
     base_lat = float(config.get('lat_base', 41.9028))
     base_lon = float(config.get('lon_base', 12.4964))
@@ -1127,7 +1133,6 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         if pd.isna(lat) or pd.isna(lon) or lat == 0 or lon == 0:
             continue
         
-        citta = str(r.get('citta', '') or '').strip().upper() or 'ALTRO'
         freq = int(r.get('frequenza_giorni', 30))
         ultima = r.get('ultima_visita')
         
@@ -1166,6 +1171,14 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                         continue
         
         flat, flon = float(lat), float(lon)
+        
+        # ANGOLO dalla base (0°=Est, 90°=Nord, 180°=Ovest, 270°=Sud)
+        dy = flat - base_lat
+        dx = flon - base_lon
+        angolo = math_degrees(atan2(dy, dx)) % 360
+        
+        citta = str(r.get('citta', '') or '').strip().upper() or 'ALTRO'
+        
         tutti.append({
             'id': r['id'],
             'nome': r['nome_cliente'],
@@ -1175,6 +1188,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             'cell': str(r.get('cellulare', '')),
             'app': app_parsed,
             'dist_base': haversine(base_lat, base_lon, flat, flon),
+            'angolo': angolo,
             'urgenza': urgenza,
             'giorni_ritardo': giorni_ritardo,
             'frequenza': freq,
@@ -1258,197 +1272,185 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         return agenda
     
     # ========================================
-    # 5. RAGGRUPPA PER CITTÀ
+    # 5. SETTORI ANGOLARI
     # ========================================
-    gruppi_citta = defaultdict(list)
-    for c in pool:
-        gruppi_citta[c['citta']].append(c)
+    pool_sorted = sorted(pool, key=lambda c: c['angolo'])
     
-    zone_citta = []
-    for citta, members in gruppi_citta.items():
-        avg_lat = sum(c['lat'] for c in members) / len(members)
-        avg_lon = sum(c['lon'] for c in members) / len(members)
-        zone_citta.append({
-            'citta': citta,
-            'clienti': members,
-            'n': len(members),
-            'avg_lat': avg_lat,
-            'avg_lon': avg_lon,
-            'dist_base': haversine(base_lat, base_lon, avg_lat, avg_lon)
-        })
+    # Variante (Rigenera): shift angolare
+    if variante > 0 and pool_sorted:
+        shift_pct = (variante * 37) % 100  # shift diverso per ogni variante
+        shift_n = max(1, len(pool_sorted) * shift_pct // 100)
+        pool_sorted = pool_sorted[shift_n:] + pool_sorted[:shift_n]
     
-    # ========================================
-    # 6. CATENA NN TRA BARICENTRI CITTÀ
-    # ========================================
-    remaining_z = list(zone_citta)
-    chain = []
-    pos_lat, pos_lon = base_lat, base_lon
-    while remaining_z:
-        min_d = float('inf')
-        best = -1
-        for idx, z in enumerate(remaining_z):
-            d = haversine(pos_lat, pos_lon, z['avg_lat'], z['avg_lon'])
-            if d < min_d:
-                min_d = d
-                best = idx
-        picked = remaining_z.pop(best)
-        chain.append(picked)
-        pos_lat, pos_lon = picked['avg_lat'], picked['avg_lon']
-    
-    # ========================================
-    # 7. VARIANTE (Rigenera): modifica la catena
-    # ========================================
-    if variante > 0 and len(chain) > 1:
-        if variante % 3 == 1:
-            # Inversione: parti dal più lontano
-            chain = list(reversed(chain))
-        elif variante % 3 == 2:
-            # Shift dal centro
-            mid = len(chain) // 2
-            chain = chain[mid:] + chain[:mid]
+    # Taglia in N_GIORNI settori bilanciati per numero clienti
+    per_settore = max(1, len(pool_sorted) // n_giorni)
+    settori = []
+    for i in range(n_giorni):
+        start = i * per_settore
+        if i == n_giorni - 1:
+            settori.append(pool_sorted[start:])
         else:
-            # Shift di 1/3
-            third = max(1, len(chain) // 3)
-            chain = chain[third:] + chain[:third]
+            settori.append(pool_sorted[start:start + per_settore])
     
     # ========================================
-    # 8. TAGLIA CATENA IN SEGMENTI BILANCIATI
-    # ========================================
-    def taglia_bilanciato(catena, n_seg):
-        """Taglia la catena di città in n_seg segmenti bilanciati per n. clienti."""
-        if not catena:
-            return [[] for _ in range(n_seg)]
-        
-        totale = sum(z['n'] for z in catena)
-        soglia = totale / n_seg if n_seg > 0 else totale
-        
-        segmenti = []
-        seg_corrente = []
-        conta = 0
-        
-        for z in catena:
-            if conta + z['n'] > soglia * 1.3 and conta > 0 and len(segmenti) < n_seg - 1:
-                segmenti.append(seg_corrente)
-                seg_corrente = []
-                conta = 0
-            seg_corrente.append(z)
-            conta += z['n']
-        
-        if seg_corrente:
-            segmenti.append(seg_corrente)
-        
-        while len(segmenti) < n_seg:
-            segmenti.append([])
-        while len(segmenti) > n_seg:
-            segmenti[-2].extend(segmenti[-1])
-            segmenti.pop()
-        
-        return segmenti
-    
-    segmenti = taglia_bilanciato(chain, n_giorni)
-    
-    # ========================================
-    # 9. ROTAZIONE SETTIMANALE
+    # 6. ROTAZIONE SETTIMANALE
     # ========================================
     offset = numero_settimana % n_giorni
     
-    assegnazione = {}  # giorno_calcolo → segmento
+    assegnazione = {}  # giorno_calcolo → settore
     for idx, g in enumerate(giorni_calcolo):
-        seg_idx = (idx + offset) % n_giorni
-        assegnazione[g] = segmenti[seg_idx]
+        s_idx = (idx + offset) % n_giorni
+        assegnazione[g] = settori[s_idx] if s_idx < len(settori) else []
     
     # ========================================
-    # 10. APPUNTAMENTO ÀNCORA — SWAP segmenti
+    # 7. APPUNTAMENTO ÀNCORA — SWAP settori
     # ========================================
     for g_app, tappe_app in app_per_giorno.items():
         if g_app not in assegnazione:
             continue
         
-        # Trova la città dell'appuntamento
-        citta_app = set()
-        for t in tappe_app:
-            citta_app.add(t.get('citta', 'ALTRO'))
+        # Trova l'angolo medio dell'appuntamento
+        ang_app = sum(c['angolo'] for c in tappe_app) / len(tappe_app)
         
-        # Trova quale giorno ha il segmento con quella città
-        giorno_con_citta = None
-        for g, seg in assegnazione.items():
-            for z in seg:
-                if z['citta'] in citta_app:
-                    giorno_con_citta = g
-                    break
-            if giorno_con_citta is not None:
-                break
+        # Trova quale giorno ha il settore con angolo più vicino
+        giorno_piu_vicino = None
+        min_diff = 999
+        for g, sett in assegnazione.items():
+            if not sett:
+                continue
+            ang_sett = sum(c['angolo'] for c in sett) / len(sett)
+            diff = abs(ang_sett - ang_app)
+            if diff > 180:
+                diff = 360 - diff
+            if diff < min_diff:
+                min_diff = diff
+                giorno_piu_vicino = g
         
-        # SWAP: porta il segmento con la città dell'appuntamento nel giorno dell'app
-        if giorno_con_citta is not None and giorno_con_citta != g_app:
-            assegnazione[g_app], assegnazione[giorno_con_citta] = \
-                assegnazione[giorno_con_citta], assegnazione[g_app]
+        # SWAP
+        if giorno_piu_vicino is not None and giorno_piu_vicino != g_app:
+            assegnazione[g_app], assegnazione[giorno_piu_vicino] = \
+                assegnazione[giorno_piu_vicino], assegnazione[g_app]
     
     # ========================================
-    # 11. COSTRUISCI GIRO PER OGNI GIORNO
+    # 8. COSTRUISCI ANELLO PER OGNI GIORNO
     # ========================================
-    def ottimizza_2opt(percorso, lat_start, lon_start):
+    def circuito_dist(percorso, blat, blon):
+        """Distanza totale circuito base → clienti → base."""
+        if not percorso:
+            return 0
+        d = haversine(blat, blon, percorso[0]['lat'], percorso[0]['lon'])
+        for i in range(len(percorso) - 1):
+            d += haversine(percorso[i]['lat'], percorso[i]['lon'],
+                           percorso[i+1]['lat'], percorso[i+1]['lon'])
+        d += haversine(percorso[-1]['lat'], percorso[-1]['lon'], blat, blon)
+        return d
+    
+    def due_opt(percorso, blat, blon):
+        """2-opt aggressivo sul circuito completo."""
         if len(percorso) < 3:
             return percorso
-        def dist_tot(p):
-            if not p: return 0
-            d = haversine(lat_start, lon_start, p[0]['lat'], p[0]['lon'])
-            for i in range(len(p)-1):
-                d += haversine(p[i]['lat'], p[i]['lon'], p[i+1]['lat'], p[i+1]['lon'])
-            d += haversine(p[-1]['lat'], p[-1]['lon'], lat_start, lon_start)
-            return d
-        percorso = list(percorso)
-        migliorato = True
+        p = list(percorso)
+        improved = True
         it = 0
-        while migliorato and it < 100:
-            migliorato = False
-            da = dist_tot(percorso)
-            for i in range(len(percorso) - 1):
-                for j in range(i + 2, len(percorso)):
-                    nuovo = percorso[:i+1] + percorso[i+1:j+1][::-1] + percorso[j+1:]
-                    if dist_tot(nuovo) < da - 0.1:
-                        percorso = nuovo
-                        migliorato = True
+        while improved and it < 500:
+            improved = False
+            best_d = circuito_dist(p, blat, blon)
+            for i in range(len(p) - 1):
+                for j in range(i + 2, len(p)):
+                    nuovo = p[:i+1] + p[i+1:j+1][::-1] + p[j+1:]
+                    d = circuito_dist(nuovo, blat, blon)
+                    if d < best_d - 0.01:
+                        p = nuovo
+                        best_d = d
+                        improved = True
                         break
-                if migliorato:
+                if improved:
                     break
             it += 1
-        return percorso
+        # Prova anche il senso opposto
+        p_rev = list(reversed(p))
+        if circuito_dist(p_rev, blat, blon) < circuito_dist(p, blat, blon):
+            p = p_rev
+        return p
     
+    def costruisci_anello(clienti_g, blat, blon):
+        """Costruisce il miglior anello provando 3 strategie + 2-opt."""
+        if len(clienti_g) <= 2:
+            return sorted(clienti_g, key=lambda c: -c['dist_base'])
+        
+        # Strategia 1: Sweep angolare dal centroide
+        cx = sum(c['lat'] for c in clienti_g) / len(clienti_g)
+        cy = sum(c['lon'] for c in clienti_g) / len(clienti_g)
+        s1 = sorted(clienti_g, key=lambda c: math_degrees(atan2(c['lat']-cx, c['lon']-cy)) % 360)
+        
+        # Strategia 2: Farthest-first, poi NN tornando
+        farthest = max(clienti_g, key=lambda c: c['dist_base'])
+        s2 = [farthest]
+        remaining = [c for c in clienti_g if c is not farthest]
+        plat, plon = farthest['lat'], farthest['lon']
+        while remaining:
+            min_d = float('inf')
+            best = -1
+            for idx, c in enumerate(remaining):
+                d = haversine(plat, plon, c['lat'], c['lon'])
+                if d < min_d:
+                    min_d = d
+                    best = idx
+            picked = remaining.pop(best)
+            s2.append(picked)
+            plat, plon = picked['lat'], picked['lon']
+        
+        # Strategia 3: Sweep angolare dalla base
+        s3 = sorted(clienti_g, key=lambda c: math_degrees(atan2(c['lat']-blat, c['lon']-blon)) % 360)
+        
+        # 2-opt su ciascuna, prendi il migliore
+        migliore = None
+        migliore_d = float('inf')
+        for strat in [s1, s2, s3]:
+            opt = due_opt(strat, blat, blon)
+            d = circuito_dist(opt, blat, blon)
+            if d < migliore_d:
+                migliore_d = d
+                migliore = opt
+        
+        return migliore
+    
+    # ========================================
+    # 9. ASSEMBLA GIRO PER OGNI GIORNO
+    # ========================================
     risultati = {}
     
     for giorno in giorni_calcolo:
         data_g = lunedi + timedelta(days=giorno)
         tappe_app = app_per_giorno.get(giorno, [])
-        seg = assegnazione.get(giorno, [])
+        settore = assegnazione.get(giorno, [])
         
-        # Raccogli clienti dal segmento (max_visite - appuntamenti)
+        # Slot disponibili = max_visite - appuntamenti
         slot = max_visite - len(tappe_app)
-        day_pool = []
-        for z in seg:
-            day_pool.extend(z['clienti'])
+        day_pool = list(settore)
         
         # Se più clienti di slot, prendi i più urgenti
         if len(day_pool) > slot:
             day_pool.sort(key=lambda c: -c['urgenza'])
             day_pool = day_pool[:slot]
         
-        # Unisci appuntamenti + clienti
-        giro = list(tappe_app) + day_pool
+        # Unisci appuntamenti + clienti per l'anello
+        giro_completo = list(tappe_app) + day_pool
         
-        # 2-opt
-        if len(giro) >= 3:
-            giro = ottimizza_2opt(giro, base_lat, base_lon)
-        elif len(giro) == 2:
-            d0 = haversine(base_lat, base_lon, giro[0]['lat'], giro[0]['lon'])
-            d1 = haversine(base_lat, base_lon, giro[1]['lat'], giro[1]['lon'])
-            if d1 < d0:
-                giro = [giro[1], giro[0]]
+        # Costruisci anello
+        if len(giro_completo) >= 3:
+            giro_completo = costruisci_anello(giro_completo, base_lat, base_lon)
+        elif len(giro_completo) == 2:
+            # Per 2 clienti: prova entrambi gli ordini
+            d1 = circuito_dist(giro_completo, base_lat, base_lon)
+            d2 = circuito_dist(list(reversed(giro_completo)), base_lat, base_lon)
+            if d2 < d1:
+                giro_completo = list(reversed(giro_completo))
         
-        risultati[giorno] = (data_g, giro)
+        risultati[giorno] = (data_g, giro_completo)
     
     # ========================================
-    # 12. CALCOLO ORARI
+    # 10. CALCOLO ORARI
     # ========================================
     for giorno in giorni_calcolo:
         data_g, giro = risultati.get(giorno, (lunedi + timedelta(days=giorno), []))
@@ -2338,16 +2340,16 @@ def main_app():
                 st.write("- Algoritmo: **Clustering + Urgenza + 2-Opt**")
             
             st.divider()
-            st.write("**🎯 Come funziona l'algoritmo v7:**")
+            st.write("**🎯 Come funziona l'algoritmo v8:**")
             st.markdown("""
             1. **Filtro frequenza RIGOROSO** — Solo clienti scaduti o in scadenza questa settimana. Meglio giorni vuoti che visite anticipate.
-            2. **Cluster per CITTÀ** — Clienti della stessa città restano nello stesso giorno.
-            3. **Catena NN tra città** — Le città vengono messe in ordine di prossimità (nearest-neighbor tra baricentri).
-            4. **Taglio bilanciato** — La catena viene tagliata in N segmenti con ~stesso numero di clienti.
-            5. **Rotazione settimanale** — Ogni settimana i segmenti ruotano: Lun=seg0→seg1→seg2...
-            6. **Appuntamento ÀNCORA** — Il segmento con la città dell'appuntamento viene spostato (SWAP) nel giorno giusto.
-            7. **Rigenera** — Inversione o shift della catena → segmenti completamente diversi.
-            8. **2-Opt** — Ogni percorso giornaliero è ottimizzato per eliminare zig-zag.
+            2. **Settori ANGOLARI** — Ogni cliente ha un angolo dalla base. Clienti nella stessa DIRETTRICE = stesso giorno.
+            3. **Un giorno = una ZONA** — Non si mescolano direttrici diverse. Tutti i clienti di un giorno sono nella stessa direzione.
+            4. **ANELLO ottimale** — Ogni giro giornaliero è un CIRCUITO: vai al più lontano, lavori tornando, minimizzando il circuito completo (andata+visite+ritorno).
+            5. **3 strategie + 2-Opt** — Sweep angolare, farthest-first, sweep dalla base → il miglior circuito vince.
+            6. **Rotazione settimanale** — Ogni settimana i settori ruotano tra i giorni.
+            7. **Appuntamento ÀNCORA** — Il settore più vicino all'appuntamento viene spostato nel giorno giusto.
+            8. **Rigenera** — Shift angolare dei settori → giri completamente diversi.
             """)
             
             st.divider()
@@ -4623,7 +4625,7 @@ def main_app():
     
     # Footer
     st.divider()
-    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 7.0")
+    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 8.0")
 
 # --- RUN APP ---
 init_auth_state()
