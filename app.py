@@ -1053,12 +1053,14 @@ def clear_gps_from_url():
 # --- 5. CALCOLO GIRO OTTIMIZZATO (v8 — CLUSTER CITTÀ + ANELLI) ---
 def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, variante=0):
     """
-    ALGORITMO v10 — K-Means geografico + urgenza.
+    ALGORITMO v10 — K-Means geografico + appuntamento come baricentro.
     
-    1. K-Means su coordinate → zone geografiche compatte (ogni giorno = una zona)
-    2. Ogni settimana: visita i clienti PIÙ URGENTI di ogni zona
-    3. Google Maps ottimizza l'ORDINE dentro ogni giorno (TSP + polyline strade)
-    4. Rotazione settimanale: ruota assegnazione zone↔giorni
+    1. Pool: clienti scaduti o in scadenza entro 10 giorni + mai visitati
+    2. APPUNTAMENTO = BARICENTRO: se c'è un appuntamento, quel giorno prende
+       i clienti del pool PIÙ VICINI all'appuntamento (ignora le zone)
+    3. GIORNI SENZA APP: K-Means su pool rimanente → zone compatte
+    4. Google Maps ottimizza l'ORDINE dentro ogni giorno (TSP + polyline)
+    5. Rotazione settimanale zone ↔ giorni
     """
     if df.empty:
         return {}
@@ -1221,10 +1223,12 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 nomi_app.add(c['nome'])
     
     # ========================================
-    # 4. FILTRA PER FREQUENZA
+    # 4. FILTRA PER FREQUENZA (entro 10 giorni)
     # ========================================
     scaduti = []
     mai_visitati = []
+    
+    soglia_10gg = lunedi + timedelta(days=10)
     
     for c in tutti:
         if c['nome'] in nomi_app:
@@ -1232,7 +1236,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         pv = c.get('prossima_visita')
         if pv is None:
             mai_visitati.append(c)
-        elif pv <= fine_settimana:
+        elif pv <= soglia_10gg:
             scaduti.append(c)
     
     # Mai visitati: distribuisci gradualmente
@@ -1303,15 +1307,54 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         
         return clusters, centers
     
-    # Cluster il POOL (clienti da visitare QUESTA settimana), non tutti
-    if len(pool) >= n_giorni:
-        zone_raw, zone_centers = kmeans_geo(pool, n_giorni)
-    elif pool:
-        zone_raw = [pool] + [[] for _ in range(n_giorni - 1)]
-        zone_centers = [(pool[0]['lat'], pool[0]['lon'])] + [(base_lat, base_lon)] * (n_giorni - 1)
+    # Cluster il POOL sui giorni SENZA appuntamento
+    # Prima: gestisci i giorni con appuntamento (l'app è il baricentro)
+    
+    # ========================================
+    # 5b. GIORNI CON APPUNTAMENTO → BARICENTRO
+    # ========================================
+    giorni_con_app = set()
+    nomi_usati_da_app = set()
+    risultati_app = {}
+    n_giorni_senza_app = n_giorni
+    
+    for g_app in sorted(app_per_giorno.keys()):
+        if g_app not in giorni_calcolo:
+            continue
+        tappe_app = app_per_giorno[g_app]
+        giorni_con_app.add(g_app)
+        n_giorni_senza_app -= 1
+        
+        # Baricentro degli appuntamenti del giorno
+        app_lat = sum(t['lat'] for t in tappe_app) / len(tappe_app)
+        app_lon = sum(t['lon'] for t in tappe_app) / len(tappe_app)
+        
+        slot = max_visite - len(tappe_app)
+        
+        # Prendi dal pool INTERO i clienti più vicini all'appuntamento
+        candidati = [c for c in pool if c['nome'] not in nomi_usati_da_app]
+        candidati.sort(key=lambda c: (haversine(c['lat'], c['lon'], app_lat, app_lon), -c['urgenza']))
+        selezionati = candidati[:slot]
+        
+        for c in selezionati:
+            nomi_usati_da_app.add(c['nome'])
+        
+        risultati_app[g_app] = selezionati
+    
+    # ========================================
+    # 5c. K-MEANS SUL POOL RIMANENTE (giorni senza app)
+    # ========================================
+    pool_rimanente = [c for c in pool if c['nome'] not in nomi_usati_da_app]
+    n_zone = max(1, n_giorni_senza_app)
+    
+    if len(pool_rimanente) >= n_zone and n_zone > 0:
+        zone_raw, zone_centers = kmeans_geo(pool_rimanente, n_zone)
+    elif pool_rimanente:
+        zone_raw = [pool_rimanente] + [[] for _ in range(n_zone - 1)]
+        zone_centers = [(pool_rimanente[0]['lat'], pool_rimanente[0]['lon'])] + [(base_lat, base_lon)] * (n_zone - 1)
     else:
-        zone_raw = [[] for _ in range(n_giorni)]
-        zone_centers = [(base_lat, base_lon)] * n_giorni
+        zone_raw = [[] for _ in range(n_zone)]
+        zone_centers = [(base_lat, base_lon)] * n_zone
     
     # Le zone contengono TUTTI i clienti del pool raggruppati per vicinanza.
     # Lo step 11 selezionerà i max_visite più urgenti per ogni zona.
@@ -1338,35 +1381,18 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         zone_info = zone_info[shift:] + zone_info[:shift]
     
     # ========================================
-    # 7. ROTAZIONE SETTIMANALE
+    # 7. ROTAZIONE SETTIMANALE (solo giorni senza app)
     # ========================================
-    offset = numero_settimana % n_giorni
+    offset = numero_settimana % max(1, n_zone)
     
     assegnazione = {}
-    for idx, g in enumerate(giorni_calcolo):
-        z_idx = (idx + offset) % n_giorni
-        assegnazione[g] = zone_info[z_idx]
-    
-    # ========================================
-    # 8. APPUNTAMENTO ÀNCORA — SWAP zone
-    # ========================================
-    for g_app, tappe_app in app_per_giorno.items():
-        if g_app not in assegnazione:
-            continue
-        for t in tappe_app:
-            best_g, best_d = None, float('inf')
-            for g, zi in assegnazione.items():
-                if g == g_app:
-                    continue
-                cx, cy = zi['center']
-                d = haversine(t['lat'], t['lon'], cx, cy)
-                if d < best_d:
-                    best_d = d
-                    best_g = g
-            if best_g is not None and best_d < haversine(t['lat'], t['lon'], 
-                    assegnazione[g_app]['center'][0], assegnazione[g_app]['center'][1]):
-                assegnazione[g_app], assegnazione[best_g] = assegnazione[best_g], assegnazione[g_app]
-                break
+    giorni_senza_app = [g for g in giorni_calcolo if g not in giorni_con_app]
+    for idx, g in enumerate(giorni_senza_app):
+        z_idx = (idx + offset) % max(1, len(zone_info))
+        if z_idx < len(zone_info):
+            assegnazione[g] = zone_info[z_idx]
+        else:
+            assegnazione[g] = {'clienti': [], 'center': (base_lat, base_lon)}
     
     # ========================================
     # 9-10. COSTRUISCI ANELLO PER OGNI GIORNO
@@ -1451,19 +1477,23 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     for giorno in giorni_calcolo:
         data_g = lunedi + timedelta(days=giorno)
         tappe_app = app_per_giorno.get(giorno, [])
-        zi = assegnazione.get(giorno, {'clienti': []})
         
-        slot = max_visite - len(tappe_app)
-        
-        # Le zone contengono GIÀ solo clienti del pool (da visitare questa settimana)
-        day_pool = list(zi['clienti'])
-        
-        # Ordina per: 1) urgenza (desc), 2) vicinanza al centroide zona (asc)
-        # Quando tutti hanno stessa urgenza, prende i più vicini al centro = giro compatto
-        cx, cy = zi.get('center', (base_lat, base_lon))
-        day_pool.sort(key=lambda c: (-c['urgenza'], haversine(c['lat'], c['lon'], cx, cy)))
-        if len(day_pool) > slot:
-            day_pool = day_pool[:slot]
+        if giorno in risultati_app:
+            # === GIORNO CON APPUNTAMENTO ===
+            # L'appuntamento è il baricentro — clienti scelti per vicinanza
+            day_pool = risultati_app[giorno]
+        else:
+            # === GIORNO SENZA APPUNTAMENTO ===
+            # Usa la zona k-means, escludendo clienti già usati dai giorni con app
+            zi = assegnazione.get(giorno, {'clienti': [], 'center': (base_lat, base_lon)})
+            slot = max_visite - len(tappe_app)
+            
+            day_pool = [c for c in zi['clienti'] if c['nome'] not in nomi_usati_da_app]
+            
+            cx, cy = zi.get('center', (base_lat, base_lon))
+            day_pool.sort(key=lambda c: (-c['urgenza'], haversine(c['lat'], c['lon'], cx, cy)))
+            if len(day_pool) > slot:
+                day_pool = day_pool[:slot]
         
         giro = list(tappe_app) + day_pool
         
@@ -2666,14 +2696,12 @@ def main_app():
             st.divider()
             st.write("**🎯 Come funziona l'algoritmo v10:**")
             st.markdown("""
-            1. **K-Means geografico** — Divide TUTTI i clienti in zone compatte (max ~60km di diametro).
-            2. **Filtro frequenza** — Solo clienti scaduti o in scadenza questa settimana.
-            3. **1 zona = 1 giorno** — Ogni giorno copre una zona geografica specifica.
-            4. **Urgenza** — I clienti più urgenti di ogni zona vengono visitati per primi.
-            5. **ANELLO ottimale** — 3 strategie (sweep, farthest-first, angolare) + 2-opt.
-            6. **Google Maps** — Riordina con tempi stradali reali + mostra percorso su mappa.
-            7. **Rotazione settimanale** — Le zone ruotano tra i giorni ogni settimana.
-            8. **Rigenera** — Shift della rotazione zone ↔ giorni.
+            1. **Appuntamento = baricentro** — Se hai un appuntamento, tutte le visite del giorno ruotano intorno a lui: vengono scelti i clienti più vicini all'appuntamento.
+            2. **Pool 10 giorni** — Clienti scaduti o in scadenza nei prossimi 10 giorni.
+            3. **K-Means geografico** — I giorni senza appuntamento usano zone geografiche compatte.
+            4. **Google Maps** — Riordina con tempi stradali reali + mostra percorso su mappa.
+            5. **Rotazione settimanale** — Le zone ruotano tra i giorni ogni settimana.
+            6. **Rigenera** — Shift della rotazione zone ↔ giorni.
             """)
             
             st.divider()
@@ -2958,11 +2986,11 @@ def main_app():
             with st.expander("ℹ️ Come funziona l'ottimizzazione"):
                 st.markdown("""
                 **L'algoritmo v10 considera:**
-                - 📍 **Zone compatte**: K-Means raggruppa i clienti da visitare in zone geografiche vicine
+                - 📌 **Appuntamento = baricentro**: le visite del giorno ruotano intorno all'appuntamento
+                - 📍 **Zone compatte**: K-Means raggruppa i clienti in zone geografiche vicine
                 - 🛣️ **Distanze reali**: Google Maps calcola tempi su strade vere
-                - 🔄 **Ordine ottimale**: TSP Held-Karp trova il giro più corto possibile
-                - ⏰ **Orari di lavoro** e pausa pranzo
-                - 🚨 **Priorità clienti** (scaduti da più tempo = visitati prima)
+                - 🔄 **Ordine ottimale**: TSP Held-Karp trova il giro più corto
+                - ⏰ **Pool 10 giorni**: clienti scaduti o in scadenza entro 10gg
                 - 🔃 **Rotazione settimanale**: le zone ruotano tra i giorni
                 
                 Ogni cliente appare **una sola volta** nella settimana!
