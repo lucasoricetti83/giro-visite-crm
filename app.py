@@ -61,6 +61,7 @@ def restore_session_from_url():
 SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
 LOCATIONIQ_KEY = st.secrets.get("LOCATIONIQ_KEY", "")
+GOOGLE_MAPS_API_KEY = st.secrets.get("GOOGLE_MAPS_API_KEY", "")
 ADMIN_EMAIL = st.secrets.get("ADMIN_EMAIL", "")
 
 # Verifica che i secrets siano configurati
@@ -1049,25 +1050,16 @@ def clear_gps_from_url():
         if key in st.query_params:
             del st.query_params[key]
 
-# --- 5. CALCOLO GIRO OTTIMIZZATO (v8 — SETTORI ANGOLARI + ANELLI) ---
+# --- 5. CALCOLO GIRO OTTIMIZZATO (v8 — CLUSTER CITTÀ + ANELLI) ---
 def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, variante=0):
     """
-    ALGORITMO v8 — Settori angolari + costruzione anelli.
+    ALGORITMO v8 — Cluster per città + costruzione anelli.
     
-    Regole apprese dai giri reali dell'utente:
-    1. Un giorno = UNA DIRETTRICE dalla base (non mescolare zone)
-    2. Costruisci ANELLI (circuiti): vai al lontano, lavora tornando
-    3. Clienti vicini TUTTI nello stesso giorno
-    4. Il RITORNO conta: minimizza il circuito completo
-    
-    PASSI:
-      1. Filtra: frequenza rigorosa
-      2. Calcola ANGOLO di ogni cliente dalla base
-      3. Ordina per angolo → taglia in N_GIORNI settori
-      4. Per ogni settore: costruisci ANELLO ottimale (3 strategie + 2-opt)
-      5. Rotazione settimanale: offset sul numero settimana ISO
-      6. Appuntamento: SWAP settore nel giorno giusto
-      7. Rigenera (variante): shift angolare dei settori
+    1. Raggruppa clienti per CITTÀ (stessa città = stesso giorno)
+    2. Catena NN tra baricentri → città vicine nello stesso giorno
+    3. Taglia catena in N_GIORNI segmenti bilanciati
+    4. Per ogni giorno: costruisci ANELLO (circuito ottimale)
+    5. Rotazione settimanale + appuntamento swap + rigenera
     """
     if df.empty:
         return {}
@@ -1133,6 +1125,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         if pd.isna(lat) or pd.isna(lon) or lat == 0 or lon == 0:
             continue
         
+        citta = str(r.get('citta', '') or '').strip().upper() or 'ALTRO'
         freq = int(r.get('frequenza_giorni', 30))
         ultima = r.get('ultima_visita')
         
@@ -1172,13 +1165,6 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         
         flat, flon = float(lat), float(lon)
         
-        # ANGOLO dalla base (0°=Est, 90°=Nord, 180°=Ovest, 270°=Sud)
-        dy = flat - base_lat
-        dx = flon - base_lon
-        angolo = math_degrees(atan2(dy, dx)) % 360
-        
-        citta = str(r.get('citta', '') or '').strip().upper() or 'ALTRO'
-        
         tutti.append({
             'id': r['id'],
             'nome': r['nome_cliente'],
@@ -1188,7 +1174,6 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             'cell': str(r.get('cellulare', '')),
             'app': app_parsed,
             'dist_base': haversine(base_lat, base_lon, flat, flon),
-            'angolo': angolo,
             'urgenza': urgenza,
             'giorni_ritardo': giorni_ritardo,
             'frequenza': freq,
@@ -1272,70 +1257,120 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         return agenda
     
     # ========================================
-    # 5. SETTORI ANGOLARI
+    # 5. RAGGRUPPA PER CITTÀ
     # ========================================
-    pool_sorted = sorted(pool, key=lambda c: c['angolo'])
+    gruppi_citta = defaultdict(list)
+    for c in pool:
+        gruppi_citta[c['citta']].append(c)
     
-    # Variante (Rigenera): shift angolare
-    if variante > 0 and pool_sorted:
-        shift_pct = (variante * 37) % 100  # shift diverso per ogni variante
-        shift_n = max(1, len(pool_sorted) * shift_pct // 100)
-        pool_sorted = pool_sorted[shift_n:] + pool_sorted[:shift_n]
+    zone_citta = []
+    for citta, members in gruppi_citta.items():
+        avg_lat = sum(c['lat'] for c in members) / len(members)
+        avg_lon = sum(c['lon'] for c in members) / len(members)
+        zone_citta.append({
+            'citta': citta,
+            'clienti': members,
+            'n': len(members),
+            'avg_lat': avg_lat,
+            'avg_lon': avg_lon,
+            'dist_base': haversine(base_lat, base_lon, avg_lat, avg_lon)
+        })
     
-    # Taglia in N_GIORNI settori bilanciati per numero clienti
-    per_settore = max(1, len(pool_sorted) // n_giorni)
-    settori = []
-    for i in range(n_giorni):
-        start = i * per_settore
-        if i == n_giorni - 1:
-            settori.append(pool_sorted[start:])
+    # ========================================
+    # 6. CATENA NN TRA BARICENTRI CITTÀ
+    # ========================================
+    remaining_z = list(zone_citta)
+    chain = []
+    pos_lat, pos_lon = base_lat, base_lon
+    while remaining_z:
+        min_d = float('inf')
+        best = -1
+        for idx, z in enumerate(remaining_z):
+            d = haversine(pos_lat, pos_lon, z['avg_lat'], z['avg_lon'])
+            if d < min_d:
+                min_d = d
+                best = idx
+        picked = remaining_z.pop(best)
+        chain.append(picked)
+        pos_lat, pos_lon = picked['avg_lat'], picked['avg_lon']
+    
+    # ========================================
+    # 7. VARIANTE (Rigenera): modifica la catena
+    # ========================================
+    if variante > 0 and len(chain) > 1:
+        if variante % 3 == 1:
+            chain = list(reversed(chain))
+        elif variante % 3 == 2:
+            mid = len(chain) // 2
+            chain = chain[mid:] + chain[:mid]
         else:
-            settori.append(pool_sorted[start:start + per_settore])
+            third = max(1, len(chain) // 3)
+            chain = chain[third:] + chain[:third]
     
     # ========================================
-    # 6. ROTAZIONE SETTIMANALE
+    # 8. TAGLIA CATENA IN SEGMENTI BILANCIATI
+    # ========================================
+    def taglia_bilanciato(catena, n_seg):
+        if not catena:
+            return [[] for _ in range(n_seg)]
+        totale = sum(z['n'] for z in catena)
+        soglia = totale / n_seg if n_seg > 0 else totale
+        segmenti = []
+        seg_corrente = []
+        conta = 0
+        for z in catena:
+            if conta + z['n'] > soglia * 1.3 and conta > 0 and len(segmenti) < n_seg - 1:
+                segmenti.append(seg_corrente)
+                seg_corrente = []
+                conta = 0
+            seg_corrente.append(z)
+            conta += z['n']
+        if seg_corrente:
+            segmenti.append(seg_corrente)
+        while len(segmenti) < n_seg:
+            segmenti.append([])
+        while len(segmenti) > n_seg:
+            segmenti[-2].extend(segmenti[-1])
+            segmenti.pop()
+        return segmenti
+    
+    segmenti = taglia_bilanciato(chain, n_giorni)
+    
+    # ========================================
+    # 9. ROTAZIONE SETTIMANALE
     # ========================================
     offset = numero_settimana % n_giorni
     
-    assegnazione = {}  # giorno_calcolo → settore
+    assegnazione = {}
     for idx, g in enumerate(giorni_calcolo):
-        s_idx = (idx + offset) % n_giorni
-        assegnazione[g] = settori[s_idx] if s_idx < len(settori) else []
+        seg_idx = (idx + offset) % n_giorni
+        assegnazione[g] = segmenti[seg_idx]
     
     # ========================================
-    # 7. APPUNTAMENTO ÀNCORA — SWAP settori
+    # 10. APPUNTAMENTO ÀNCORA — SWAP segmenti
     # ========================================
     for g_app, tappe_app in app_per_giorno.items():
         if g_app not in assegnazione:
             continue
-        
-        # Trova l'angolo medio dell'appuntamento
-        ang_app = sum(c['angolo'] for c in tappe_app) / len(tappe_app)
-        
-        # Trova quale giorno ha il settore con angolo più vicino
-        giorno_piu_vicino = None
-        min_diff = 999
-        for g, sett in assegnazione.items():
-            if not sett:
-                continue
-            ang_sett = sum(c['angolo'] for c in sett) / len(sett)
-            diff = abs(ang_sett - ang_app)
-            if diff > 180:
-                diff = 360 - diff
-            if diff < min_diff:
-                min_diff = diff
-                giorno_piu_vicino = g
-        
-        # SWAP
-        if giorno_piu_vicino is not None and giorno_piu_vicino != g_app:
-            assegnazione[g_app], assegnazione[giorno_piu_vicino] = \
-                assegnazione[giorno_piu_vicino], assegnazione[g_app]
+        citta_app = set()
+        for t in tappe_app:
+            citta_app.add(t.get('citta', 'ALTRO'))
+        giorno_con_citta = None
+        for g, seg in assegnazione.items():
+            for z in seg:
+                if z['citta'] in citta_app:
+                    giorno_con_citta = g
+                    break
+            if giorno_con_citta is not None:
+                break
+        if giorno_con_citta is not None and giorno_con_citta != g_app:
+            assegnazione[g_app], assegnazione[giorno_con_citta] = \
+                assegnazione[giorno_con_citta], assegnazione[g_app]
     
     # ========================================
-    # 8. COSTRUISCI ANELLO PER OGNI GIORNO
+    # 11. COSTRUISCI ANELLO PER OGNI GIORNO
     # ========================================
     def circuito_dist(percorso, blat, blon):
-        """Distanza totale circuito base → clienti → base."""
         if not percorso:
             return 0
         d = haversine(blat, blon, percorso[0]['lat'], percorso[0]['lon'])
@@ -1346,7 +1381,6 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         return d
     
     def due_opt(percorso, blat, blon):
-        """2-opt aggressivo sul circuito completo."""
         if len(percorso) < 3:
             return percorso
         p = list(percorso)
@@ -1367,18 +1401,16 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 if improved:
                     break
             it += 1
-        # Prova anche il senso opposto
         p_rev = list(reversed(p))
         if circuito_dist(p_rev, blat, blon) < circuito_dist(p, blat, blon):
             p = p_rev
         return p
     
     def costruisci_anello(clienti_g, blat, blon):
-        """Costruisce il miglior anello provando 3 strategie + 2-opt."""
         if len(clienti_g) <= 2:
             return sorted(clienti_g, key=lambda c: -c['dist_base'])
         
-        # Strategia 1: Sweep angolare dal centroide
+        # Strategia 1: Sweep angolare dal centroide del gruppo
         cx = sum(c['lat'] for c in clienti_g) / len(clienti_g)
         cy = sum(c['lon'] for c in clienti_g) / len(clienti_g)
         s1 = sorted(clienti_g, key=lambda c: math_degrees(atan2(c['lat']-cx, c['lon']-cy)) % 360)
@@ -1386,24 +1418,23 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         # Strategia 2: Farthest-first, poi NN tornando
         farthest = max(clienti_g, key=lambda c: c['dist_base'])
         s2 = [farthest]
-        remaining = [c for c in clienti_g if c is not farthest]
+        rem = [c for c in clienti_g if c is not farthest]
         plat, plon = farthest['lat'], farthest['lon']
-        while remaining:
+        while rem:
             min_d = float('inf')
             best = -1
-            for idx, c in enumerate(remaining):
+            for idx, c in enumerate(rem):
                 d = haversine(plat, plon, c['lat'], c['lon'])
                 if d < min_d:
                     min_d = d
                     best = idx
-            picked = remaining.pop(best)
+            picked = rem.pop(best)
             s2.append(picked)
             plat, plon = picked['lat'], picked['lon']
         
         # Strategia 3: Sweep angolare dalla base
         s3 = sorted(clienti_g, key=lambda c: math_degrees(atan2(c['lat']-blat, c['lon']-blon)) % 360)
         
-        # 2-opt su ciascuna, prendi il migliore
         migliore = None
         migliore_d = float('inf')
         for strat in [s1, s2, s3]:
@@ -1412,45 +1443,42 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             if d < migliore_d:
                 migliore_d = d
                 migliore = opt
-        
         return migliore
     
     # ========================================
-    # 9. ASSEMBLA GIRO PER OGNI GIORNO
+    # 12. ASSEMBLA GIRO PER OGNI GIORNO
     # ========================================
     risultati = {}
     
     for giorno in giorni_calcolo:
         data_g = lunedi + timedelta(days=giorno)
         tappe_app = app_per_giorno.get(giorno, [])
-        settore = assegnazione.get(giorno, [])
+        seg = assegnazione.get(giorno, [])
         
-        # Slot disponibili = max_visite - appuntamenti
         slot = max_visite - len(tappe_app)
-        day_pool = list(settore)
+        day_pool = []
+        for z in seg:
+            day_pool.extend(z['clienti'])
         
-        # Se più clienti di slot, prendi i più urgenti
         if len(day_pool) > slot:
             day_pool.sort(key=lambda c: -c['urgenza'])
             day_pool = day_pool[:slot]
         
-        # Unisci appuntamenti + clienti per l'anello
-        giro_completo = list(tappe_app) + day_pool
+        giro = list(tappe_app) + day_pool
         
-        # Costruisci anello
-        if len(giro_completo) >= 3:
-            giro_completo = costruisci_anello(giro_completo, base_lat, base_lon)
-        elif len(giro_completo) == 2:
-            # Per 2 clienti: prova entrambi gli ordini
-            d1 = circuito_dist(giro_completo, base_lat, base_lon)
-            d2 = circuito_dist(list(reversed(giro_completo)), base_lat, base_lon)
+        # Costruisci ANELLO ottimale
+        if len(giro) >= 3:
+            giro = costruisci_anello(giro, base_lat, base_lon)
+        elif len(giro) == 2:
+            d1 = circuito_dist(giro, base_lat, base_lon)
+            d2 = circuito_dist(list(reversed(giro)), base_lat, base_lon)
             if d2 < d1:
-                giro_completo = list(reversed(giro_completo))
+                giro = list(reversed(giro))
         
-        risultati[giorno] = (data_g, giro_completo)
+        risultati[giorno] = (data_g, giro)
     
     # ========================================
-    # 10. CALCOLO ORARI
+    # 13. CALCOLO ORARI
     # ========================================
     for giorno in giorni_calcolo:
         data_g, giro = risultati.get(giorno, (lunedi + timedelta(days=giorno), []))
@@ -1561,8 +1589,8 @@ def main_app():
         st.divider()
         
         # === MENU NAVIGAZIONE (nella sidebar) ===
-        menu_keys =   ["🚀 Giro Oggi", "📊 Dashboard", "📅 Agenda", "🗺️ Mappa", "👤 Anagrafica", "➕ Nuovo", "⚙️ Config"]
-        menu_labels = ["🚀 Giro Oggi", "📊 Dashboard", "📅 Agenda", "🗺️ Mappa", "👤 Anagrafica", "➕ Nuovo Cliente", "⚙️ Configurazione"]
+        menu_keys =   ["🚀 Giro Oggi", "📊 Dashboard", "📅 Agenda", "🗺️ Mappa", "🧭 Routing", "👤 Anagrafica", "➕ Nuovo", "⚙️ Config"]
+        menu_labels = ["🚀 Giro Oggi", "📊 Dashboard", "📅 Agenda", "🗺️ Mappa", "🧭 Giro Google", "👤 Anagrafica", "➕ Nuovo Cliente", "⚙️ Configurazione"]
         
         current_key = st.session_state.get('active_tab', "🚀 Giro Oggi")
         # Se siamo in Admin, il radio punta a indice 0 ma NON deve sovrascrivere
@@ -2342,14 +2370,14 @@ def main_app():
             st.divider()
             st.write("**🎯 Come funziona l'algoritmo v8:**")
             st.markdown("""
-            1. **Filtro frequenza RIGOROSO** — Solo clienti scaduti o in scadenza questa settimana. Meglio giorni vuoti che visite anticipate.
-            2. **Settori ANGOLARI** — Ogni cliente ha un angolo dalla base. Clienti nella stessa DIRETTRICE = stesso giorno.
-            3. **Un giorno = una ZONA** — Non si mescolano direttrici diverse. Tutti i clienti di un giorno sono nella stessa direzione.
-            4. **ANELLO ottimale** — Ogni giro giornaliero è un CIRCUITO: vai al più lontano, lavori tornando, minimizzando il circuito completo (andata+visite+ritorno).
-            5. **3 strategie + 2-Opt** — Sweep angolare, farthest-first, sweep dalla base → il miglior circuito vince.
-            6. **Rotazione settimanale** — Ogni settimana i settori ruotano tra i giorni.
-            7. **Appuntamento ÀNCORA** — Il settore più vicino all'appuntamento viene spostato nel giorno giusto.
-            8. **Rigenera** — Shift angolare dei settori → giri completamente diversi.
+            1. **Filtro frequenza RIGOROSO** — Solo clienti scaduti o in scadenza questa settimana.
+            2. **Cluster per CITTÀ** — Clienti della stessa città restano SEMPRE nello stesso giorno.
+            3. **Catena NN tra città** — Le città vengono ordinate per prossimità geografica.
+            4. **Taglio bilanciato** — Città vicine nella catena = stesso giorno.
+            5. **ANELLO ottimale** — Ogni giro è un CIRCUITO: 3 strategie (sweep, farthest-first, angolare) + 2-opt aggressivo su andata+visite+ritorno.
+            6. **Rotazione settimanale** — I segmenti ruotano tra i giorni ogni settimana.
+            7. **Appuntamento ÀNCORA** — Il segmento con la città dell'appuntamento va nel giorno giusto.
+            8. **Rigenera** — Inversione o shift della catena → segmenti diversi.
             """)
             
             st.divider()
@@ -3119,6 +3147,456 @@ def main_app():
                 st.warning("⚠️ Nessun cliente trovato con i filtri selezionati")
         else:
             st.info("Nessun cliente da mostrare")
+    
+    # --- TAB: ROUTING GOOGLE ---
+    elif st.session_state.active_tab == "🧭 Routing":
+        st.header("🧭 Giro Ottimizzato con Google Maps")
+        
+        user_id = st.session_state.user.id
+        has_google = bool(GOOGLE_MAPS_API_KEY)
+        base_lat = float(config.get('lat_base', 0))
+        base_lon = float(config.get('lon_base', 0))
+        
+        if not has_google:
+            st.error("⚠️ **GOOGLE_MAPS_API_KEY non trovata.** Aggiungila in Streamlit Secrets.")
+            st.stop()
+        
+        if base_lat == 0 or base_lon == 0:
+            st.error("❌ Imposta le coordinate della base in ⚙️ Configurazione.")
+            st.stop()
+        
+        if df.empty:
+            st.warning("Nessun cliente caricato.")
+            st.stop()
+        
+        # --- Funzioni Google Maps inline ---
+        def _gm_request(method, url, **kwargs):
+            """Request con retry e backoff."""
+            kwargs.setdefault('timeout', 15)
+            for attempt in range(3):
+                try:
+                    resp = requests.request(method, url, **kwargs)
+                    if resp.status_code == 429 or resp.status_code >= 500:
+                        time_module.sleep(1.0 * (2 ** attempt))
+                        continue
+                    return resp
+                except requests.exceptions.Timeout:
+                    if attempt < 2:
+                        time_module.sleep(1.0 * (2 ** attempt))
+                        continue
+                    raise
+            return resp
+        
+        def google_route_matrix(points, api_key):
+            """Matrice NxN tempi/distanze via Google Routes API."""
+            url = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix"
+            wps = []
+            for p in points:
+                wps.append({"waypoint": {"location": {"latLng": {"latitude": p[0], "longitude": p[1]}}}})
+            body = {
+                "origins": wps, "destinations": wps,
+                "travelMode": "DRIVE",
+                "routingPreference": "TRAFFIC_AWARE"
+            }
+            headers = {
+                'Content-Type': 'application/json',
+                'X-Goog-Api-Key': api_key,
+                'X-Goog-FieldMask': 'originIndex,destinationIndex,duration,distanceMeters,status'
+            }
+            resp = _gm_request('POST', url, json=body, headers=headers)
+            if resp.status_code != 200:
+                return None, None
+            n = len(points)
+            dur = [[0]*n for _ in range(n)]
+            dist = [[0]*n for _ in range(n)]
+            for elem in resp.json():
+                i, j = elem.get('originIndex', 0), elem.get('destinationIndex', 0)
+                d_str = elem.get('duration', '0s')
+                dur[i][j] = int(d_str.rstrip('s')) if isinstance(d_str, str) else int(d_str)
+                dist[i][j] = int(elem.get('distanceMeters', 0))
+            return dur, dist
+        
+        def google_compute_route(origin, destination, waypoints, api_key):
+            """Percorso dettagliato con polyline via Google Routes API."""
+            url = "https://routes.googleapis.com/directions/v2:computeRoutes"
+            def mkwp(p):
+                return {"location": {"latLng": {"latitude": p[0], "longitude": p[1]}}}
+            body = {
+                "origin": {"waypoint": mkwp(origin)},
+                "destination": {"waypoint": mkwp(destination)},
+                "travelMode": "DRIVE",
+                "routingPreference": "TRAFFIC_AWARE",
+                "computeAlternativeRoutes": False,
+                "polylineEncoding": "ENCODED_POLYLINE"
+            }
+            if waypoints:
+                body["intermediates"] = [{"waypoint": mkwp(wp)} for wp in waypoints]
+            headers = {
+                'Content-Type': 'application/json',
+                'X-Goog-Api-Key': api_key,
+                'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters,'
+                                    'routes.polyline.encodedPolyline,'
+                                    'routes.legs.duration,routes.legs.distanceMeters'
+            }
+            resp = _gm_request('POST', url, json=body, headers=headers)
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+            routes = data.get('routes', [])
+            if not routes:
+                return None
+            r = routes[0]
+            dur_s = r.get('duration', '0s')
+            total_dur = int(dur_s.rstrip('s')) if isinstance(dur_s, str) else int(dur_s)
+            legs = []
+            for leg in r.get('legs', []):
+                ld = leg.get('duration', '0s')
+                legs.append({
+                    'dur_s': int(ld.rstrip('s')) if isinstance(ld, str) else int(ld),
+                    'dist_m': int(leg.get('distanceMeters', 0))
+                })
+            return {
+                'polyline': r.get('polyline', {}).get('encodedPolyline', ''),
+                'duration_s': total_dur,
+                'distance_m': int(r.get('distanceMeters', 0)),
+                'legs': legs
+            }
+        
+        def held_karp_tsp(dist_matrix, start=0):
+            """TSP esatto Held-Karp per ≤12 punti."""
+            n = len(dist_matrix)
+            if n <= 1: return [start], 0
+            if n == 2:
+                other = 1 - start
+                return [start, other], dist_matrix[start][other] + dist_matrix[other][start]
+            INF = float('inf')
+            dp = [[INF]*n for _ in range(1 << n)]
+            parent = [[-1]*n for _ in range(1 << n)]
+            dp[1 << start][start] = 0
+            for S in range(1 << n):
+                for u in range(n):
+                    if dp[S][u] == INF or not (S & (1 << u)): continue
+                    for v in range(n):
+                        if S & (1 << v): continue
+                        nS = S | (1 << v)
+                        nc = dp[S][u] + dist_matrix[u][v]
+                        if nc < dp[nS][v]:
+                            dp[nS][v] = nc
+                            parent[nS][v] = u
+            full = (1 << n) - 1
+            best_c, best_l = INF, -1
+            for u in range(n):
+                c = dp[full][u] + dist_matrix[u][start]
+                if c < best_c: best_c = c; best_l = u
+            path = []; S = full; u = best_l
+            while u != -1:
+                path.append(u)
+                prev = parent[S][u]
+                S ^= (1 << u)
+                u = prev
+            path.reverse()
+            if path[0] != start:
+                try:
+                    idx = path.index(start); path = path[idx:] + path[:idx]
+                except: path = [start] + path
+            return path, best_c
+        
+        def nn_2opt_tsp(dist_matrix, start=0):
+            """TSP euristica NN + 2-opt per >12 punti."""
+            n = len(dist_matrix)
+            visited = [False]*n; path = [start]; visited[start] = True
+            for _ in range(n-1):
+                cur = path[-1]; best_n, best_d = -1, float('inf')
+                for j in range(n):
+                    if not visited[j] and dist_matrix[cur][j] < best_d:
+                        best_d = dist_matrix[cur][j]; best_n = j
+                if best_n == -1: break
+                path.append(best_n); visited[best_n] = True
+            def rc(p):
+                c = sum(dist_matrix[p[i]][p[i+1]] for i in range(len(p)-1))
+                return c + dist_matrix[p[-1]][start]
+            improved = True
+            while improved:
+                improved = False; bc = rc(path)
+                for i in range(1, len(path)-1):
+                    for j in range(i+2, len(path)):
+                        np2 = path[:i+1] + path[i+1:j+1][::-1] + path[j+1:]
+                        if rc(np2) < bc - 1: path = np2; improved = True; break
+                    if improved: break
+            return path, rc(path)
+        
+        def decode_polyline(encoded):
+            """Decodifica polyline Google → [(lat, lon), ...]"""
+            pts = []; idx = 0; lat = 0; lng = 0
+            while idx < len(encoded):
+                for coord in ['lat', 'lng']:
+                    shift = 0; result = 0
+                    while True:
+                        b = ord(encoded[idx]) - 63; idx += 1
+                        result |= (b & 0x1F) << shift; shift += 5
+                        if b < 0x20: break
+                    delta = ~(result >> 1) if (result & 1) else (result >> 1)
+                    if coord == 'lat': lat += delta
+                    else: lng += delta
+                pts.append((lat/1e5, lng/1e5))
+            return pts
+        
+        # --- UI: Selezione clienti ---
+        df_valid = df[
+            (df['latitude'].notna()) & (df['longitude'].notna()) &
+            (df['latitude'] != 0) & (df['longitude'] != 0) &
+            (df.get('visitare', pd.Series(['SI']*len(df))).str.upper() == 'SI')
+        ].copy()
+        
+        if df_valid.empty:
+            st.warning("Nessun cliente con coordinate valide. Geocodifica prima i clienti.")
+            st.stop()
+        
+        # Selezione per agenda del giorno o manuale
+        mode = st.radio("Sorgente clienti:", ["📅 Da agenda del giorno", "✏️ Selezione manuale"], horizontal=True)
+        
+        selected_clients = []
+        
+        if mode == "📅 Da agenda del giorno":
+            sel_giorno = st.selectbox("Giorno:", ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato"])
+            g_map = {"Lunedì":0, "Martedì":1, "Mercoledì":2, "Giovedì":3, "Venerdì":4, "Sabato":5}
+            g_idx = g_map.get(sel_giorno, 0)
+            
+            # Calcola agenda se non già presente
+            if 'agenda_corrente' not in st.session_state:
+                agenda = calcola_agenda_settimanale(df, config, settimana_offset=0)
+                st.session_state.agenda_corrente = agenda
+            
+            agenda = st.session_state.agenda_corrente
+            tappe = agenda.get(g_idx, [])
+            
+            if tappe:
+                nomi_agenda = [t['nome_cliente'] for t in tappe]
+                st.success(f"📋 {len(tappe)} clienti in agenda per {sel_giorno}")
+                for t in tappe:
+                    st.caption(f"  • {t['nome_cliente']} — {t.get('citta', '')}")
+                
+                for t in tappe:
+                    row = df_valid[df_valid['nome_cliente'] == t['nome_cliente']]
+                    if not row.empty:
+                        r = row.iloc[0]
+                        selected_clients.append({
+                            'nome': r['nome_cliente'],
+                            'lat': float(r['latitude']),
+                            'lon': float(r['longitude']),
+                            'ind': r.get('indirizzo', ''),
+                            'citta': r.get('citta', '')
+                        })
+            else:
+                st.info(f"Nessun cliente in agenda per {sel_giorno}. Prova la selezione manuale.")
+        else:
+            nomi = df_valid['nome_cliente'].tolist()
+            selected = st.multiselect("Seleziona clienti (9-10 consigliati):", options=nomi, max_selections=15)
+            for nome in selected:
+                row = df_valid[df_valid['nome_cliente'] == nome].iloc[0]
+                selected_clients.append({
+                    'nome': row['nome_cliente'],
+                    'lat': float(row['latitude']),
+                    'lon': float(row['longitude']),
+                    'ind': row.get('indirizzo', ''),
+                    'citta': row.get('citta', '')
+                })
+        
+        if len(selected_clients) < 2:
+            st.info("ℹ️ Seleziona almeno 2 clienti per calcolare il giro.")
+            st.stop()
+        
+        st.divider()
+        
+        # --- Pulsanti ---
+        col_b1, col_b2 = st.columns(2)
+        with col_b1:
+            btn_calc = st.button("🚀 Calcola Giro Ottimizzato", use_container_width=True, type="primary")
+        with col_b2:
+            btn_recalc = st.button("🔄 Ricalcola", use_container_width=True)
+        
+        if btn_calc or btn_recalc or 'routing_result' in st.session_state:
+            if btn_calc or btn_recalc:
+                with st.spinner("⏳ Chiedo a Google Maps la matrice tempi reali..."):
+                    # Prepara punti: [BASE] + [clienti]
+                    pts = [(base_lat, base_lon)] + [(c['lat'], c['lon']) for c in selected_clients]
+                    n = len(pts)
+                    
+                    # STEP 1: Matrice tempi reali
+                    dur_matrix, dist_matrix = google_route_matrix(pts, GOOGLE_MAPS_API_KEY)
+                    
+                    if dur_matrix is None:
+                        st.error("❌ Errore nella Route Matrix. Verifica la API Key e che Routes API sia abilitata.")
+                        st.stop()
+                    
+                    st.success(f"✅ Matrice {n}×{n} ricevuta ({n*n} elementi)")
+                
+                with st.spinner("⏳ Calcolo ordine ottimale (TSP)..."):
+                    # STEP 2: TSP
+                    if n <= 12:
+                        order, total_cost = held_karp_tsp(dur_matrix, start=0)
+                        method = "Held-Karp (esatto)"
+                    else:
+                        order, total_cost = nn_2opt_tsp(dur_matrix, start=0)
+                        method = "NN + 2-Opt (euristica)"
+                    
+                    # Ordine clienti (salta indice 0 = base)
+                    ordered = []
+                    ordered_legs_idx = []
+                    for idx in order:
+                        if idx == 0: continue
+                        ci = idx - 1
+                        if 0 <= ci < len(selected_clients):
+                            ordered.append(selected_clients[ci])
+                            ordered_legs_idx.append(idx)
+                
+                with st.spinner("⏳ Calcolo percorso stradale..."):
+                    # STEP 3: Route dettagliata
+                    wps = [(c['lat'], c['lon']) for c in ordered]
+                    route = google_compute_route(
+                        (base_lat, base_lon),
+                        (base_lat, base_lon),
+                        wps,
+                        GOOGLE_MAPS_API_KEY
+                    )
+                
+                # Salva risultato
+                total_dist = route['distance_m'] if route else sum(dist_matrix[order[i]][order[(i+1) % len(order)]] for i in range(len(order)))
+                
+                st.session_state.routing_result = {
+                    'ordered': ordered,
+                    'order_indices': order,
+                    'total_dur_s': route['duration_s'] if route else total_cost,
+                    'total_dist_m': total_dist,
+                    'method': method,
+                    'route': route,
+                    'dur_matrix': dur_matrix,
+                    'dist_matrix': dist_matrix,
+                    'n': n
+                }
+            
+            # --- Mostra risultati ---
+            res = st.session_state.get('routing_result')
+            if res:
+                st.divider()
+                
+                # Metriche
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("🕐 Tempo totale", f"{res['total_dur_s']//60} min")
+                c2.metric("📏 Distanza", f"{res['total_dist_m']/1000:.1f} km")
+                c3.metric("📍 Tappe", f"{len(res['ordered'])}")
+                c4.metric("⚙️ Metodo", res['method'][:20])
+                
+                # Lista ordinata con dettagli tratta
+                st.subheader("📋 Ordine Visite Ottimizzato")
+                route_data = res.get('route')
+                legs = route_data.get('legs', []) if route_data else []
+                
+                for i, client in enumerate(res['ordered']):
+                    leg = legs[i] if i < len(legs) else {}
+                    dur_min = leg.get('dur_s', 0) // 60
+                    dist_km = round(leg.get('dist_m', 0) / 1000, 1)
+                    
+                    travel_info = f"🚗 {dur_min} min — {dist_km} km" if dur_min > 0 else ""
+                    
+                    if i == 0:
+                        st.markdown(f"🏠 **BASE** → {travel_info}")
+                    
+                    st.markdown(f"**{i+1}.** **{client['nome']}** — {client.get('citta', '')}\n"
+                               f"&nbsp;&nbsp;&nbsp;&nbsp;📍 {client.get('ind', '')[:60]}")
+                
+                # Ritorno
+                if legs and len(legs) > len(res['ordered']):
+                    last_leg = legs[-1]
+                    st.markdown(f"🏠 **RITORNO** — 🚗 {last_leg.get('dur_s',0)//60} min — "
+                               f"{round(last_leg.get('dist_m',0)/1000, 1)} km")
+                
+                # --- MAPPA ---
+                st.subheader("🗺️ Percorso su Mappa")
+                
+                ordered_pts = res['ordered']
+                polyline_enc = route_data.get('polyline', '') if route_data else ''
+                
+                if polyline_enc:
+                    # Mappa Google Maps JS
+                    all_lats = [base_lat] + [c['lat'] for c in ordered_pts]
+                    all_lons = [base_lon] + [c['lon'] for c in ordered_pts]
+                    cl = sum(all_lats)/len(all_lats)
+                    cn = sum(all_lons)/len(all_lons)
+                    
+                    markers_js = f"""
+                        new google.maps.Marker({{
+                            position: {{lat: {base_lat}, lng: {base_lon}}},
+                            map: map,
+                            icon: 'https://maps.google.com/mapfiles/ms/icons/green-dot.png',
+                            title: 'BASE', zIndex: 1000
+                        }});
+                    """
+                    for i, c in enumerate(ordered_pts):
+                        nm = c['nome'][:35].replace("'", "").replace('"', '')
+                        markers_js += f"""
+                        new google.maps.Marker({{
+                            position: {{lat: {c['lat']}, lng: {c['lon']}}},
+                            map: map,
+                            label: {{text: '{i+1}', color: 'white', fontWeight: 'bold'}},
+                            title: '{nm}'
+                        }});
+                        """
+                    
+                    bounds_js = f"bounds.extend({{lat: {base_lat}, lng: {base_lon}}});"
+                    for c in ordered_pts:
+                        bounds_js += f"bounds.extend({{lat: {c['lat']}, lng: {c['lon']}}});"
+                    
+                    map_html = f"""
+                    <div id="map" style="width:100%; height:500px; border-radius:12px;"></div>
+                    <script>
+                    function initMap() {{
+                        var map = new google.maps.Map(document.getElementById('map'), {{
+                            center: {{lat: {cl}, lng: {cn}}}, zoom: 9,
+                            mapTypeControl: false, streetViewControl: false
+                        }});
+                        {markers_js}
+                        var path = google.maps.geometry.encoding.decodePath('{polyline_enc}');
+                        new google.maps.Polyline({{
+                            path: path, geodesic: true,
+                            strokeColor: '#4285F4', strokeOpacity: 0.85, strokeWeight: 4
+                        }}).setMap(map);
+                        var bounds = new google.maps.LatLngBounds();
+                        {bounds_js}
+                        map.fitBounds(bounds, {{padding: 50}});
+                    }}
+                    </script>
+                    <script async defer
+                        src="https://maps.googleapis.com/maps/api/js?key={GOOGLE_MAPS_API_KEY}&libraries=geometry&callback=initMap">
+                    </script>
+                    """
+                    st.components.v1.html(map_html, height=520)
+                else:
+                    # Fallback Folium
+                    all_lats = [base_lat] + [c['lat'] for c in ordered_pts]
+                    all_lons = [base_lon] + [c['lon'] for c in ordered_pts]
+                    center = [sum(all_lats)/len(all_lats), sum(all_lons)/len(all_lons)]
+                    m = folium.Map(location=center, zoom_start=9, tiles='cartodbpositron')
+                    folium.Marker([base_lat, base_lon], popup='🏠 BASE',
+                        icon=folium.Icon(color='green', icon='home', prefix='fa')).add_to(m)
+                    for i, c in enumerate(ordered_pts):
+                        folium.Marker([c['lat'], c['lon']], popup=f"{i+1}. {c['nome']}",
+                            icon=folium.DivIcon(html=f'<div style="background:#4285F4;color:white;'
+                                f'border-radius:50%;width:28px;height:28px;text-align:center;'
+                                f'line-height:28px;font-weight:bold;font-size:13px;'
+                                f'border:2px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.3);">'
+                                f'{i+1}</div>')).add_to(m)
+                    coords = [[base_lat, base_lon]] + [[c['lat'], c['lon']] for c in ordered_pts] + [[base_lat, base_lon]]
+                    folium.PolyLine(coords, color='#4285F4', weight=3, opacity=0.7, dash_array='8').add_to(m)
+                    st_folium(m, width=None, height=500, returned_objects=[])
+                
+                # --- Link Google Maps ---
+                parts = [f"{base_lat},{base_lon}"]
+                for c in ordered_pts:
+                    parts.append(f"{c['lat']},{c['lon']}")
+                parts.append(f"{base_lat},{base_lon}")
+                gmaps_url = "https://www.google.com/maps/dir/" + "/".join(parts)
+                st.link_button("🧭 Apri in Google Maps (navigazione)", gmaps_url, use_container_width=True)
     
     # --- TAB: ANAGRAFICA ---
     elif st.session_state.active_tab == "👤 Anagrafica":
