@@ -2854,71 +2854,121 @@ def main_app():
                 return ferie_inizio <= data <= ferie_fine
             return False
         
-        # Crea colonne per i giorni lavorativi
+        # Crea vista mobile-friendly
         if giorni_attivi:
-            cols_giorni = st.columns(len(giorni_attivi))
             
             totale_visite_settimana = 0
             totale_km_settimana = 0
             
-            for col_idx, giorno_idx in enumerate(giorni_attivi):
+            # Pre-calcola dati per ogni giorno
+            dati_giorni = {}
+            for giorno_idx in giorni_attivi:
                 data_giorno = lunedi_selezionato + timedelta(days=giorno_idx)
                 tappe_giorno = agenda_settimana.get(giorno_idx, [])
                 is_ferie = is_giorno_ferie_agenda(data_giorno)
+                is_oggi = data_giorno == oggi
                 
-                with cols_giorni[col_idx]:
-                    # Header giorno
-                    is_oggi = data_giorno == oggi
-                    giorno_label = f"**{giorni_nomi_full[giorno_idx][:3]}**" if is_oggi else giorni_nomi_full[giorno_idx][:3]
-                    
-                    if is_ferie:
-                        st.subheader(f"🏖️ {giorno_label}")
-                    else:
-                        st.subheader(f"{'📍 ' if is_oggi else ''}{giorno_label}")
-                    st.caption(f"{data_giorno.strftime('%d/%m')}")
-                    
-                    # === PULSANTI AZIONE GIORNO ===
+                num_visite = len(tappe_giorno) if not is_ferie else 0
+                km_giorno = sum(t.get('distanza_km', 0) for t in tappe_giorno) if not is_ferie else 0
+                
+                if not is_ferie and tappe_giorno:
+                    totale_visite_settimana += num_visite
+                    totale_km_settimana += km_giorno
+                
+                dati_giorni[giorno_idx] = {
+                    'data': data_giorno,
+                    'tappe': tappe_giorno,
+                    'is_ferie': is_ferie,
+                    'is_oggi': is_oggi,
+                    'num_visite': num_visite,
+                    'km': km_giorno
+                }
+            
+            # === RIEPILOGO COMPATTO ORIZZONTALE (scrollabile su mobile) ===
+            html_cells = ""
+            for giorno_idx in giorni_attivi:
+                d = dati_giorni[giorno_idx]
+                nome_g = giorni_nomi_full[giorno_idx][:3].upper()
+                data_str = d['data'].strftime('%d/%m')
+                
+                if d['is_ferie']:
+                    bg = "#fff3cd"; border_color = "#ffc107"; icon = "🏖️"; info = "Ferie"
+                elif d['is_oggi']:
+                    bg = "#d4edda"; border_color = "#28a745"; icon = "📍"; info = f"{d['num_visite']} visite"
+                elif d['num_visite'] > 0:
+                    bg = "#e8f4fd"; border_color = "#4285F4"; icon = "🚗"; info = f"{d['num_visite']} visite"
+                else:
+                    bg = "#f8f9fa"; border_color = "#dee2e6"; icon = "📭"; info = "Vuoto"
+                
+                today_badge = "font-weight:bold;border-width:3px;" if d['is_oggi'] else ""
+                km_str = f"<div style='font-size:10px;color:#666;'>{d['km']:.0f}km</div>" if d['km'] > 0 else ""
+                
+                html_cells += f"""
+                <div style="flex:0 0 auto;min-width:70px;max-width:90px;padding:8px 6px;
+                    background:{bg};border:2px solid {border_color};border-radius:10px;
+                    text-align:center;{today_badge}">
+                    <div style="font-size:11px;font-weight:bold;">{nome_g}</div>
+                    <div style="font-size:10px;color:#666;">{data_str}</div>
+                    <div style="font-size:20px;margin:2px 0;">{icon}</div>
+                    <div style="font-size:11px;">{info}</div>
+                    {km_str}
+                </div>"""
+            
+            st.markdown(f"""
+            <div style="display:flex;gap:6px;overflow-x:auto;padding:8px 2px;
+                -webkit-overflow-scrolling:touch;">
+                {html_cells}
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.divider()
+            
+            # === DETTAGLIO PER GIORNO CON TABS ===
+            tab_labels = []
+            for giorno_idx in giorni_attivi:
+                d = dati_giorni[giorno_idx]
+                nome_g = giorni_nomi_full[giorno_idx][:3]
+                badge = "📍" if d['is_oggi'] else ("🏖️" if d['is_ferie'] else "")
+                n = d['num_visite']
+                tab_labels.append(f"{badge}{nome_g} ({n})" if n > 0 else f"{badge}{nome_g}")
+            
+            tabs = st.tabs(tab_labels)
+            
+            for tab_idx, giorno_idx in enumerate(giorni_attivi):
+                d = dati_giorni[giorno_idx]
+                data_giorno = d['data']
+                tappe_giorno = d['tappe']
+                is_ferie = d['is_ferie']
+                
+                with tabs[tab_idx]:
+                    # Pulsanti azione
                     col_btn1, col_btn2, col_btn3 = st.columns(3)
                     
                     with col_btn1:
-                        # Pulsante SCAMBIA
                         if st.session_state.giorno_da_scambiare is None:
-                            # Modalità selezione primo giorno
-                            if st.button("🔄", key=f"swap_{data_giorno}", help="Scambia visite", use_container_width=True):
+                            if st.button("🔄 Scambia", key=f"swap_{data_giorno}", use_container_width=True):
                                 st.session_state.giorno_da_scambiare = data_giorno
                                 st.rerun()
                         elif st.session_state.giorno_da_scambiare == data_giorno:
-                            # Questo è il giorno selezionato
-                            st.button("✅", key=f"swap_{data_giorno}", disabled=True, use_container_width=True)
+                            st.button("✅ Selezionato", key=f"swap_{data_giorno}", disabled=True, use_container_width=True)
                         else:
-                            # Modalità selezione secondo giorno
-                            if st.button("🔄➡️", key=f"swap_{data_giorno}", help=f"Scambia con {st.session_state.giorno_da_scambiare.strftime('%d/%m')}", use_container_width=True, type="primary"):
-                                # Esegui scambio
+                            if st.button(f"🔄➡️ Scambia", key=f"swap_{data_giorno}", type="primary", use_container_width=True):
                                 giorno1 = st.session_state.giorno_da_scambiare
                                 giorno2 = data_giorno
-                                
-                                # Calcola indici giorni
                                 idx1 = giorno1.weekday()
                                 idx2 = giorno2.weekday()
-                                
-                                # SALVA lo scambio in session_state
                                 chiave_settimana = lunedi_selezionato.isoformat()
                                 if chiave_settimana not in st.session_state.scambi_giorni:
                                     st.session_state.scambi_giorni[chiave_settimana] = []
-                                
-                                # Aggiungi lo scambio
                                 st.session_state.scambi_giorni[chiave_settimana].append((idx1, idx2))
-                                
                                 st.session_state.giorno_da_scambiare = None
-                                st.toast(f"✅ Scambio salvato: {giorni_nomi_full[idx1][:3]} ↔️ {giorni_nomi_full[idx2][:3]}")
+                                st.toast(f"✅ Scambio: {giorni_nomi_full[idx1][:3]} ↔️ {giorni_nomi_full[idx2][:3]}")
                                 time_module.sleep(0.3)
                                 st.rerun()
                     
                     with col_btn2:
-                        # Pulsante MAPPA - mostra giro del giorno sulla mappa
                         if tappe_giorno and not is_ferie:
-                            if st.button("🗺️", key=f"mappa_{data_giorno}", help="Vedi su mappa", use_container_width=True):
-                                # Ottimizza ordine con Google se disponibile
+                            if st.button("🗺️ Mappa", key=f"mappa_{data_giorno}", use_container_width=True):
                                 tappe_per_mappa = tappe_giorno
                                 route_per_mappa = None
                                 if GOOGLE_MAPS_API_KEY and len(tappe_giorno) >= 2:
@@ -2928,7 +2978,6 @@ def main_app():
                                         tappe_per_mappa, route_per_mappa = ottimizza_ordine_con_google(
                                             tappe_giorno, blat, blon, GOOGLE_MAPS_API_KEY)
                                         st.session_state._route_info = route_per_mappa
-                                # Salva le tappe del giorno per la mappa
                                 st.session_state.mappa_giorno_selezionato = {
                                     'data': data_giorno,
                                     'tappe': tappe_per_mappa,
@@ -2937,71 +2986,57 @@ def main_app():
                                 st.session_state.active_tab = "🗺️ Mappa"
                                 st.rerun()
                         else:
-                            st.button("🗺️", key=f"mappa_{data_giorno}", disabled=True, use_container_width=True, help="Nessuna visita")
+                            st.button("🗺️ Mappa", key=f"mappa_{data_giorno}", disabled=True, use_container_width=True)
                     
                     with col_btn3:
-                        # Pulsante FERIE
                         if is_ferie and data_giorno in st.session_state.giorni_ferie_singoli:
-                            # È in ferie singolo - mostra pulsante per togliere
-                            if st.button("🔙", key=f"ferie_{data_giorno}", help="Togli ferie", use_container_width=True):
+                            if st.button("🔙 No ferie", key=f"ferie_{data_giorno}", use_container_width=True):
                                 st.session_state.giorni_ferie_singoli.remove(data_giorno)
                                 st.rerun()
                         elif not is_ferie:
-                            # Non è in ferie - mostra pulsante per mettere
-                            if st.button("🏖️", key=f"ferie_{data_giorno}", help="Metti in ferie", use_container_width=True):
+                            if st.button("🏖️ Ferie", key=f"ferie_{data_giorno}", use_container_width=True):
                                 st.session_state.giorni_ferie_singoli.append(data_giorno)
                                 st.rerun()
                         else:
-                            # È in ferie da range - pulsante disabilitato
-                            st.button("🏖️", key=f"ferie_{data_giorno}", disabled=True, use_container_width=True, help="In ferie (range)")
+                            st.button("🏖️ Ferie", key=f"ferie_{data_giorno}", disabled=True, use_container_width=True)
                     
-                    st.divider()
-                    
-                    # Mostra FERIE se è giorno di ferie
+                    # Contenuto giorno
                     if is_ferie:
                         st.warning("🏖️ **FERIE**")
                         continue
                     
-                    # Mostra tappe
                     if tappe_giorno:
                         num_app = sum(1 for t in tappe_giorno if '📌' in t.get('tipo_tappa', ''))
                         num_giro = len(tappe_giorno) - num_app
                         km_giorno = sum(t.get('distanza_km', 0) for t in tappe_giorno)
                         
+                        info_parts = []
                         if num_app > 0:
-                            st.info(f"📌 {num_app} appuntamenti")
+                            info_parts.append(f"📌 {num_app} app")
                         if num_giro > 0:
-                            st.success(f"🚗 {num_giro} visite")
+                            info_parts.append(f"🚗 {num_giro} visite")
                         if km_giorno > 0:
-                            st.caption(f"🛣️ ~{km_giorno:.0f} km")
+                            info_parts.append(f"🛣️ {km_giorno:.0f}km")
+                        st.caption(" · ".join(info_parts))
                         
-                        totale_visite_settimana += len(tappe_giorno)
-                        totale_km_settimana += km_giorno
-                        
-                        st.divider()
-                        
-                        for tappa in tappe_giorno[:8]:  # Max 8 per colonna
+                        for tappa in tappe_giorno[:10]:
                             with st.container(border=True):
                                 icona = "📌" if "📌" in tappa.get('tipo_tappa', '') else "🚗"
-                                st.caption(f"{icona} {tappa.get('ora_arrivo', '--:--')}")
-                                
-                                nome_display = tappa['nome_cliente'][:15] + "..." if len(tappa['nome_cliente']) > 15 else tappa['nome_cliente']
-                                if st.button(nome_display, key=f"ag_{data_giorno}_{tappa['nome_cliente']}", use_container_width=True):
-                                    st.session_state.cliente_selezionato = tappa['nome_cliente']
-                                    st.session_state.active_tab = "👤 Anagrafica"
-                                    st.rerun()
-                                
-                                # Mostra ritardo
                                 ritardo = tappa.get('ritardo', 0)
-                                if ritardo >= 14:
-                                    st.caption(f"🔴 +{ritardo}gg")
-                                elif ritardo >= 0:
-                                    st.caption(f"🟡 +{ritardo}gg")
-                                else:
-                                    st.caption(f"🟢 {ritardo}gg")
+                                badge = "🔴" if ritardo >= 14 else ("🟡" if ritardo >= 0 else "🟢")
+                                
+                                col_info, col_action = st.columns([4, 1])
+                                with col_info:
+                                    st.markdown(f"**{icona} {tappa['nome_cliente']}**")
+                                    st.caption(f"⏰ {tappa.get('ora_arrivo', '--:--')} · {badge} {ritardo:+d}gg · {tappa.get('distanza_km', 0)}km")
+                                with col_action:
+                                    if st.button("👤", key=f"ag_{data_giorno}_{tappa['nome_cliente']}", use_container_width=True):
+                                        st.session_state.cliente_selezionato = tappa['nome_cliente']
+                                        st.session_state.active_tab = "👤 Anagrafica"
+                                        st.rerun()
                         
-                        if len(tappe_giorno) > 8:
-                            st.caption(f"... +{len(tappe_giorno) - 8} altre")
+                        if len(tappe_giorno) > 10:
+                            st.caption(f"... +{len(tappe_giorno) - 10} altre")
                     else:
                         if data_giorno < oggi:
                             st.info("📅 Passato")
