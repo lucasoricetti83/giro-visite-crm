@@ -1313,35 +1313,9 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         zone_raw = [[] for _ in range(n_giorni)]
         zone_centers = [(base_lat, base_lon)] * n_giorni
     
-    # Bilancia: sposta clienti in eccesso verso la zona VICINA con spazio
-    for _ in range(5):  # max 5 passate
-        changed = False
-        for i, z in enumerate(zone_raw):
-            while len(z) > max_visite:
-                # Trova il cliente più lontano dal centroide
-                ci = zone_centers[i]
-                z.sort(key=lambda c: -haversine(c['lat'], c['lon'], ci[0], ci[1]))
-                candidate = z[0]
-                
-                # Trova la zona PIÙ VICINA a questo cliente che ha spazio
-                best_j, best_d = -1, float('inf')
-                for j in range(n_giorni):
-                    if j == i or len(zone_raw[j]) >= max_visite:
-                        continue
-                    d = haversine(candidate['lat'], candidate['lon'],
-                                  zone_centers[j][0], zone_centers[j][1])
-                    if d < best_d:
-                        best_d = d
-                        best_j = j
-                
-                if best_j == -1:
-                    break  # nessuna zona con spazio
-                
-                z.pop(0)
-                zone_raw[best_j].append(candidate)
-                changed = True
-        if not changed:
-            break
+    # Le zone contengono TUTTI i clienti del pool raggruppati per vicinanza.
+    # Lo step 11 selezionerà i max_visite più urgenti per ogni zona.
+    # NON bilanciare qui — spostare clienti tra zone crea giri assurdi.
     
     # Ordina zone per angolo dalla base (così sono geograficamente ordinate)
     zone_info = []
@@ -1484,8 +1458,10 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         # Le zone contengono GIÀ solo clienti del pool (da visitare questa settimana)
         day_pool = list(zi['clienti'])
         
-        # Ordina per urgenza e prendi i più urgenti
-        day_pool.sort(key=lambda c: -c['urgenza'])
+        # Ordina per: 1) urgenza (desc), 2) vicinanza al centroide zona (asc)
+        # Quando tutti hanno stessa urgenza, prende i più vicini al centro = giro compatto
+        cx, cy = zi.get('center', (base_lat, base_lon))
+        day_pool.sort(key=lambda c: (-c['urgenza'], haversine(c['lat'], c['lon'], cx, cy)))
         if len(day_pool) > slot:
             day_pool = day_pool[:slot]
         
