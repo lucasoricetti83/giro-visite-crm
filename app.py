@@ -1257,14 +1257,14 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         return agenda
     
     # ========================================
-    # 5. K-MEANS GEOGRAFICO → ZONE COMPATTE
+    # 5. K-MEANS GEOGRAFICO SUL POOL → ZONE COMPATTE
     # ========================================
     def kmeans_geo(punti, k, max_iter=50):
         """K-Means su (lat, lon). Ritorna lista di k gruppi."""
         if len(punti) <= k:
             return [[p] for p in punti] + [[] for _ in range(k - len(punti))]
         
-        # Init: scegli k punti ben distribuiti (farthest-first)
+        # Init: farthest-first per centri ben distribuiti
         centers = [(punti[0]['lat'], punti[0]['lon'])]
         for _ in range(k - 1):
             max_min_d, best = 0, 0
@@ -1301,22 +1301,53 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 break
             centers = new_centers
         
-        return clusters
+        return clusters, centers
     
-    # Cluster TUTTI i clienti con coordinate (non solo il pool!)
-    # Questo crea zone stabili settimana dopo settimana
-    tutti_con_coords = [c for c in tutti if c['nome'] not in nomi_app]
-    
-    if len(tutti_con_coords) >= n_giorni:
-        zone = kmeans_geo(tutti_con_coords, n_giorni)
+    # Cluster il POOL (clienti da visitare QUESTA settimana), non tutti
+    if len(pool) >= n_giorni:
+        zone_raw, zone_centers = kmeans_geo(pool, n_giorni)
+    elif pool:
+        zone_raw = [pool] + [[] for _ in range(n_giorni - 1)]
+        zone_centers = [(pool[0]['lat'], pool[0]['lon'])] + [(base_lat, base_lon)] * (n_giorni - 1)
     else:
-        zone = [tutti_con_coords] + [[] for _ in range(n_giorni - 1)]
+        zone_raw = [[] for _ in range(n_giorni)]
+        zone_centers = [(base_lat, base_lon)] * n_giorni
+    
+    # Bilancia: sposta clienti in eccesso verso la zona VICINA con spazio
+    for _ in range(5):  # max 5 passate
+        changed = False
+        for i, z in enumerate(zone_raw):
+            while len(z) > max_visite:
+                # Trova il cliente più lontano dal centroide
+                ci = zone_centers[i]
+                z.sort(key=lambda c: -haversine(c['lat'], c['lon'], ci[0], ci[1]))
+                candidate = z[0]
+                
+                # Trova la zona PIÙ VICINA a questo cliente che ha spazio
+                best_j, best_d = -1, float('inf')
+                for j in range(n_giorni):
+                    if j == i or len(zone_raw[j]) >= max_visite:
+                        continue
+                    d = haversine(candidate['lat'], candidate['lon'],
+                                  zone_centers[j][0], zone_centers[j][1])
+                    if d < best_d:
+                        best_d = d
+                        best_j = j
+                
+                if best_j == -1:
+                    break  # nessuna zona con spazio
+                
+                z.pop(0)
+                zone_raw[best_j].append(candidate)
+                changed = True
+        if not changed:
+            break
     
     # Ordina zone per angolo dalla base (così sono geograficamente ordinate)
     zone_info = []
-    for z in zone:
+    for i, z in enumerate(zone_raw):
         if not z:
-            zone_info.append({'clienti': [], 'angle': 999, 'center': (base_lat, base_lon)})
+            zone_info.append({'clienti': [], 'angle': 999 + i, 'center': zone_centers[i]})
             continue
         cx = sum(c['lat'] for c in z) / len(z)
         cy = sum(c['lon'] for c in z) / len(z)
@@ -1348,7 +1379,6 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     for g_app, tappe_app in app_per_giorno.items():
         if g_app not in assegnazione:
             continue
-        # Trova quale zona contiene la città dell'appuntamento
         for t in tappe_app:
             best_g, best_d = None, float('inf')
             for g, zi in assegnazione.items():
@@ -1361,17 +1391,11 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                     best_g = g
             if best_g is not None and best_d < haversine(t['lat'], t['lon'], 
                     assegnazione[g_app]['center'][0], assegnazione[g_app]['center'][1]):
-                # Swap zone
                 assegnazione[g_app], assegnazione[best_g] = assegnazione[best_g], assegnazione[g_app]
                 break
     
     # ========================================
-    # 9. SELEZIONA CLIENTI PIÙ URGENTI PER OGNI GIORNO
-    # ========================================
-    nomi_pool = set(c['nome'] for c in pool)
-    
-    # ========================================
-    # 10. COSTRUISCI ANELLO (ordine ottimale) PER OGNI GIORNO
+    # 9-10. COSTRUISCI ANELLO PER OGNI GIORNO
     # ========================================
     def circuito_dist(percorso, blat, blon):
         if not percorso:
@@ -1457,8 +1481,8 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         
         slot = max_visite - len(tappe_app)
         
-        # Filtra: solo clienti nel pool (urgenti questa settimana)
-        day_pool = [c for c in zi['clienti'] if c['nome'] in nomi_pool]
+        # Le zone contengono GIÀ solo clienti del pool (da visitare questa settimana)
+        day_pool = list(zi['clienti'])
         
         # Ordina per urgenza e prendi i più urgenti
         day_pool.sort(key=lambda c: -c['urgenza'])
@@ -2998,14 +3022,13 @@ def main_app():
             # Info algoritmo
             with st.expander("ℹ️ Come funziona l'ottimizzazione"):
                 st.markdown("""
-                **L'algoritmo v9 considera:**
-                - 📍 **Zone compatte**: ogni giorno copre un'area geografica limitata (max 40km dal centro)
-                - 🛣️ **Distanze reali**: Google Maps calcola tempi su strade vere, non in linea d'aria
+                **L'algoritmo v10 considera:**
+                - 📍 **Zone compatte**: K-Means raggruppa i clienti da visitare in zone geografiche vicine
+                - 🛣️ **Distanze reali**: Google Maps calcola tempi su strade vere
                 - 🔄 **Ordine ottimale**: TSP Held-Karp trova il giro più corto possibile
                 - ⏰ **Orari di lavoro** e pausa pranzo
                 - 🚨 **Priorità clienti** (scaduti da più tempo = visitati prima)
-                - 🏘️ **Stessa città = stesso giorno** (mai separati)
-                - ❌ **Outlier rimossi**: clienti troppo lontani dalla zona vengono rinviati
+                - 🔃 **Rotazione settimanale**: le zone ruotano tra i giorni
                 
                 Ogni cliente appare **una sola volta** nella settimana!
                 """)
