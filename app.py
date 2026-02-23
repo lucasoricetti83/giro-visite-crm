@@ -4,7 +4,6 @@ import folium
 from streamlit_folium import st_folium
 from datetime import datetime, timedelta, time
 from math import radians, cos, sin, asin, sqrt
-import math
 import io
 import re
 import time as time_module
@@ -14,6 +13,219 @@ from supabase import create_client, Client
 
 # --- 1. CONFIGURAZIONE ---
 st.set_page_config(page_title="Giro Visite CRM Pro", layout="wide", page_icon="🚀")
+
+# --- CSS MOBILE-FIRST ULTRA COMPATTO ---
+st.markdown("""
+<style>
+    /* === RESET E BASE === */
+    .block-container {
+        padding: 0.3rem 0.5rem 0 0.5rem !important;
+        max-width: 100% !important;
+    }
+    header[data-testid="stHeader"] { display: none !important; }
+    #MainMenu { display: none !important; }
+    footer { display: none !important; }
+    
+    /* === TITOLI MINIMI === */
+    h1 { font-size: 1.1rem !important; margin: 0 !important; }
+    h2 { font-size: 1rem !important; margin: 0 !important; }
+    h3 { font-size: 0.9rem !important; margin: 0 !important; }
+    p, li { margin: 0 !important; font-size: 0.85rem !important; }
+    
+    /* === BOTTONI TOUCH === */
+    .stButton > button {
+        padding: 0.4rem 0.6rem !important;
+        font-size: 0.8rem !important;
+        min-height: 38px !important;
+        border-radius: 8px !important;
+    }
+    .stButton { margin: 0 !important; }
+    
+    /* === EXPANDER MINIMO === */
+    .streamlit-expanderHeader {
+        font-size: 0.8rem !important;
+        padding: 0.3rem 0.5rem !important;
+        background: #f0f2f6 !important;
+        border-radius: 6px !important;
+    }
+    .streamlit-expanderContent { padding: 0.3rem !important; }
+    
+    /* === ELEMENTI ZERO MARGIN === */
+    .element-container { margin: 0 !important; padding: 0 !important; }
+    hr { margin: 0.2rem 0 !important; }
+    .stDivider { margin: 0.2rem 0 !important; }
+    [data-testid="column"] { padding: 0 0.1rem !important; }
+    
+    /* === SIDEBAR NASCOSTA SU MOBILE === */
+    @media (max-width: 768px) {
+        [data-testid="stSidebar"] { display: none !important; }
+    }
+    
+    /* === AGENDA STYLE - SFONDO RIGHE ORARIO === */
+    .agenda-container {
+        background: linear-gradient(to bottom, 
+            #fff 0px, #fff 39px, #e8e8e8 40px,
+            #fff 41px, #fff 79px, #e8e8e8 80px,
+            #fff 81px, #fff 119px, #e8e8e8 120px,
+            #fff 121px, #fff 159px, #e8e8e8 160px,
+            #fff 161px, #fff 199px, #e8e8e8 200px
+        );
+        background-size: 100% 200px;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 5px;
+        min-height: 400px;
+    }
+    
+    /* === TAPPA CLIENTE === */
+    .tappa {
+        background: #fff;
+        border-left: 4px solid #3498db;
+        border-radius: 6px;
+        padding: 8px 10px;
+        margin: 4px 0;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+    .tappa:hover { transform: translateX(3px); }
+    .tappa.visitato {
+        background: #d4edda;
+        border-left-color: #28a745;
+        opacity: 0.8;
+    }
+    .tappa.appuntamento {
+        border-left-color: #dc3545;
+        background: #fff5f5;
+    }
+    .tappa-ora {
+        font-size: 0.7rem;
+        color: #666;
+        font-weight: bold;
+    }
+    .tappa-nome {
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: #333;
+    }
+    .tappa-info {
+        font-size: 0.7rem;
+        color: #888;
+    }
+    
+    /* === AZIONI CLIENTE (nascoste di default) === */
+    .tappa-azioni {
+        display: flex;
+        gap: 8px;
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px solid #eee;
+    }
+    .tappa-azioni a, .tappa-azioni button {
+        flex: 1;
+        padding: 8px;
+        border-radius: 6px;
+        text-align: center;
+        text-decoration: none;
+        font-size: 1.2rem;
+        background: #f8f9fa;
+        border: 1px solid #ddd;
+    }
+    .tappa-azioni a:hover { background: #e9ecef; }
+    
+    /* === AGENDA SETTIMANALE === */
+    .week-grid {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 3px;
+        background: #f0f2f6;
+        border-radius: 8px;
+        padding: 3px;
+    }
+    .week-day {
+        background: white;
+        border-radius: 6px;
+        padding: 5px;
+        min-height: 150px;
+        font-size: 0.75rem;
+    }
+    .week-day-header {
+        font-weight: bold;
+        font-size: 0.8rem;
+        text-align: center;
+        padding: 3px;
+        background: #3498db;
+        color: white;
+        border-radius: 4px;
+        margin-bottom: 5px;
+    }
+    .week-day-header.oggi {
+        background: #e74c3c;
+    }
+    .week-cliente {
+        background: #f8f9fa;
+        border-radius: 4px;
+        padding: 3px 5px;
+        margin: 2px 0;
+        font-size: 0.7rem;
+        border-left: 3px solid #3498db;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    
+    /* === TABS MENU BOTTOM (MOBILE) === */
+    .bottom-nav {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: white;
+        border-top: 1px solid #ddd;
+        display: flex;
+        justify-content: space-around;
+        padding: 5px 0;
+        z-index: 1000;
+    }
+    .bottom-nav a {
+        text-decoration: none;
+        text-align: center;
+        color: #666;
+        font-size: 0.7rem;
+        padding: 5px 10px;
+    }
+    .bottom-nav a.active { color: #3498db; }
+    
+    /* === FORM COMPATTO === */
+    .stTextInput > div > div > input,
+    .stTextArea > div > div > textarea {
+        padding: 0.4rem !important;
+        font-size: 16px !important;
+    }
+    .stSelectbox > div > div { min-height: 36px !important; }
+    
+    /* === METRICHE INLINE === */
+    .stats-bar {
+        display: flex;
+        justify-content: space-between;
+        background: #f8f9fa;
+        padding: 6px 10px;
+        border-radius: 6px;
+        font-size: 0.8rem;
+        margin-bottom: 5px;
+    }
+    .stats-bar span { font-weight: bold; }
+    
+    /* === MOBILE ADJUSTMENTS === */
+    @media (max-width: 768px) {
+        .block-container { padding: 0.2rem 0.3rem 60px 0.3rem !important; }
+        .week-grid { grid-template-columns: repeat(5, 1fr); gap: 2px; }
+        .week-day { min-height: 120px; padding: 3px; }
+        .week-cliente { font-size: 0.65rem; }
+        h1 { font-size: 1rem !important; }
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # --- FUNZIONI PER PERSISTENZA SESSIONE ---
 def generate_session_token(user_id, email):
@@ -548,43 +760,19 @@ def admin_panel():
                             if approve_user(user['user_id']):
                                 st.success("✅ Trial attivato!")
                                 st.rerun()
-                    
-                    # === GESTIONE ABBONAMENTO CON DATA ===
-                    if status in ['trial', 'active', 'expired', 'blocked', 'pending']:
-                        with st.expander("📅 Gestisci Abbonamento"):
-                            # Mostra stato attuale
-                            if status == 'trial' and user.get('trial_end'):
-                                st.info(f"🎁 Trial fino al: **{user['trial_end']}**")
-                            elif status == 'active' and user.get('subscription_end'):
-                                st.info(f"✅ Abbonamento fino al: **{user['subscription_end']}**")
-                            
-                            # Data scadenza personalizzata
-                            default_date = datetime.now().date() + timedelta(days=365)
-                            if status == 'active' and user.get('subscription_end'):
-                                try:
-                                    se = user['subscription_end']
-                                    default_date = datetime.strptime(se, '%Y-%m-%d').date() if isinstance(se, str) else se
-                                except:
-                                    pass
-                            
-                            nuova_scadenza = st.date_input(
-                                "📅 Scadenza abbonamento:",
-                                value=default_date,
-                                min_value=datetime.now().date(),
-                                key=f"sub_date_{user['user_id']}"
-                            )
-                            
-                            if st.button("✅ Attiva/Prolunga Abbonamento", key=f"set_sub_{user['user_id']}", type="primary", use_container_width=True):
-                                update_user_subscription(user['user_id'], {
-                                    'status': 'active',
-                                    'approved': True,
-                                    'subscription_start': datetime.now().date().isoformat(),
-                                    'subscription_end': nuova_scadenza.isoformat(),
-                                    'blocked_reason': None
-                                })
-                                st.success(f"✅ Abbonamento attivo fino al {nuova_scadenza.strftime('%d/%m/%Y')}")
-                                time_module.sleep(1)
-                                st.rerun()
+                        
+                        # Attiva abbonamento
+                        if st.button("✅ Attiva Abbonamento", key=f"active_{user['user_id']}", use_container_width=True):
+                            today = datetime.now().date()
+                            update_user_subscription(user['user_id'], {
+                                'status': 'active',
+                                'approved': True,
+                                'subscription_start': today.isoformat(),
+                                'subscription_end': (today + timedelta(days=365)).isoformat(),
+                                'blocked_reason': None
+                            })
+                            st.success("✅ Abbonamento attivato (1 anno)!")
+                            st.rerun()
                     
                     if status in ['active', 'trial']:
                         # Blocca
@@ -938,42 +1126,32 @@ def batch_geocode(addresses, progress_callback=None):
         time_module.sleep(0.2)  # Rate limit LocationIQ free: 2 req/sec
     return results
 
-# --- GPS COMPONENT (FUNZIONANTE CON STREAMLIT) ---
-def render_gps_button(button_id, target_key="gps_coords"):
-    """
-    Componente GPS che comunica le coordinate a Streamlit tramite query params URL.
-    Le coordinate vengono scritte nell'URL e lette da Streamlit al prossimo rerun.
-    """
+# --- GPS COMPONENT ---
+def render_gps_button(button_id):
     html_code = f"""
-    <div id="gps-container-{button_id}" style="width:100%; font-family: sans-serif;">
-        <button id="btn-{button_id}" onclick="getLocation_{button_id}()" 
-                style="padding:14px 24px; background:linear-gradient(135deg, #FF4B4B, #E63946); 
-                       color:white; border:none; border-radius:10px; cursor:pointer; 
-                       font-size:16px; width:100%; font-weight:700; 
-                       box-shadow: 0 4px 12px rgba(230,57,70,0.3); transition: all 0.3s;">
-            📍 Rileva Posizione GPS
+    <div id="gps-container-{button_id}" style="width:100%;">
+        <button onclick="getLocation_{button_id}()" 
+                style="padding:12px 24px; background:#FF4B4B; color:white; border:none; 
+                       border-radius:8px; cursor:pointer; font-size:16px; width:100%; 
+                       font-weight:600; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+            🎯 Usa GPS Attuale
         </button>
-        <div id="status-{button_id}" style="margin-top:10px; font-size:14px; padding:10px; 
-                                            border-radius:8px; text-align:center; display:none;"></div>
+        <div id="status-{button_id}" style="margin-top:12px; font-size:14px; padding:8px; 
+                                            border-radius:4px; text-align:center;"></div>
     </div>
     
     <script>
     function getLocation_{button_id}() {{
         const status = document.getElementById('status-{button_id}');
-        const btn = document.getElementById('btn-{button_id}');
-        status.style.display = 'block';
         
         if (!navigator.geolocation) {{
-            status.innerHTML = '❌ Geolocalizzazione non supportata dal browser';
+            status.innerHTML = '❌ Geolocalizzazione non supportata';
             status.style.backgroundColor = '#ffebee';
             status.style.color = '#c62828';
             return;
         }}
         
-        btn.disabled = true;
-        btn.style.opacity = '0.6';
-        btn.innerHTML = '⏳ Acquisizione in corso...';
-        status.innerHTML = '🔄 Attendo segnale GPS... (consenti l\\'accesso alla posizione)';
+        status.innerHTML = '🔄 Acquisizione GPS...';
         status.style.backgroundColor = '#fff3e0';
         status.style.color = '#e65100';
         
@@ -981,91 +1159,42 @@ def render_gps_button(button_id, target_key="gps_coords"):
             function(position) {{
                 const lat = position.coords.latitude;
                 const lon = position.coords.longitude;
-                const acc = position.coords.accuracy;
                 
-                status.innerHTML = '✅ Posizione: ' + lat.toFixed(6) + ', ' + lon.toFixed(6) + ' (±' + Math.round(acc) + 'm)<br><b>Premi il pulsante qui sotto per confermare</b>';
+                status.innerHTML = '✅ GPS: ' + lat.toFixed(6) + ', ' + lon.toFixed(6);
                 status.style.backgroundColor = '#e8f5e9';
                 status.style.color = '#2e7d32';
-                btn.innerHTML = '✅ Posizione Acquisita';
-                btn.style.background = 'linear-gradient(135deg, #2e7d32, #4caf50)';
                 
-                // Scrivi coordinate nei query params dell'URL padre (Streamlit)
-                const url = new URL(window.parent.location.href);
-                url.searchParams.set('gps_lat', lat.toFixed(8));
-                url.searchParams.set('gps_lon', lon.toFixed(8));
-                url.searchParams.set('gps_acc', Math.round(acc).toString());
-                url.searchParams.set('gps_ts', Date.now().toString());
-                window.parent.history.replaceState(null, '', url.toString());
+                sessionStorage.setItem('gps_data_{button_id}', JSON.stringify({{
+                    latitude: lat,
+                    longitude: lon
+                }}));
             }},
             function(error) {{
-                let msg = '❌ ';
-                switch(error.code) {{
-                    case 1: msg += 'Permesso negato. Consenti la posizione nelle impostazioni del browser.'; break;
-                    case 2: msg += 'Posizione non disponibile. Verifica che il GPS sia attivo.'; break;
-                    case 3: msg += 'Timeout. Riprova in un luogo con migliore segnale GPS.'; break;
-                    default: msg += 'Errore sconosciuto.';
-                }}
-                status.innerHTML = msg;
+                status.innerHTML = '❌ Errore GPS';
                 status.style.backgroundColor = '#ffebee';
                 status.style.color = '#c62828';
-                btn.disabled = false;
-                btn.style.opacity = '1';
-                btn.innerHTML = '📍 Rileva Posizione GPS';
-                btn.style.background = 'linear-gradient(135deg, #FF4B4B, #E63946)';
             }},
-            {{ 
-                enableHighAccuracy: true, 
-                timeout: 30000, 
-                maximumAge: 0 
-            }}
+            {{ enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }}
         );
     }}
     </script>
     """
-    return st.components.v1.html(html_code, height=130)
+    return st.components.v1.html(html_code, height=100)
 
-def read_gps_from_url():
-    """Legge le coordinate GPS dai query params (scritti dal componente JS)"""
-    try:
-        lat = st.query_params.get("gps_lat")
-        lon = st.query_params.get("gps_lon")
-        acc = st.query_params.get("gps_acc")
-        ts = st.query_params.get("gps_ts")
-        
-        if lat and lon:
-            return {
-                'latitude': float(lat),
-                'longitude': float(lon),
-                'accuracy': int(acc) if acc else None,
-                'timestamp': int(ts) if ts else None
-            }
-    except (ValueError, TypeError):
-        pass
-    return None
-
-def clear_gps_from_url():
-    """Rimuove i dati GPS dall'URL mantenendo gli altri params"""
-    for key in ['gps_lat', 'gps_lon', 'gps_acc', 'gps_ts']:
-        if key in st.query_params:
-            del st.query_params[key]
-
-# --- 5. CALCOLO GIRO OTTIMIZZATO (v8 — CLUSTER CITTÀ + ANELLI) ---
+# --- 5. CALCOLO GIRO OTTIMIZZATO ---
 def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, variante=0):
     """
-    ALGORITMO v8 — Cluster per città + costruzione anelli.
-    
-    1. Raggruppa clienti per CITTÀ (stessa città = stesso giorno)
-    2. Catena NN tra baricentri → città vicine nello stesso giorno
-    3. Taglia catena in N_GIORNI segmenti bilanciati
-    4. Per ogni giorno: costruisci ANELLO (circuito ottimale)
-    5. Rotazione settimanale + appuntamento swap + rigenera
+    ALGORITMO CON:
+    1. SETTIMANE DIVERSE - Ogni settimana clienti diversi (rotazione)
+    2. ORDINE OTTIMIZZATO - 2-opt per evitare avanti-indietro
+    3. VARIANTE - Il pulsante Rigenera propone giri alternativi
     """
     if df.empty:
         return {}
     
-    from collections import defaultdict
-    from math import atan2, degrees as math_degrees
+    import random
     
+    # Parametri
     base_lat = float(config.get('lat_base', 41.9028))
     base_lon = float(config.get('lon_base', 12.4964))
     durata_visita = int(config.get('durata_visita', 45))
@@ -1100,19 +1229,15 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     pausa_da = get_time(config.get('pausa_inizio'), time(13, 0))
     pausa_a = get_time(config.get('pausa_fine'), time(14, 0))
     
+    # Date
     oggi = ora_italiana.date()
     lunedi = oggi - timedelta(days=oggi.weekday()) + timedelta(weeks=settimana_offset)
-    fine_settimana = lunedi + timedelta(days=6)
     
+    # Agenda vuota
     agenda = {g: [] for g in range(7)}
     
-    # Capacità giornaliera
-    ore = (datetime.combine(oggi, ora_fine) - datetime.combine(oggi, ora_inizio)).seconds / 3600
-    pausa_ore = (datetime.combine(oggi, pausa_a) - datetime.combine(oggi, pausa_da)).seconds / 3600
-    max_visite = max(4, min(10, int(ore - pausa_ore)))
-    
     # ========================================
-    # 1. RACCOGLI CLIENTI + PARSE APPUNTAMENTI
+    # 1. RACCOGLI CLIENTI VALIDI
     # ========================================
     tutti = []
     for _, r in df.iterrows():
@@ -1124,59 +1249,20 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         if pd.isna(lat) or pd.isna(lon) or lat == 0 or lon == 0:
             continue
         
-        citta = str(r.get('citta', '') or '').strip().upper() or 'ALTRO'
-        freq = int(r.get('frequenza_giorni', 30))
-        ultima = r.get('ultima_visita')
-        
-        if pd.isnull(ultima) or (hasattr(ultima, 'year') and ultima.year < 2001):
-            giorni_ritardo = 999
-            urgenza = 100.0
-            prossima_visita = None
-        else:
-            ultima_date = ultima.date() if hasattr(ultima, 'date') else ultima
-            if isinstance(ultima_date, str):
-                try:
-                    ultima_date = datetime.strptime(ultima_date[:10], '%Y-%m-%d').date()
-                except:
-                    ultima_date = oggi
-            prossima_visita = ultima_date + timedelta(days=freq)
-            giorni_ritardo = (lunedi - prossima_visita).days
-            if giorni_ritardo >= 0:
-                urgenza = min(100, 50 + (giorni_ritardo / max(freq, 1)) * 50)
-            else:
-                urgenza = max(0, 20 - abs(giorni_ritardo))
-        
-        # Parse appuntamento
-        app_raw = r.get('appuntamento')
-        app_parsed = None
-        if pd.notna(app_raw):
-            if hasattr(app_raw, 'date') and hasattr(app_raw, 'hour'):
-                app_parsed = app_raw
-            elif isinstance(app_raw, str) and app_raw.strip():
-                s = app_raw.strip()
-                for sl, fmt in [(16, '%Y-%m-%dT%H:%M'), (19, '%Y-%m-%dT%H:%M:%S'),
-                                (19, '%Y-%m-%d %H:%M:%S'), (10, '%Y-%m-%d')]:
-                    try:
-                        app_parsed = datetime.strptime(s[:sl], fmt)
-                        break
-                    except:
-                        continue
-        
-        flat, flon = float(lat), float(lon)
+        citta = str(r.get('citta', '') or '').strip().upper()
+        if not citta:
+            citta = 'ALTRO'
         
         tutti.append({
             'id': r['id'],
             'nome': r['nome_cliente'],
-            'lat': flat, 'lon': flon,
+            'lat': float(lat),
+            'lon': float(lon),
             'ind': r.get('indirizzo', ''),
             'citta': citta,
             'cell': str(r.get('cellulare', '')),
-            'app': app_parsed,
-            'dist_base': haversine(base_lat, base_lon, flat, flon),
-            'urgenza': urgenza,
-            'giorni_ritardo': giorni_ritardo,
-            'frequenza': freq,
-            'prossima_visita': prossima_visita
+            'app': r.get('appuntamento'),
+            'dist_base': haversine(base_lat, base_lon, float(lat), float(lon))
         })
     
     if not tutti:
@@ -1185,308 +1271,178 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     # ========================================
     # 2. GIORNI DISPONIBILI
     # ========================================
-    giorni_calcolo = []
+    giorni = []
     for g in giorni_lavorativi:
         data = lunedi + timedelta(days=g)
         in_ferie = ferie_attive and ferie_inizio and ferie_fine and ferie_inizio <= data <= ferie_fine
-        if not in_ferie:
-            giorni_calcolo.append(g)
-    
-    giorni = [g for g in giorni_calcolo
-              if (settimana_offset > 0 or (lunedi + timedelta(days=g)) >= oggi)]
+        if not in_ferie and (settimana_offset > 0 or data >= oggi):
+            giorni.append(g)
     
     if not giorni:
         return agenda
     
-    n_giorni = len(giorni_calcolo)
-    
     # ========================================
-    # 3. SEPARA APPUNTAMENTI
+    # 3. GESTISCI APPUNTAMENTI
     # ========================================
     app_per_giorno = {}
     nomi_app = set()
     
     for c in tutti:
         app = c.get('app')
-        if app is not None and hasattr(app, 'date'):
+        if pd.notna(app) and hasattr(app, 'date'):
             data_app = app.date()
             if lunedi <= data_app <= lunedi + timedelta(days=6):
                 g = data_app.weekday()
                 if g not in app_per_giorno:
                     app_per_giorno[g] = []
-                c['ora_app'] = app.strftime('%H:%M')
+                c['ora_app'] = app.strftime('%H:%M') if hasattr(app, 'strftime') else '09:00'
                 c['is_app'] = True
                 app_per_giorno[g].append(c)
                 nomi_app.add(c['nome'])
     
-    # ========================================
-    # 4. FILTRA PER FREQUENZA (RIGOROSO)
-    # ========================================
-    scaduti = []
-    mai_visitati = []
-    
-    for c in tutti:
-        if c['nome'] in nomi_app:
-            continue
-        pv = c.get('prossima_visita')
-        if pv is None:
-            mai_visitati.append(c)
-        elif pv <= fine_settimana:
-            scaduti.append(c)
-    
-    # Mai visitati: distribuisci gradualmente
-    mai_visitati.sort(key=lambda c: c['dist_base'])
-    cap_settimana = max_visite * n_giorni
-    slot_mv = max(0, cap_settimana - len(scaduti))
-    
-    numero_settimana = lunedi.isocalendar()[1]
-    if mai_visitati and slot_mv > 0:
-        n_blocchi = max(1, -(-len(mai_visitati) // slot_mv))
-        blocco = numero_settimana % n_blocchi
-        start = blocco * slot_mv
-        mv_sett = mai_visitati[start : start + slot_mv]
-        if len(mv_sett) < slot_mv and len(mai_visitati) > slot_mv:
-            mv_sett += mai_visitati[:slot_mv - len(mv_sett)]
-    else:
-        mv_sett = []
-    
-    pool = scaduti + mv_sett
-    
-    if not pool and not app_per_giorno:
-        return agenda
+    liberi = [c for c in tutti if c['nome'] not in nomi_app]
     
     # ========================================
-    # 5. RAGGRUPPA PER CITTÀ
+    # 4. MAX VISITE AL GIORNO
     # ========================================
-    gruppi_citta = defaultdict(list)
-    for c in pool:
-        gruppi_citta[c['citta']].append(c)
-    
-    zone_citta = []
-    for citta, members in gruppi_citta.items():
-        avg_lat = sum(c['lat'] for c in members) / len(members)
-        avg_lon = sum(c['lon'] for c in members) / len(members)
-        zone_citta.append({
-            'citta': citta,
-            'clienti': members,
-            'n': len(members),
-            'avg_lat': avg_lat,
-            'avg_lon': avg_lon,
-            'dist_base': haversine(base_lat, base_lon, avg_lat, avg_lon)
-        })
+    ore = (datetime.combine(oggi, ora_fine) - datetime.combine(oggi, ora_inizio)).seconds / 3600
+    pausa = (datetime.combine(oggi, pausa_a) - datetime.combine(oggi, pausa_da)).seconds / 3600
+    max_visite = max(4, min(10, int(ore - pausa)))
+    max_settimana = max_visite * len(giorni)
     
     # ========================================
-    # 6. CATENA NN TRA BARICENTRI CITTÀ
+    # 5. CALCOLA NUMERO SETTIMANE CICLO
     # ========================================
-    remaining_z = list(zone_citta)
-    chain = []
-    pos_lat, pos_lon = base_lat, base_lon
-    while remaining_z:
-        min_d = float('inf')
-        best = -1
-        for idx, z in enumerate(remaining_z):
-            d = haversine(pos_lat, pos_lon, z['avg_lat'], z['avg_lon'])
-            if d < min_d:
-                min_d = d
-                best = idx
-        picked = remaining_z.pop(best)
-        chain.append(picked)
-        pos_lat, pos_lon = picked['avg_lat'], picked['avg_lon']
+    tot_clienti = len(liberi)
+    num_settimane = max(1, (tot_clienti + max_settimana - 1) // max_settimana)
     
     # ========================================
-    # 7. VARIANTE (Rigenera): modifica la catena
+    # 6. ORDINA CLIENTI PER DISTANZA DALLA BASE
     # ========================================
-    if variante > 0 and len(chain) > 1:
-        if variante % 3 == 1:
-            chain = list(reversed(chain))
-        elif variante % 3 == 2:
-            mid = len(chain) // 2
-            chain = chain[mid:] + chain[:mid]
-        else:
-            third = max(1, len(chain) // 3)
-            chain = chain[third:] + chain[:third]
+    liberi.sort(key=lambda x: x['dist_base'])
     
     # ========================================
-    # 8. TAGLIA CATENA IN SEGMENTI BILANCIATI
+    # 7. SELEZIONA CLIENTI PER QUESTA SETTIMANA
     # ========================================
-    def taglia_bilanciato(catena, n_seg):
-        if not catena:
-            return [[] for _ in range(n_seg)]
-        totale = sum(z['n'] for z in catena)
-        soglia = totale / n_seg if n_seg > 0 else totale
-        segmenti = []
-        seg_corrente = []
-        conta = 0
-        for z in catena:
-            if conta + z['n'] > soglia * 1.3 and conta > 0 and len(segmenti) < n_seg - 1:
-                segmenti.append(seg_corrente)
-                seg_corrente = []
-                conta = 0
-            seg_corrente.append(z)
-            conta += z['n']
-        if seg_corrente:
-            segmenti.append(seg_corrente)
-        while len(segmenti) < n_seg:
-            segmenti.append([])
-        while len(segmenti) > n_seg:
-            segmenti[-2].extend(segmenti[-1])
-            segmenti.pop()
-        return segmenti
+    # Dividi in fasce di distanza e ruota
+    settimana_nel_ciclo = settimana_offset % num_settimane
     
-    segmenti = taglia_bilanciato(chain, n_giorni)
+    # Invece di prendere fette consecutive, prendiamo 1 ogni N
+    # Così ogni settimana abbiamo clienti sparsi geograficamente
+    clienti_settimana = []
+    for i, c in enumerate(liberi):
+        if i % num_settimane == settimana_nel_ciclo:
+            clienti_settimana.append(c)
     
     # ========================================
-    # 9. ROTAZIONE SETTIMANALE
+    # 8. VARIANTE: cambia ordine per giro diverso
     # ========================================
-    offset = numero_settimana % n_giorni
-    
-    assegnazione = {}
-    for idx, g in enumerate(giorni_calcolo):
-        seg_idx = (idx + offset) % n_giorni
-        assegnazione[g] = segmenti[seg_idx]
+    if variante > 0:
+        # Usa la variante come seed per mescolare
+        random.seed(variante * 12345)
+        random.shuffle(clienti_settimana)
     
     # ========================================
-    # 10. APPUNTAMENTO ÀNCORA — SWAP segmenti
+    # 9. FUNZIONE 2-OPT PER OTTIMIZZARE ORDINE
     # ========================================
-    for g_app, tappe_app in app_per_giorno.items():
-        if g_app not in assegnazione:
-            continue
-        citta_app = set()
-        for t in tappe_app:
-            citta_app.add(t.get('citta', 'ALTRO'))
-        giorno_con_citta = None
-        for g, seg in assegnazione.items():
-            for z in seg:
-                if z['citta'] in citta_app:
-                    giorno_con_citta = g
-                    break
-            if giorno_con_citta is not None:
-                break
-        if giorno_con_citta is not None and giorno_con_citta != g_app:
-            assegnazione[g_app], assegnazione[giorno_con_citta] = \
-                assegnazione[giorno_con_citta], assegnazione[g_app]
-    
-    # ========================================
-    # 11. COSTRUISCI ANELLO PER OGNI GIORNO
-    # ========================================
-    def circuito_dist(percorso, blat, blon):
-        if not percorso:
-            return 0
-        d = haversine(blat, blon, percorso[0]['lat'], percorso[0]['lon'])
-        for i in range(len(percorso) - 1):
-            d += haversine(percorso[i]['lat'], percorso[i]['lon'],
-                           percorso[i+1]['lat'], percorso[i+1]['lon'])
-        d += haversine(percorso[-1]['lat'], percorso[-1]['lon'], blat, blon)
-        return d
-    
-    def due_opt(percorso, blat, blon):
+    def ottimizza_2opt(percorso, lat_start, lon_start):
+        """Ottimizza l'ordine per minimizzare km ed evitare avanti-indietro"""
         if len(percorso) < 3:
             return percorso
-        p = list(percorso)
-        improved = True
-        it = 0
-        while improved and it < 500:
-            improved = False
-            best_d = circuito_dist(p, blat, blon)
-            for i in range(len(p) - 1):
-                for j in range(i + 2, len(p)):
-                    nuovo = p[:i+1] + p[i+1:j+1][::-1] + p[j+1:]
-                    d = circuito_dist(nuovo, blat, blon)
-                    if d < best_d - 0.01:
-                        p = nuovo
-                        best_d = d
-                        improved = True
+        
+        def distanza_totale(p):
+            if not p: return 0
+            d = haversine(lat_start, lon_start, p[0]['lat'], p[0]['lon'])
+            for i in range(len(p)-1):
+                d += haversine(p[i]['lat'], p[i]['lon'], p[i+1]['lat'], p[i+1]['lon'])
+            d += haversine(p[-1]['lat'], p[-1]['lon'], lat_start, lon_start)
+            return d
+        
+        percorso = list(percorso)
+        migliorato = True
+        iterazioni = 0
+        
+        while migliorato and iterazioni < 50:
+            migliorato = False
+            dist_attuale = distanza_totale(percorso)
+            
+            for i in range(len(percorso) - 1):
+                for j in range(i + 2, len(percorso)):
+                    # Prova a invertire la sezione tra i e j
+                    nuovo = percorso[:i+1] + percorso[i+1:j+1][::-1] + percorso[j+1:]
+                    nuova_dist = distanza_totale(nuovo)
+                    
+                    if nuova_dist < dist_attuale - 0.3:  # Migliora di almeno 300m
+                        percorso = nuovo
+                        migliorato = True
                         break
-                if improved:
+                if migliorato:
                     break
-            it += 1
-        p_rev = list(reversed(p))
-        if circuito_dist(p_rev, blat, blon) < circuito_dist(p, blat, blon):
-            p = p_rev
-        return p
-    
-    def costruisci_anello(clienti_g, blat, blon):
-        if len(clienti_g) <= 2:
-            return sorted(clienti_g, key=lambda c: -c['dist_base'])
+            iterazioni += 1
         
-        # Strategia 1: Sweep angolare dal centroide del gruppo
-        cx = sum(c['lat'] for c in clienti_g) / len(clienti_g)
-        cy = sum(c['lon'] for c in clienti_g) / len(clienti_g)
-        s1 = sorted(clienti_g, key=lambda c: math_degrees(atan2(c['lat']-cx, c['lon']-cy)) % 360)
-        
-        # Strategia 2: Farthest-first, poi NN tornando
-        farthest = max(clienti_g, key=lambda c: c['dist_base'])
-        s2 = [farthest]
-        rem = [c for c in clienti_g if c is not farthest]
-        plat, plon = farthest['lat'], farthest['lon']
-        while rem:
-            min_d = float('inf')
-            best = -1
-            for idx, c in enumerate(rem):
-                d = haversine(plat, plon, c['lat'], c['lon'])
-                if d < min_d:
-                    min_d = d
-                    best = idx
-            picked = rem.pop(best)
-            s2.append(picked)
-            plat, plon = picked['lat'], picked['lon']
-        
-        # Strategia 3: Sweep angolare dalla base
-        s3 = sorted(clienti_g, key=lambda c: math_degrees(atan2(c['lat']-blat, c['lon']-blon)) % 360)
-        
-        migliore = None
-        migliore_d = float('inf')
-        for strat in [s1, s2, s3]:
-            opt = due_opt(strat, blat, blon)
-            d = circuito_dist(opt, blat, blon)
-            if d < migliore_d:
-                migliore_d = d
-                migliore = opt
-        return migliore
+        return percorso
     
     # ========================================
-    # 12. ASSEMBLA GIRO PER OGNI GIORNO
+    # 10. DISTRIBUISCI SUI GIORNI
     # ========================================
-    risultati = {}
+    clienti_disponibili = clienti_settimana.copy()
     
-    for giorno in giorni_calcolo:
+    for giorno in giorni:
         data_g = lunedi + timedelta(days=giorno)
-        tappe_app = app_per_giorno.get(giorno, [])
-        seg = assegnazione.get(giorno, [])
+        tappe = []
         
-        slot = max_visite - len(tappe_app)
-        day_pool = []
-        for z in seg:
-            day_pool.extend(z['clienti'])
+        # Appuntamenti del giorno
+        if giorno in app_per_giorno:
+            for a in app_per_giorno[giorno]:
+                tappe.append(a)
         
-        if len(day_pool) > slot:
-            day_pool.sort(key=lambda c: -c['urgenza'])
-            day_pool = day_pool[:slot]
+        slot = max_visite - len(tappe)
         
-        giro = list(tappe_app) + day_pool
+        # Determina punto di partenza
+        if tappe:
+            pos_lat, pos_lon = tappe[-1]['lat'], tappe[-1]['lon']
+        else:
+            pos_lat, pos_lon = base_lat, base_lon
         
-        # Costruisci ANELLO ottimale
-        if len(giro) >= 3:
-            giro = costruisci_anello(giro, base_lat, base_lon)
-        elif len(giro) == 2:
-            d1 = circuito_dist(giro, base_lat, base_lon)
-            d2 = circuito_dist(list(reversed(giro)), base_lat, base_lon)
-            if d2 < d1:
-                giro = list(reversed(giro))
+        # NEAREST NEIGHBOR per selezionare
+        visite_giorno = []
+        temp = clienti_disponibili.copy()
         
-        risultati[giorno] = (data_g, giro)
-    
-    # ========================================
-    # 13. CALCOLO ORARI
-    # ========================================
-    for giorno in giorni_calcolo:
-        data_g, giro = risultati.get(giorno, (lunedi + timedelta(days=giorno), []))
+        while slot > 0 and temp:
+            min_dist = float('inf')
+            piu_vicino = None
+            
+            for c in temp:
+                d = haversine(pos_lat, pos_lon, c['lat'], c['lon'])
+                if d < min_dist:
+                    min_dist = d
+                    piu_vicino = c
+            
+            if piu_vicino is None:
+                break
+            
+            visite_giorno.append(piu_vicino)
+            temp.remove(piu_vicino)
+            clienti_disponibili.remove(piu_vicino)
+            
+            pos_lat, pos_lon = piu_vicino['lat'], piu_vicino['lon']
+            slot -= 1
         
+        # OTTIMIZZA ORDINE CON 2-OPT
+        if len(visite_giorno) >= 3:
+            visite_giorno = ottimizza_2opt(visite_giorno, base_lat, base_lon)
+        
+        # Combina: appuntamenti + visite ottimizzate
+        giro_finale = list(tappe) + visite_giorno
+        
+        # ========================================
+        # CALCOLA ORARI
+        # ========================================
         tappe_finali = []
         pos_lat, pos_lon = base_lat, base_lon
         ora = datetime.combine(data_g, ora_inizio)
         
-        for c in giro:
+        for c in giro_finale:
             dist = haversine(pos_lat, pos_lon, c['lat'], c['lon'])
             tempo = (dist / 40) * 60
             
@@ -1510,10 +1466,10 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 'ora_arrivo': ora_arr,
                 'tipo_tappa': '📌 APPUNTAMENTO' if c.get('is_app') else '🚗 Giro',
                 'distanza_km': round(dist, 1),
-                'ritardo': c.get('giorni_ritardo', 0),
-                'citta': c.get('citta', ''),
-                'urgenza': c.get('urgenza', 0)
+                'ritardo': 0,
+                'citta': c.get('citta', '')
             })
+            
             pos_lat, pos_lon = c['lat'], c['lon']
         
         agenda[giorno] = tappe_finali
@@ -1552,11 +1508,7 @@ def main_app():
     subscription = st.session_state.get('subscription')
     user_is_admin = is_admin(st.session_state.user.id) if st.session_state.user else False
     
-    # Inizializza navigazione PRIMA della sidebar
-    if 'active_tab' not in st.session_state:
-        st.session_state.active_tab = "🚀 Giro Oggi"
-    
-    # Sidebar con info utente + NAVIGAZIONE
+    # Sidebar con info utente
     with st.sidebar:
         st.markdown(f"### 👤 {st.session_state.user.email}")
         
@@ -1585,29 +1537,6 @@ def main_app():
                 if days_left <= 30:
                     st.warning(f"📅 Abbonamento scade tra {days_left} giorni")
         
-        st.divider()
-        
-        # === MENU NAVIGAZIONE (nella sidebar) ===
-        menu_keys =   ["🚀 Giro Oggi", "📊 Dashboard", "📅 Agenda", "🗺️ Mappa", "👤 Anagrafica", "➕ Nuovo", "⚙️ Config"]
-        menu_labels = ["🚀 Giro Oggi", "📊 Dashboard", "📅 Agenda", "🗺️ Mappa", "👤 Anagrafica", "➕ Nuovo Cliente", "⚙️ Configurazione"]
-        
-        current_key = st.session_state.get('active_tab', "🚀 Giro Oggi")
-        # Se siamo in Admin, il radio punta a indice 0 ma NON deve sovrascrivere
-        in_admin = (current_key == "🔐 Admin")
-        current_idx = menu_keys.index(current_key) if current_key in menu_keys else 0
-        
-        scelta = st.radio("Menu", menu_labels, index=current_idx, label_visibility="collapsed")
-        nuovo_idx = menu_labels.index(scelta)
-        if not in_admin and menu_keys[nuovo_idx] != st.session_state.active_tab:
-            st.session_state.active_tab = menu_keys[nuovo_idx]
-            st.rerun()
-        elif in_admin and menu_keys[nuovo_idx] != "🚀 Giro Oggi":
-            # L'utente ha cliccato una voce diversa dal radio → esci da Admin
-            st.session_state.active_tab = menu_keys[nuovo_idx]
-            st.rerun()
-        
-        st.divider()
-        
         if st.button("🚪 Logout", use_container_width=True):
             logout()
         
@@ -1617,6 +1546,8 @@ def main_app():
             if st.button("🔐 Pannello Admin", use_container_width=True, type="primary"):
                 st.session_state.active_tab = "🔐 Admin"
                 st.rerun()
+        
+        st.divider()
     
     # Carica dati
     if 'df_clienti' not in st.session_state or st.session_state.get('reload_data', False):
@@ -1660,424 +1591,162 @@ def main_app():
                     if row['nome_cliente'] not in st.session_state.visitati_oggi:
                         st.session_state.visitati_oggi.append(row['nome_cliente'])
     
+    # Menu navigazione
+    if 'active_tab' not in st.session_state:
+        st.session_state.active_tab = "🚀 Giro"
+    
     # Se è il pannello admin, mostralo
     if st.session_state.active_tab == "🔐 Admin":
         if user_is_admin:
             admin_panel()
             st.divider()
             if st.button("⬅️ Torna all'App", use_container_width=True):
-                st.session_state.active_tab = "🚀 Giro Oggi"
+                st.session_state.active_tab = "🚀 Giro"
                 st.rerun()
             return
         else:
-            st.session_state.active_tab = "🚀 Giro Oggi"
+            st.session_state.active_tab = "🚀 Giro"
+    
+    # Menu COMPATTO - Dashboard alla fine
+    menu = ["🚀", "📅", "👤", "➕", "⚙️", "📊"]
+    menu_full = ["🚀 Giro", "📅 Agenda", "👤 Clienti", "➕ Nuovo", "⚙️ Config", "📊 Report"]
+    
+    nav = st.columns(6)
+    for i, (icon, name) in enumerate(zip(menu, menu_full)):
+        if nav[i].button(icon, key=f"nav_{i}", use_container_width=True, 
+                        type="primary" if st.session_state.active_tab == name else "secondary"):
+            st.session_state.active_tab = name
+            st.rerun()
     
     config = st.session_state.config
     giorni_lavorativi = config.get('giorni_lavorativi', [0, 1, 2, 3, 4])
     if isinstance(giorni_lavorativi, str):
         giorni_lavorativi = [int(x) for x in giorni_lavorativi.strip('{}').split(',')]
     
-    # --- TAB: GIRO OGGI ---
-    if st.session_state.active_tab == "🚀 Giro Oggi":
-        col_header, col_regen, col_refresh = st.columns([4, 1, 1])
-        with col_header:
-            st.header(f"📍 Giro di Oggi ({ora_italiana.strftime('%d/%m/%Y')})")
-        with col_regen:
-            if st.button("🔄 Rigenera", use_container_width=True, help="Propone un giro diverso"):
-                st.session_state.variante_giro = st.session_state.get('variante_giro', 0) + 1
-                st.rerun()
-        with col_refresh:
-            if st.button("🔃", use_container_width=True, help="Ricarica dati"):
-                st.session_state.reload_data = True
-                st.rerun()
-        
+    # --- TAB: GIRO ---
+    if st.session_state.active_tab == "🚀 Giro":
         idx_g = ora_italiana.weekday()
-        giorni_nomi = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"]
         
-        # Inizializza esclusi_oggi se non esiste
-        if 'esclusi_oggi' not in st.session_state:
-            st.session_state.esclusi_oggi = []
-        if 'variante_giro' not in st.session_state:
-            st.session_state.variante_giro = 0
+        # Inizializza
+        if 'esclusi_oggi' not in st.session_state: st.session_state.esclusi_oggi = []
+        if 'variante_giro' not in st.session_state: st.session_state.variante_giro = 0
+        if 'visitati_oggi' not in st.session_state: st.session_state.visitati_oggi = []
+        if 'cliente_espanso' not in st.session_state: st.session_state.cliente_espanso = None
         
-        # === PANNELLO GESTIONE GIRO ===
-        with st.expander("⚙️ Gestisci Giro", expanded=False):
-            
-            # Info variante attuale
-            variante_attuale = st.session_state.get('variante_giro', 0)
-            if variante_attuale > 0:
-                st.info(f"🔄 Giro rigenerato {variante_attuale} volta/e - Premi '🔄 Rigenera' per provare un altro percorso")
-                if st.button("↩️ Torna al giro originale"):
-                    st.session_state.variante_giro = 0
-                    st.rerun()
-            
-            st.divider()
-            
-            # --- SEZIONE: Escludi Clienti ---
-            st.write("**🚫 Escludi clienti dal giro di oggi:**")
-            
-            # Lista clienti attivi (da poter escludere)
-            clienti_attivi = df[df['visitare'] == 'SI']['nome_cliente'].tolist() if not df.empty and 'visitare' in df.columns else []
-            
-            if clienti_attivi:
-                # Multiselect per escludere clienti
-                esclusi_selezionati = st.multiselect(
-                    "Seleziona clienti da escludere:",
-                    sorted(clienti_attivi),
-                    default=st.session_state.esclusi_oggi,
-                    key="escludi_clienti_select"
-                )
-                
-                col_esc1, col_esc2 = st.columns(2)
-                
-                with col_esc1:
-                    if st.button("🔄 Ricalcola Giro", type="primary", use_container_width=True):
-                        st.session_state.esclusi_oggi = esclusi_selezionati
-                        st.rerun()
-                
-                with col_esc2:
-                    if st.button("🗑️ Rimuovi Esclusioni", use_container_width=True):
-                        st.session_state.esclusi_oggi = []
-                        st.rerun()
-                
-                if st.session_state.esclusi_oggi:
-                    st.warning(f"⚠️ **{len(st.session_state.esclusi_oggi)} clienti esclusi** dal giro di oggi")
-            else:
-                st.info("Nessun cliente attivo da escludere")
+        # Calcola tappe
+        variante = st.session_state.get('variante_giro', 0)
+        tappe_oggi = calcola_piano_giornaliero(df, idx_g, config, st.session_state.esclusi_oggi, variante=variante) if idx_g in giorni_lavorativi else []
         
-        # Controlla se oggi è giorno di ferie
-        oggi_date = ora_italiana.date()
-        is_ferie_oggi = False
+        fatte = len([t for t in tappe_oggi if t['nome_cliente'] in st.session_state.visitati_oggi])
         
-        attiva_ferie = config.get('attiva_ferie', False)
-        if attiva_ferie:
-            fi = config.get('ferie_inizio')
-            ff = config.get('ferie_fine')
-            
-            ferie_inizio = None
-            ferie_fine = None
-            
-            if fi:
-                if isinstance(fi, str):
-                    try:
-                        ferie_inizio = datetime.strptime(fi[:10], '%Y-%m-%d').date()
-                    except:
-                        pass
-                elif hasattr(fi, 'date'):
-                    ferie_inizio = fi.date()
-                elif hasattr(fi, 'year'):
-                    ferie_inizio = fi
-            
-            if ff:
-                if isinstance(ff, str):
-                    try:
-                        ferie_fine = datetime.strptime(ff[:10], '%Y-%m-%d').date()
-                    except:
-                        pass
-                elif hasattr(ff, 'date'):
-                    ferie_fine = ff.date()
-                elif hasattr(ff, 'year'):
-                    ferie_fine = ff
-            
-            if ferie_inizio and ferie_fine:
-                is_ferie_oggi = ferie_inizio <= oggi_date <= ferie_fine
+        # === HEADER: Data + Stats + Pulsanti ===
+        st.markdown(f"""
+        <div style="display:flex; justify-content:space-between; align-items:center; background:#f8f9fa; padding:8px 12px; border-radius:8px; margin-bottom:5px;">
+            <b style="font-size:1rem;">📍 {['Lun','Mar','Mer','Gio','Ven','Sab','Dom'][idx_g]} {ora_italiana.strftime('%d/%m')}</b>
+            <span style="font-size:0.9rem;">✅ <b>{fatte}/{len(tappe_oggi)}</b></span>
+        </div>
+        """, unsafe_allow_html=True)
         
-        # Mostra messaggio appropriato
-        if is_ferie_oggi:
-            st.warning(f"🏖️ **Oggi sei in FERIE!** (dal {ferie_inizio.strftime('%d/%m/%Y')} al {ferie_fine.strftime('%d/%m/%Y')})")
-            st.info("Per disattivare le ferie, vai su ⚙️ Config → Ferie")
-        elif idx_g in giorni_lavorativi:
-            # Alert critici
-            critici = [c for c in get_clienti_trascurati(df) if c['livello'] == 'critico']
-            if critici:
-                st.error(f"🚨 **{len(critici)} clienti critici** da visitare urgentemente!")
-            
-            # Calcola tappe (con variante giro)
-            variante = st.session_state.get('variante_giro', 0)
-            tappe_oggi = calcola_piano_giornaliero(df, idx_g, config, st.session_state.esclusi_oggi, variante=variante)
-            
-            # Trova visitati fuori giro
-            nomi_nel_giro = [t['nome_cliente'] for t in tappe_oggi]
-            visitati_fuori_giro = [v for v in st.session_state.visitati_oggi if v not in nomi_nel_giro]
-            
-            if tappe_oggi or visitati_fuori_giro:
-                # Statistiche compatte + pulsante mappa
-                km_tot, tempo_guida, tempo_tot = calcola_km_tempo_giro(
-                    tappe_oggi, 
-                    config.get('lat_base', 41.9028), 
-                    config.get('lon_base', 12.4964),
-                    config.get('durata_visita', 45)
-                )
-                
-                col_stats, col_mappa = st.columns([4, 1])
-                with col_stats:
-                    st.caption(f"📊 **{len(tappe_oggi)}** visite · ✅ **{len(st.session_state.visitati_oggi)}** fatte · 🛣️ **{km_tot}** km · ⏱️ **{tempo_tot//60}h{tempo_tot%60:02d}m**")
-                with col_mappa:
-                    if st.button("🗺️ Mappa", use_container_width=True, help="Vedi clienti del giorno sulla mappa"):
-                        st.session_state.active_tab = "🗺️ Mappa"
-                        st.rerun()
-                
-                st.divider()
-                
-                # === LISTA TAPPE ===
-                for i, t in enumerate(tappe_oggi, 1):
-                    visitato = t['nome_cliente'] in st.session_state.visitati_oggi
-                    
-                    # Dati completi del cliente
-                    cliente_row = df[df['nome_cliente'] == t['nome_cliente']].iloc[0] if not df[df['nome_cliente'] == t['nome_cliente']].empty else None
-                    
-                    if 'cliente_report_aperto' not in st.session_state:
-                        st.session_state.cliente_report_aperto = None
-                    
-                    if visitato:
-                        # --- VISITATO ---
-                        with st.container(border=True):
-                            st.markdown(f"""
-                            <div style="background: linear-gradient(90deg, #d4edda 0%, #c3e6cb 100%); 
-                                        padding: 15px; border-radius: 10px; border-left: 5px solid #28a745;">
-                                <span style="font-size: 24px;">✅</span>
-                                <span style="font-size: 18px; margin-left: 10px; text-decoration: line-through; color: #155724;">
-                                    {i}. {t['nome_cliente']}
-                                </span>
-                                <span style="float: right; color: #155724; font-weight: bold;">VISITATO</span>
-                            </div>
-                            """, unsafe_allow_html=True)
-                            st.caption(f"📍 {t.get('indirizzo', '')}")
-                    else:
-                        # --- DA VISITARE ---
-                        with st.container(border=True):
-                            form_aperto = st.session_state.cliente_report_aperto == t['id']
-                            
-                            if not form_aperto:
-                                # Badge urgenza
-                                ritardo = t.get('ritardo', 0)
-                                urgenza_score = t.get('urgenza', 0)
-                                
-                                if ritardo == 999 or urgenza_score >= 80:
-                                    urgenza_badge = "🔴"
-                                elif ritardo >= 7 or urgenza_score >= 50:
-                                    urgenza_badge = "🟠"
-                                elif ritardo >= 0 or urgenza_score >= 30:
-                                    urgenza_badge = "🟡"
-                                else:
-                                    urgenza_badge = "🟢"
-                                
-                                # Info cliente — riga unica compatta
-                                st.markdown(f"**{t['tipo_tappa'].split()[0]} {i}. {t['nome_cliente']}** — ⏰ {t['ora_arrivo']} · {urgenza_badge} {ritardo:+d}gg · {t.get('distanza_km', 0)}km")
-                                
-                                if t.get('indirizzo'):
-                                    st.caption(f"📍 {t['indirizzo']}")
-                                
-                                # Promemoria
-                                if cliente_row is not None and pd.notnull(cliente_row.get('promemoria')) and str(cliente_row.get('promemoria')).strip():
-                                    st.warning(f"📝 **Promemoria:** {cliente_row['promemoria']}")
-                                
-                                # === PULSANTE VISITA ===
-                                if st.button("✅ Registra Visita", key=f"visita_{t['id']}", type="primary", use_container_width=True):
-                                    st.session_state.cliente_report_aperto = t['id']
-                                    st.rerun()
-                                
-                                # === 4 PULSANTI AZIONE IN LINEA (HTML flex = sempre orizzontali su iPhone) ===
-                                nav_url = f"https://www.google.com/maps/dir/?api=1&destination={t['latitude']},{t['longitude']}"
-                                cell_val = str(t.get('cellulare', '')).strip()
-                                tel_url = f"tel:{cell_val}" if cell_val else ""
-                                mail_val = ""
-                                if cliente_row is not None and pd.notnull(cliente_row.get('mail')):
-                                    mail_val = str(cliente_row.get('mail', '')).strip()
-                                mail_url = f"mailto:{mail_val}" if mail_val else ""
-                                
-                                btn_style = (
-                                    "display:inline-flex;align-items:center;justify-content:center;"
-                                    "padding:8px 4px;border-radius:8px;text-decoration:none;"
-                                    "font-size:14px;font-weight:500;flex:1;text-align:center;"
-                                    "min-height:38px;border:1px solid #ddd;color:#333;background:#f8f9fa;"
-                                )
-                                btn_disabled = btn_style + "opacity:0.35;pointer-events:none;color:#999;"
-                                
-                                html_btns = f'<div style="display:flex;gap:6px;margin:4px 0 2px 0;">'
-                                html_btns += f'<a href="{nav_url}" target="_blank" style="{btn_style}">🚗 Vai</a>'
-                                if tel_url:
-                                    html_btns += f'<a href="{tel_url}" style="{btn_style}">📱 Chiama</a>'
-                                else:
-                                    html_btns += f'<span style="{btn_disabled}">📱 Chiama</span>'
-                                if mail_url:
-                                    html_btns += f'<a href="{mail_url}" style="{btn_style}">📧 Mail</a>'
-                                else:
-                                    html_btns += f'<span style="{btn_disabled}">📧 Mail</span>'
-                                html_btns += '</div>'
-                                st.markdown(html_btns, unsafe_allow_html=True)
-                                
-                                # Scheda cliente (richiede Streamlit per navigazione)
-                                if st.button("👤 Scheda cliente", key=f"scheda_{t['id']}", use_container_width=True):
-                                    st.session_state.cliente_selezionato = t['nome_cliente']
-                                    st.session_state.active_tab = "👤 Anagrafica"
-                                    st.rerun()
-                            
-                            else:
-                                # FORM REPORT APERTO
-                                st.markdown(f"### 📝 Report Visita: {t['nome_cliente']}")
-                                st.caption(f"📍 {t.get('indirizzo', '')}")
-                                
-                                # Mostra storico precedente se presente
-                                storico_attuale = ""
-                                if cliente_row is not None and pd.notnull(cliente_row.get('storico_report')):
-                                    storico_attuale = str(cliente_row.get('storico_report', ''))
-                                    if storico_attuale.strip():
-                                        with st.expander("📜 Storico report precedenti"):
-                                            st.text(storico_attuale)
-                                
-                                # Form per nuovo report
-                                nuovo_report = st.text_area(
-                                    "✍️ Scrivi il report della visita:",
-                                    placeholder="Es: Incontrato Mario Rossi, discusso nuovo ordine, richiesta preventivo per...",
-                                    height=120,
-                                    key=f"report_text_{t['id']}"
-                                )
-                                
-                                col_save, col_skip, col_cancel = st.columns(3)
-                                
-                                with col_save:
-                                    if st.button("💾 Salva e Completa", key=f"save_report_{t['id']}", type="primary", use_container_width=True):
-                                        # Prepara nuovo storico con data
-                                        data_oggi = ora_italiana.strftime('%d/%m/%Y')
-                                        if nuovo_report.strip():
-                                            nuovo_storico = f"[{data_oggi}] {nuovo_report.strip()}"
-                                            if storico_attuale.strip():
-                                                nuovo_storico = f"{nuovo_storico}\n\n{storico_attuale}"
-                                        else:
-                                            nuovo_storico = storico_attuale
-                                        
-                                        # Aggiorna database
-                                        update_cliente(t['id'], {
-                                            'ultima_visita': ora_italiana.date().isoformat(),
-                                            'storico_report': nuovo_storico
-                                        })
-                                        st.session_state.visitati_oggi.append(t['nome_cliente'])
-                                        st.session_state.cliente_report_aperto = None
-                                        st.session_state.reload_data = True
-                                        st.success("✅ Visita registrata con report!")
-                                        time_module.sleep(0.5)
-                                        st.rerun()
-                                
-                                with col_skip:
-                                    if st.button("⏭️ Salta Report", key=f"skip_report_{t['id']}", use_container_width=True):
-                                        # Salva senza report
-                                        update_cliente(t['id'], {
-                                            'ultima_visita': ora_italiana.date().isoformat()
-                                        })
-                                        st.session_state.visitati_oggi.append(t['nome_cliente'])
-                                        st.session_state.cliente_report_aperto = None
-                                        st.session_state.reload_data = True
-                                        st.rerun()
-                                
-                                with col_cancel:
-                                    if st.button("❌ Annulla", key=f"cancel_report_{t['id']}", use_container_width=True):
-                                        st.session_state.cliente_report_aperto = None
-                                        st.rerun()
-                
-                # Navigazione completa
-                if tappe_oggi:
-                    st.divider()
-                    tappe_rimanenti = [t for t in tappe_oggi if t['nome_cliente'] not in st.session_state.visitati_oggi]
-                    if tappe_rimanenti:
-                        waypoints = "|".join([f"{t['latitude']},{t['longitude']}" for t in tappe_rimanenti[:-1]])
-                        dest = f"{tappe_rimanenti[-1]['latitude']},{tappe_rimanenti[-1]['longitude']}"
-                        origin = f"{config.get('lat_base', 41.9028)},{config.get('lon_base', 12.4964)}"
-                        url = f"https://www.google.com/maps/dir/?api=1&origin={origin}&destination={dest}&waypoints={waypoints}&travelmode=driving"
-                        st.link_button(f"🗺️ NAVIGA ({len(tappe_rimanenti)} tappe)", url, use_container_width=True, type="primary")
-                    else:
-                        st.success("🎉 Hai completato tutte le visite programmate!")
-                
-                # === SEZIONE VISITE FUORI GIRO ===
-                st.divider()
-                nomi_nel_giro = [t['nome_cliente'] for t in tappe_oggi]
-                visitati_fuori_giro = [v for v in st.session_state.visitati_oggi if v not in nomi_nel_giro]
-                
-                # Mostra clienti visitati fuori giro
-                if visitati_fuori_giro:
-                    st.subheader("➕ Visite Fuori Giro")
-                    for nome_vfg in visitati_fuori_giro:
-                        cliente_vfg = df[df['nome_cliente'] == nome_vfg]
-                        if not cliente_vfg.empty:
-                            cliente_vfg = cliente_vfg.iloc[0]
-                            with st.container(border=True):
-                                col_vfg1, col_vfg2 = st.columns([4, 1])
-                                col_vfg1.markdown(f"### ✅ {nome_vfg}")
-                                if cliente_vfg.get('indirizzo'):
-                                    col_vfg1.caption(f"📍 {cliente_vfg['indirizzo']}")
-                                if col_vfg2.button("👤", key=f"vfg_scheda_{nome_vfg}", help="Scheda"):
-                                    st.session_state.cliente_selezionato = nome_vfg
-                                    st.session_state.active_tab = "👤 Anagrafica"
-                                    st.rerun()
-                
-                # Form per aggiungere visita fuori giro
-                with st.expander("➕ Registra visita a cliente fuori giro"):
-                    clienti_non_visitati = [c for c in df['nome_cliente'].tolist() if c not in st.session_state.visitati_oggi] if not df.empty and 'nome_cliente' in df.columns else []
-                    cliente_extra = st.selectbox("Seleziona cliente:", [""] + sorted(clienti_non_visitati), key="cliente_extra_giro")
-                    
-                    if cliente_extra:
-                        col_extra1, col_extra2 = st.columns(2)
-                        if col_extra1.button("✅ Registra Visita", type="primary", use_container_width=True):
-                            # Aggiorna ultima_visita nel database
-                            cliente_row = df[df['nome_cliente'] == cliente_extra].iloc[0]
-                            update_cliente(cliente_row['id'], {
-                                'ultima_visita': ora_italiana.date().isoformat()
-                            })
-                            st.session_state.visitati_oggi.append(cliente_extra)
-                            st.session_state.reload_data = True
-                            st.success(f"✅ Visita a {cliente_extra} registrata!")
-                            st.rerun()
-                        
-                        if col_extra2.button("👤 Vai alla Scheda", use_container_width=True):
-                            st.session_state.cliente_selezionato = cliente_extra
-                            st.session_state.active_tab = "👤 Anagrafica"
-                            st.rerun()
-                
-                # Riepilogo finale
-                st.divider()
-                tot_visitati = len(st.session_state.visitati_oggi)
-                tot_giro = len(tappe_oggi)
-                tot_fuori = len(visitati_fuori_giro)
-                
-                st.markdown(f"""
-                ### 📊 Riepilogo Giornata
-                | | |
-                |---|---|
-                | ✅ **Visitati totali** | **{tot_visitati}** |
-                | 🚗 Nel giro | {tot_visitati - tot_fuori} / {tot_giro} |
-                | ➕ Fuori giro | {tot_fuori} |
-                """)
-                
-            else:
-                st.info("📭 Nessuna visita pianificata per oggi")
-                
-                # Anche senza giro, permetti visite fuori giro
-                st.divider()
-                st.subheader("➕ Registra visita")
-                
-                if st.session_state.visitati_oggi:
-                    st.success(f"✅ Hai visitato {len(st.session_state.visitati_oggi)} clienti oggi")
-                    for nome_v in st.session_state.visitati_oggi:
-                        st.write(f"✅ {nome_v}")
-                
-                clienti_non_visitati = [c for c in df['nome_cliente'].tolist() if c not in st.session_state.visitati_oggi] if not df.empty and 'nome_cliente' in df.columns else []
-                cliente_extra = st.selectbox("Seleziona cliente da visitare:", [""] + sorted(clienti_non_visitati), key="cliente_no_giro")
-                
-                if cliente_extra:
-                    if st.button("✅ Registra Visita", type="primary"):
-                        cliente_row = df[df['nome_cliente'] == cliente_extra].iloc[0]
-                        update_cliente(cliente_row['id'], {
-                            'ultima_visita': ora_italiana.date().isoformat()
-                        })
-                        st.session_state.visitati_oggi.append(cliente_extra)
-                        st.session_state.reload_data = True
-                        st.success(f"✅ Visita a {cliente_extra} registrata!")
-                        st.rerun()
+        # Pulsanti compatti
+        c1, c2, c3 = st.columns(3)
+        c1.button("🔄", key="regen", use_container_width=True, on_click=lambda: setattr(st.session_state, 'variante_giro', variante+1))
+        if c2.button("🗺️", use_container_width=True):
+            st.session_state.show_map = not st.session_state.get('show_map', False)
+            st.rerun()
+        c3.button("⚙️", key="opts", use_container_width=True)
+        
+        # Mappa toggle
+        if st.session_state.get('show_map', False) and tappe_oggi:
+            wps = [(config.get('lat_base', 43.4), config.get('lon_base', 13.5))] + [(t['latitude'], t['longitude']) for t in tappe_oggi]
+            m = folium.Map(location=wps[0], zoom_start=10, tiles='cartodbpositron')
+            folium.Marker(wps[0], icon=folium.Icon(color="blue", icon="home")).add_to(m)
+            for i, t in enumerate(tappe_oggi, 1):
+                col = "green" if t['nome_cliente'] in st.session_state.visitati_oggi else "red"
+                folium.Marker([t['latitude'], t['longitude']], popup=f"{i}", icon=folium.Icon(color=col)).add_to(m)
+            rt = get_route_osrm(wps)
+            if len(rt) > 1: folium.PolyLine(rt, weight=2, color='#3498db').add_to(m)
+            st_folium(m, height=180, use_container_width=True, key="map1")
+        
+        # === LISTA TAPPE COMPATTA ===
+        if idx_g not in giorni_lavorativi:
+            st.info("🏖️ Oggi non è giorno lavorativo")
+        elif not tappe_oggi:
+            st.warning("Nessuna visita programmata")
         else:
-            st.warning(f"🏖️ Oggi è {giorni_nomi[idx_g]} - non lavorativo")
-    
+            for i, t in enumerate(tappe_oggi, 1):
+                visitato = t['nome_cliente'] in st.session_state.visitati_oggi
+                espanso = st.session_state.cliente_espanso == t['id']
+                is_app = "APPUNTAMENTO" in t.get('tipo_tappa', '')
+                
+                # Colore riga
+                bg = "#e8f5e9" if visitato else ("#fff3e0" if is_app else "#fff")
+                border = "#4caf50" if visitato else ("#ff9800" if is_app else "#2196f3")
+                
+                # RIGA COMPATTA
+                st.markdown(f"""
+                <div style="background:{bg}; border-left:4px solid {border}; padding:6px 10px; margin:3px 0; border-radius:4px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-size:0.75rem; color:#666; width:45px;">{t['ora_arrivo']}</span>
+                        <span style="flex:1; font-weight:{'normal' if visitato else 'bold'}; font-size:0.9rem; {'text-decoration:line-through; color:#888;' if visitato else ''}">
+                            {'✅ ' if visitato else ('📌 ' if is_app else '')}{t['nome_cliente'][:22]}
+                        </span>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Pulsante espandi (solo se non visitato)
+                if not visitato:
+                    if st.button(f"{'▼' if espanso else '▶'} Azioni", key=f"act_{t['id']}", use_container_width=True):
+                        st.session_state.cliente_espanso = None if espanso else t['id']
+                        st.rerun()
+                
+                # === AZIONI ESPANSE ===
+                if espanso and not visitato:
+                    st.caption(f"📍 {t.get('indirizzo', t.get('citta', ''))[:40]}")
+                    
+                    # Promemoria
+                    cliente_row = df[df['nome_cliente'] == t['nome_cliente']]
+                    if not cliente_row.empty:
+                        prm = cliente_row.iloc[0].get('promemoria', '')
+                        if pd.notna(prm) and str(prm).strip():
+                            st.warning(f"📝 {prm}")
+                    
+                    # 5 pulsanti azione
+                    a1, a2, a3, a4, a5 = st.columns(5)
+                    a1.link_button("🚗", f"https://www.google.com/maps/dir/?api=1&destination={t['latitude']},{t['longitude']}", use_container_width=True)
+                    
+                    cell = str(t.get('cellulare', '')).strip()
+                    if cell: a2.link_button("📱", f"tel:{cell}", use_container_width=True)
+                    else: a2.button("📱", disabled=True, use_container_width=True)
+                    
+                    email = cliente_row.iloc[0].get('email', '') if not cliente_row.empty else ''
+                    if pd.notna(email) and str(email).strip(): a3.link_button("✉️", f"mailto:{email}", use_container_width=True)
+                    else: a3.button("✉️", disabled=True, use_container_width=True)
+                    
+                    if a4.button("👤", key=f"ana_{t['id']}", use_container_width=True):
+                        st.session_state.cliente_selezionato_id = t['id']
+                        st.session_state.active_tab = "👤 Clienti"
+                        st.rerun()
+                    
+                    if a5.button("✅", key=f"ok_{t['id']}", type="primary", use_container_width=True):
+                        st.session_state.visitati_oggi.append(t['nome_cliente'])
+                        update_cliente(t['id'], {'ultima_visita': ora_italiana.isoformat()})
+                        st.session_state.cliente_espanso = None
+                        st.rerun()
+            
+            # Visita extra (compatto)
+            with st.popover("➕ Extra"):
+                clienti = sorted(df[df['visitare'] == 'SI']['nome_cliente'].tolist()) if not df.empty else []
+                sel = st.selectbox("Cliente:", clienti, key="extra_sel")
+                if st.button("✅ Registra", key="extra_btn"):
+                    if sel and sel not in st.session_state.visitati_oggi:
+                        st.session_state.visitati_oggi.append(sel)
+                        row = df[df['nome_cliente'] == sel]
+                        if not row.empty: update_cliente(row.iloc[0]['id'], {'ultima_visita': ora_italiana.isoformat()})
+                        st.rerun()
+
     # --- TAB: DASHBOARD ---
-    elif st.session_state.active_tab == "📊 Dashboard":
+    elif st.session_state.active_tab == "📊 Report":
         st.header("📊 Dashboard")
         
         # Alert
@@ -2152,7 +1821,7 @@ def main_app():
                 col1.error(f"**{c['nome']}** - {c['messaggio']}")
                 if col2.button("👤", key=f"dash_{c['id']}"):
                     st.session_state.cliente_selezionato = c['nome']
-                    st.session_state.active_tab = "👤 Anagrafica"
+                    st.session_state.active_tab = "👤 Clienti"
                     st.rerun()
         
         # === STORICO VISITE ===
@@ -2234,7 +1903,7 @@ def main_app():
                             # Pulsante scheda
                             if col_st3.button("👤", key=f"storico_{row['id']}", help="Apri scheda"):
                                 st.session_state.cliente_selezionato = row['nome_cliente']
-                                st.session_state.active_tab = "👤 Anagrafica"
+                                st.session_state.active_tab = "👤 Clienti"
                                 st.rerun()
                 else:
                     if tipo_filtro == "Giorno singolo":
@@ -2275,72 +1944,51 @@ def main_app():
     
     # --- TAB: AGENDA ---
     elif st.session_state.active_tab == "📅 Agenda":
-        st.header("📅 Agenda Settimanale Ottimizzata")
-        
-        # Navigazione settimane
+        # Navigazione settimane compatta
         if 'current_week_index' not in st.session_state:
-            st.session_state.current_week_index = 0  # 0 = settimana corrente
-        
-        # Inizializza giorni in ferie (lista di date)
+            st.session_state.current_week_index = 0
         if 'giorni_ferie_singoli' not in st.session_state:
             st.session_state.giorni_ferie_singoli = []
-        
-        # Inizializza stato per scambio giorni
         if 'giorno_da_scambiare' not in st.session_state:
             st.session_state.giorno_da_scambiare = None
-        
-        # Inizializza scambi salvati (dizionario: chiave=settimana, valore=lista di scambi)
         if 'scambi_giorni' not in st.session_state:
             st.session_state.scambi_giorni = {}
         
-        col_nav1, col_nav2, col_nav3, col_nav4, col_nav5 = st.columns([1, 1, 2, 1, 1])
-        
-        with col_nav1:
-            if st.button("⬅️ Sett. Prec.", use_container_width=True):
-                st.session_state.current_week_index -= 1
-                st.session_state.giorno_da_scambiare = None
-                st.rerun()
-        
-        with col_nav2:
-            # Pulsante per tornare alla settimana corrente (visibile solo se non siamo già lì)
-            if st.session_state.current_week_index != 0:
-                if st.button("🏠 Oggi", use_container_width=True, type="primary"):
-                    st.session_state.current_week_index = 0
-                    st.session_state.giorno_da_scambiare = None
-                    st.rerun()
-        
-        with col_nav5:
-            if st.button("Sett. Succ. ➡️", use_container_width=True):
-                st.session_state.current_week_index += 1
-                st.session_state.giorno_da_scambiare = None
-                st.rerun()
-        
-        # Calcola date della settimana selezionata
+        # Calcola date
         oggi = ora_italiana.date()
         lunedi_corrente = oggi - timedelta(days=oggi.weekday())
         lunedi_selezionato = lunedi_corrente + timedelta(weeks=st.session_state.current_week_index)
         domenica_selezionata = lunedi_selezionato + timedelta(days=6)
         
-        with col_nav3:
-            if st.session_state.current_week_index == 0:
-                st.markdown(f"### 📆 Settimana Corrente")
-            elif st.session_state.current_week_index > 0:
-                st.markdown(f"### 📆 +{st.session_state.current_week_index} Settimana/e")
-            else:
-                st.markdown(f"### 📆 {st.session_state.current_week_index} Settimana/e")
-            st.caption(f"Dal {lunedi_selezionato.strftime('%d/%m/%Y')} al {domenica_selezionata.strftime('%d/%m/%Y')}")
+        # Header compatto con navigazione
+        c1, c2, c3 = st.columns([1, 3, 1])
+        with c1:
+            if st.button("⬅️", use_container_width=True):
+                st.session_state.current_week_index -= 1
+                st.rerun()
+        with c2:
+            week_label = "Questa sett." if st.session_state.current_week_index == 0 else f"+{st.session_state.current_week_index} sett." if st.session_state.current_week_index > 0 else f"{st.session_state.current_week_index} sett."
+            st.markdown(f"<h3 style='text-align:center; margin:0;'>📅 {week_label}</h3>", unsafe_allow_html=True)
+            st.markdown(f"<p style='text-align:center; font-size:0.8em; margin:0;'>{lunedi_selezionato.strftime('%d/%m')} - {domenica_selezionata.strftime('%d/%m')}</p>", unsafe_allow_html=True)
+        with c3:
+            if st.button("➡️", use_container_width=True):
+                st.session_state.current_week_index += 1
+                st.rerun()
         
-        # Info distribuzione clienti
+        # Pulsante Oggi (se non siamo nella settimana corrente)
+        if st.session_state.current_week_index != 0:
+            if st.button("🏠 Torna a Oggi", use_container_width=True, type="primary"):
+                st.session_state.current_week_index = 0
+                st.rerun()
+        
+        # Info clienti compatta
         if not df.empty and 'visitare' in df.columns:
             clienti_attivi = len(df[df['visitare'] == 'SI'])
-            # Stima settimane necessarie (circa 30-40 clienti a settimana)
             settimane_stimate = max(1, (clienti_attivi + 34) // 35)
-            ciclo_attuale = (st.session_state.current_week_index // settimane_stimate) + 1
-            settimana_nel_ciclo = (st.session_state.current_week_index % settimane_stimate) + 1
-            st.info(f"📊 **{clienti_attivi} clienti** da visitare in **~{settimane_stimate} settimane** | Ciclo {ciclo_attuale}, Settimana {settimana_nel_ciclo}/{settimane_stimate}")
+            st.caption(f"📊 {clienti_attivi} clienti | ~{settimane_stimate} settimane per ciclo")
         
         # === PANNELLO DEBUG ===
-        with st.expander("🔧 DEBUG - Verifica Configurazione Giro (Motore Portatour)", expanded=False):
+        with st.expander("🔧 DEBUG - Verifica Configurazione Giro", expanded=False):
             base_lat = float(config.get('lat_base', 0))
             base_lon = float(config.get('lon_base', 0))
             
@@ -2356,7 +2004,7 @@ def main_app():
                     st.caption("Vai in ⚙️ Config → Imposta punto di partenza")
             
             with col_dbg2:
-                st.write("**⚙️ Parametri Giro (Portatour Engine):**")
+                st.write("**⚙️ Parametri Giro:**")
                 st.write(f"- Durata visita: **{config.get('durata_visita', 45)} min**")
                 st.write(f"- Orario: **{str(config.get('h_inizio', '09:00'))[:5]} - {str(config.get('h_fine', '18:00'))[:5]}**")
                 giorni_cfg = config.get('giorni_lavorativi', [0,1,2,3,4])
@@ -2364,20 +2012,6 @@ def main_app():
                     giorni_cfg = [int(x) for x in giorni_cfg.strip('{}').split(',')]
                 nomi_g = ["Lun","Mar","Mer","Gio","Ven","Sab","Dom"]
                 st.write(f"- Giorni: **{', '.join([nomi_g[g] for g in giorni_cfg])}**")
-                st.write("- Algoritmo: **Clustering + Urgenza + 2-Opt**")
-            
-            st.divider()
-            st.write("**🎯 Come funziona l'algoritmo v8:**")
-            st.markdown("""
-            1. **Filtro frequenza RIGOROSO** — Solo clienti scaduti o in scadenza questa settimana.
-            2. **Cluster per CITTÀ** — Clienti della stessa città restano SEMPRE nello stesso giorno.
-            3. **Catena NN tra città** — Le città vengono ordinate per prossimità geografica.
-            4. **Taglio bilanciato** — Città vicine nella catena = stesso giorno.
-            5. **ANELLO ottimale** — Ogni giro è un CIRCUITO: 3 strategie (sweep, farthest-first, angolare) + 2-opt aggressivo su andata+visite+ritorno.
-            6. **Rotazione settimanale** — I segmenti ruotano tra i giorni ogni settimana.
-            7. **Appuntamento ÀNCORA** — Il segmento con la città dell'appuntamento va nel giorno giusto.
-            8. **Rigenera** — Inversione o shift della catena → segmenti diversi.
-            """)
             
             st.divider()
             
@@ -2657,7 +2291,7 @@ def main_app():
                                 nome_display = tappa['nome_cliente'][:15] + "..." if len(tappa['nome_cliente']) > 15 else tappa['nome_cliente']
                                 if st.button(nome_display, key=f"ag_{data_giorno}_{tappa['nome_cliente']}", use_container_width=True):
                                     st.session_state.cliente_selezionato = tappa['nome_cliente']
-                                    st.session_state.active_tab = "👤 Anagrafica"
+                                    st.session_state.active_tab = "👤 Clienti"
                                     st.rerun()
                                 
                                 # Mostra ritardo
@@ -2708,26 +2342,9 @@ def main_app():
     elif st.session_state.active_tab == "🗺️ Mappa":
         st.header("🗺️ Mappa Clienti")
         
-        # Inizializza stato mappa
+        # Inizializza stato per mappa giorno
         if 'mappa_giorno_selezionato' not in st.session_state:
             st.session_state.mappa_giorno_selezionato = None
-        if 'mappa_cliente_cliccato' not in st.session_state:
-            st.session_state.mappa_cliente_cliccato = None
-        
-        # ============================================
-        # GEOLOCALIZZAZIONE BROWSER
-        # ============================================
-        # Usa le funzioni GPS già presenti nell'app
-        
-        if 'geo_lat' not in st.session_state:
-            st.session_state.geo_lat = None
-            st.session_state.geo_lon = None
-        
-        # Leggi GPS da query params (scritti dal componente JS)
-        gps_data = read_gps_from_url()
-        if gps_data:
-            st.session_state.geo_lat = gps_data['latitude']
-            st.session_state.geo_lon = gps_data['longitude']
         
         # === MAPPA GIRO DEL GIORNO (dall'Agenda) ===
         if st.session_state.mappa_giorno_selezionato:
@@ -2738,46 +2355,30 @@ def main_app():
             
             st.success(f"🗺️ **Giro di {giorno_nome} {data_giorno.strftime('%d/%m/%Y')}** - {len(tappe)} visite")
             
-            if st.button("⬅️ Torna a tutti i clienti", use_container_width=True):
-                st.session_state.mappa_giorno_selezionato = None
-                st.session_state.mappa_cliente_cliccato = None
-                st.rerun()
+            col_back, col_info = st.columns([1, 3])
+            with col_back:
+                if st.button("⬅️ Torna a tutti i clienti", use_container_width=True):
+                    st.session_state.mappa_giorno_selezionato = None
+                    st.rerun()
             
+            # Crea mappa del giro
             if tappe:
                 lat_center = sum(t['latitude'] for t in tappe) / len(tappe)
                 lon_center = sum(t['longitude'] for t in tappe) / len(tappe)
                 
-                m = folium.Map(location=[lat_center, lon_center], zoom_start=12)
+                m = folium.Map(location=[lat_center, lon_center], zoom_start=11)
                 
-                # Posizione utente
-                try:
-                    from folium.plugins import LocateControl
-                    LocateControl(auto_start=True, strings={"title": "La mia posizione"}).add_to(m)
-                except:
-                    pass
-                
-                # Marker posizione GPS se disponibile
-                if st.session_state.geo_lat and st.session_state.geo_lon:
-                    folium.Marker(
-                        [st.session_state.geo_lat, st.session_state.geo_lon],
-                        popup="📍 La mia posizione",
-                        tooltip="📍 IO SONO QUI",
-                        icon=folium.Icon(color='blue', icon='user', prefix='fa')
-                    ).add_to(m)
-                
-                # Punto di partenza (base)
-                lat_base = float(config.get('lat_base', lat_center))
-                lon_base = float(config.get('lon_base', lon_center))
+                # Aggiungi punto di partenza
+                lat_base = config.get('lat_base', lat_center)
+                lon_base = config.get('lon_base', lon_center)
                 folium.Marker(
                     [lat_base, lon_base],
                     popup="🏠 Partenza",
-                    tooltip="🏠 BASE",
                     icon=folium.Icon(color='green', icon='home', prefix='fa')
                 ).add_to(m)
                 
-                # Tappe numerate con tooltip (nome) e popup (dettagli)
+                # Aggiungi tappe numerate
                 coords_percorso = [[lat_base, lon_base]]
-                lookup_tappe = {}  # per match click
                 
                 for idx, tappa in enumerate(tappe, 1):
                     lat = tappa['latitude']
@@ -2786,8 +2387,8 @@ def main_app():
                     indirizzo = tappa.get('indirizzo', '')
                     ora = tappa.get('ora_arrivo', '--:--')
                     ritardo = tappa.get('ritardo', 0)
-                    dist_km = tappa.get('distanza_km', 0)
                     
+                    # Colore in base al ritardo
                     if ritardo >= 14:
                         color = 'red'
                     elif ritardo >= 7:
@@ -2797,157 +2398,98 @@ def main_app():
                     else:
                         color = 'green'
                     
-                    badge = '🔴' if ritardo >= 14 else '🟡' if ritardo >= 0 else '🟢'
-                    
-                    popup_html = f"""<div style="min-width:200px">
+                    popup_html = f"""
                     <b>{idx}. {nome}</b><br>
                     📍 {indirizzo}<br>
-                    ⏰ Arrivo: {ora}<br>
-                    🚗 {dist_km} km<br>
-                    {badge} Ritardo: {ritardo}gg
-                    </div>"""
+                    ⏰ {ora}<br>
+                    {'🔴' if ritardo >= 14 else '🟡' if ritardo >= 0 else '🟢'} Ritardo: {ritardo}gg
+                    """
                     
                     folium.Marker(
                         [lat, lon],
-                        popup=folium.Popup(popup_html, max_width=280),
-                        tooltip=f"{idx}. {nome}",
+                        popup=folium.Popup(popup_html, max_width=250),
                         icon=folium.DivIcon(
-                            html=f'<div style="font-size:12pt;color:white;background:{color};border-radius:50%;width:26px;height:26px;text-align:center;line-height:26px;font-weight:bold;border:2px solid white;box-shadow:0 1px 3px rgba(0,0,0,0.3);">{idx}</div>'
+                            html=f'<div style="font-size: 12pt; color: white; background-color: {color}; border-radius: 50%; width: 24px; height: 24px; text-align: center; line-height: 24px; font-weight: bold;">{idx}</div>'
                         )
                     ).add_to(m)
                     
                     coords_percorso.append([lat, lon])
-                    lookup_tappe[f"{lat:.6f},{lon:.6f}"] = tappa
                 
-                # Linea percorso
-                coords_percorso.append([lat_base, lon_base])
-                folium.PolyLine(coords_percorso, color='blue', weight=3, opacity=0.7, dash_array='10').add_to(m)
+                # Aggiungi linea del percorso
+                coords_percorso.append([lat_base, lon_base])  # Ritorno
+                folium.PolyLine(
+                    coords_percorso,
+                    color='blue',
+                    weight=3,
+                    opacity=0.7,
+                    dash_array='10'
+                ).add_to(m)
                 
-                # Mostra mappa e cattura click
-                map_data = st_folium(m, width=None, height=500, use_container_width=True, key="mappa_giro")
-                
-                # Rileva click su marker
-                clicked = map_data.get('last_object_clicked') if map_data else None
-                if clicked:
-                    click_lat = clicked.get('lat', 0)
-                    click_lon = clicked.get('lng', 0)
-                    
-                    # Trova il cliente più vicino al punto cliccato
-                    min_d = float('inf')
-                    found = None
-                    for t in tappe:
-                        d = haversine(click_lat, click_lon, t['latitude'], t['longitude'])
-                        if d < min_d:
-                            min_d = d
-                            found = t
-                    
-                    if found and min_d < 1:  # entro 1km = è il marker cliccato
-                        st.session_state.mappa_cliente_cliccato = found['nome_cliente']
-                
-                # Mostra scheda del cliente cliccato
-                if st.session_state.mappa_cliente_cliccato:
-                    nome_click = st.session_state.mappa_cliente_cliccato
-                    tappa_click = next((t for t in tappe if t['nome_cliente'] == nome_click), None)
-                    
-                    if tappa_click:
-                        with st.container(border=True):
-                            st.markdown(f"### 📍 {tappa_click['nome_cliente']}")
-                            
-                            info_parts = []
-                            if tappa_click.get('indirizzo'):
-                                info_parts.append(f"📍 {tappa_click['indirizzo']}")
-                            if tappa_click.get('ora_arrivo'):
-                                info_parts.append(f"⏰ Arrivo: {tappa_click['ora_arrivo']}")
-                            if tappa_click.get('distanza_km'):
-                                info_parts.append(f"🚗 {tappa_click['distanza_km']} km")
-                            ritardo = tappa_click.get('ritardo', 0)
-                            badge = '🔴' if ritardo >= 14 else '🟡' if ritardo >= 0 else '🟢'
-                            info_parts.append(f"{badge} Ritardo: {ritardo}gg")
-                            st.write(" · ".join(info_parts))
-                            
-                            # Pulsanti azione
-                            nav_url = f"https://www.google.com/maps/dir/?api=1&destination={tappa_click['latitude']},{tappa_click['longitude']}"
-                            cell = tappa_click.get('cellulare', '')
-                            
-                            btn_style = "display:inline-flex;align-items:center;justify-content:center;padding:8px 12px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:500;flex:1;text-align:center;min-height:38px;border:1px solid #ddd;color:#333;background:#f8f9fa;"
-                            
-                            html_btns = f'<div style="display:flex;gap:6px;margin:4px 0;">'
-                            html_btns += f'<a href="{nav_url}" target="_blank" style="{btn_style}">🚗 Vai</a>'
-                            if cell and cell.strip() and cell != 'nan':
-                                html_btns += f'<a href="tel:{cell}" style="{btn_style}">📱 Chiama</a>'
-                            html_btns += '</div>'
-                            st.markdown(html_btns, unsafe_allow_html=True)
-                            
-                            if st.button("👤 Apri Scheda Cliente", key="apri_scheda_mappa_giro", type="primary", use_container_width=True):
-                                st.session_state.cliente_selezionato = nome_click
-                                st.session_state.active_tab = "👤 Anagrafica"
-                                st.session_state.mappa_cliente_cliccato = None
-                                st.rerun()
+                # Mostra mappa
+                st_folium(m, width=None, height=500, use_container_width=True)
                 
                 # Lista tappe sotto la mappa
-                st.divider()
                 st.subheader("📋 Ordine Visite")
                 for idx, tappa in enumerate(tappe, 1):
                     ritardo = tappa.get('ritardo', 0)
                     badge = "🔴" if ritardo >= 14 else "🟡" if ritardo >= 0 else "🟢"
-                    with st.container(border=True):
-                        st.markdown(f"**{idx}. {tappa['nome_cliente']}** — {tappa.get('indirizzo', '')}  \n{badge} {tappa.get('ora_arrivo', '--:--')} · 🚗 {tappa.get('distanza_km', 0)} km")
-                        if st.button("👤 Scheda", key=f"giro_scheda_{tappa['id']}", use_container_width=True):
-                            st.session_state.cliente_selezionato = tappa['nome_cliente']
-                            st.session_state.active_tab = "👤 Anagrafica"
-                            st.rerun()
+                    col_t1, col_t2, col_t3 = st.columns([1, 3, 1])
+                    col_t1.write(f"**{idx}.**")
+                    col_t2.write(f"{tappa['nome_cliente']} - {tappa.get('indirizzo', '')}")
+                    col_t3.write(f"{badge} {tappa.get('ora_arrivo', '--:--')}")
             
             return  # Non mostrare la mappa normale
         
-        # ============================================
-        # MAPPA TUTTI I CLIENTI
-        # ============================================
+        # === MAPPA NORMALE (tutti i clienti) ===
         if not df.empty:
-            # --- Geolocalizzazione ---
-            geo_lat = st.session_state.geo_lat
-            geo_lon = st.session_state.geo_lon
+            # Filtri
+            col_filtri1, col_filtri2, col_filtri3 = st.columns(3)
             
-            if geo_lat and geo_lon:
-                st.success(f"📍 Posizione rilevata: {geo_lat:.4f}, {geo_lon:.4f}")
-            else:
-                render_gps_button("mappa_gps_btn")
+            with col_filtri1:
+                filtro_stato = st.selectbox("📊 Stato:", ["Tutti", "Solo Attivi", "Solo Inattivi"], key="filtro_stato_mappa")
             
-            col_f1, col_f2 = st.columns(2)
-            with col_f1:
-                filtro_stato = st.selectbox("📊 Stato:", ["Tutti", "Solo nel giro", "Fuori giro"], key="filtro_stato_mappa")
-            with col_f2:
-                if geo_lat:
-                    raggio_km = st.slider("🎯 Raggio (km)", 1, 100, 30, key="raggio_mappa")
-                else:
-                    raggio_km = 100
+            with col_filtri2:
+                usa_posizione = st.checkbox("📍 Filtra per distanza dalla mia posizione", key="usa_pos_mappa")
             
-            # Posizione manuale
-            with st.expander("📍 Posizione manuale"):
-                col_m1, col_m2, col_m3 = st.columns([2, 2, 1])
-                with col_m1:
-                    manual_lat = st.number_input("Latitudine", value=float(geo_lat or config.get('lat_base', 39.22)), format="%.6f", key="manual_lat")
-                with col_m2:
-                    manual_lon = st.number_input("Longitudine", value=float(geo_lon or config.get('lon_base', 9.12)), format="%.6f", key="manual_lon")
-                with col_m3:
+            with col_filtri3:
+                if usa_posizione:
+                    raggio_km = st.slider("🎯 Raggio (km)", 5, 100, 30, key="raggio_mappa")
+            
+            # Se usa posizione, mostra input coordinate
+            if usa_posizione:
+                st.divider()
+                col_pos1, col_pos2, col_pos3 = st.columns([2, 2, 1])
+                
+                # Default: usa punto di partenza
+                default_lat = config.get('lat_base', 41.9028)
+                default_lon = config.get('lon_base', 12.4964)
+                
+                with col_pos1:
+                    mia_lat = st.number_input("📍 Mia Latitudine", value=float(default_lat), format="%.6f", key="mia_lat_mappa")
+                with col_pos2:
+                    mia_lon = st.number_input("📍 Mia Longitudine", value=float(default_lon), format="%.6f", key="mia_lon_mappa")
+                with col_pos3:
                     st.write("")
-                    if st.button("📍 Usa", key="usa_manual"):
-                        st.session_state.geo_lat = manual_lat
-                        st.session_state.geo_lon = manual_lon
+                    st.write("")
+                    if st.button("🏠 Usa Partenza", key="usa_partenza_mappa"):
+                        st.session_state.mia_lat_mappa = default_lat
+                        st.session_state.mia_lon_mappa = default_lon
                         st.rerun()
-                    if st.button("🏠 Base", key="usa_base"):
-                        st.session_state.geo_lat = float(config.get('lat_base', 39.22))
-                        st.session_state.geo_lon = float(config.get('lon_base', 9.12))
-                        st.rerun()
+                
+                st.caption("💡 Apri Google Maps sul telefono, tieni premuto sulla tua posizione, e copia le coordinate qui")
             
             st.divider()
             
-            # Filtra
+            # Filtra dataframe
             df_filtered = df.copy()
-            if filtro_stato == "Solo nel giro":
+            
+            # Filtra per stato
+            if filtro_stato == "Solo Attivi":
                 df_filtered = df_filtered[df_filtered['visitare'] == 'SI']
-            elif filtro_stato == "Fuori giro":
+            elif filtro_stato == "Solo Inattivi":
                 df_filtered = df_filtered[df_filtered['visitare'] != 'SI']
             
+            # Filtra solo con coordinate valide
             df_filtered = df_filtered[
                 (df_filtered['latitude'].notna()) & 
                 (df_filtered['longitude'].notna()) &
@@ -2955,192 +2497,75 @@ def main_app():
                 (df_filtered['longitude'] != 0)
             ]
             
-            # Calcola distanze dalla posizione
-            pos_lat = geo_lat or float(config.get('lat_base', 39.22))
-            pos_lon = geo_lon or float(config.get('lon_base', 9.12))
-            
-            df_filtered['distanza_km'] = df_filtered.apply(
-                lambda row: haversine(pos_lat, pos_lon, row['latitude'], row['longitude']), axis=1
-            )
-            
-            if geo_lat:
+            # Se usa posizione, calcola distanza e filtra
+            if usa_posizione and mia_lat != 0 and mia_lon != 0:
+                df_filtered['distanza_km'] = df_filtered.apply(
+                    lambda row: haversine(mia_lat, mia_lon, row['latitude'], row['longitude']), axis=1
+                )
                 df_filtered = df_filtered[df_filtered['distanza_km'] <= raggio_km]
-            
-            df_filtered = df_filtered.sort_values('distanza_km')
-            
-            st.write(f"📍 **{len(df_filtered)} clienti** nel raggio di {raggio_km} km")
+                df_filtered = df_filtered.sort_values('distanza_km')
+                
+                st.success(f"🎯 **{len(df_filtered)} clienti** nel raggio di {raggio_km} km dalla tua posizione")
             
             if not df_filtered.empty:
-                # Costruisci mappa
-                m = folium.Map(location=[pos_lat, pos_lon], zoom_start=12 if geo_lat else 9)
+                # Centro mappa
+                if usa_posizione and mia_lat != 0:
+                    center_lat, center_lon = mia_lat, mia_lon
+                    zoom = 10
+                else:
+                    center_lat = df_filtered['latitude'].mean()
+                    center_lon = df_filtered['longitude'].mean()
+                    zoom = 8
                 
-                # Locate control (pulsante GPS nativo nella mappa)
-                try:
-                    from folium.plugins import LocateControl
-                    LocateControl(
-                        auto_start=True,
-                        strings={"title": "Mostra la mia posizione"}
-                    ).add_to(m)
-                except:
-                    pass
+                m = folium.Map(location=[center_lat, center_lon], zoom_start=zoom)
                 
                 # Marker posizione utente
-                folium.Marker(
-                    [pos_lat, pos_lon],
-                    popup="📍 La mia posizione",
-                    tooltip="📍 IO SONO QUI",
-                    icon=folium.Icon(color='blue', icon='user', prefix='fa')
-                ).add_to(m)
-                
-                # Cerchio raggio
-                if geo_lat:
+                if usa_posizione and mia_lat != 0:
+                    folium.Marker(
+                        [mia_lat, mia_lon],
+                        popup="📍 La mia posizione",
+                        icon=folium.Icon(color="blue", icon="user")
+                    ).add_to(m)
+                    
+                    # Cerchio del raggio
                     folium.Circle(
-                        [pos_lat, pos_lon],
+                        [mia_lat, mia_lon],
                         radius=raggio_km * 1000,
-                        color='blue', fill=True, fillOpacity=0.05, weight=1
+                        color='blue',
+                        fill=True,
+                        fillOpacity=0.1
                     ).add_to(m)
                 
-                # Marker clienti con tooltip (nome) e popup (dettagli)
+                # Marker clienti
                 for _, row in df_filtered.iterrows():
-                    lat_c = row['latitude']
-                    lon_c = row['longitude']
-                    nome_c = row['nome_cliente']
-                    ind_c = row.get('indirizzo', '') or ''
-                    dist_c = row.get('distanza_km', 0)
-                    visitare = str(row.get('visitare', 'SI')).upper()
+                    color = "green" if row['visitare'] == "SI" else "red"
                     
-                    # Colore: verde = nel giro, grigio = fuori giro
-                    color = 'green' if visitare == 'SI' else 'lightgray'
-                    
-                    # Ritardo
-                    ultima = row.get('ultima_visita')
-                    freq = int(row.get('frequenza_giorni', 30))
-                    if pd.isnull(ultima) or (hasattr(ultima, 'year') and ultima.year < 2001):
-                        ritardo_str = "Mai visitato"
-                        badge = "🔵"
-                    else:
-                        ultima_date = ultima.date() if hasattr(ultima, 'date') else ultima
-                        prossima = ultima_date + timedelta(days=freq)
-                        ritardo_gg = (ora_italiana.date() - prossima).days
-                        if ritardo_gg > 0:
-                            ritardo_str = f"In ritardo di {ritardo_gg}gg"
-                            badge = "🔴"
-                        elif ritardo_gg >= -7:
-                            ritardo_str = f"Scade tra {abs(ritardo_gg)}gg"
-                            badge = "🟡"
-                        else:
-                            ritardo_str = f"OK (tra {abs(ritardo_gg)}gg)"
-                            badge = "🟢"
-                    
-                    popup_html = f"""<div style="min-width:180px;font-size:13px;">
-                    <b>{nome_c}</b><br>
-                    📍 {ind_c}<br>
-                    🚗 {dist_c:.1f} km da te<br>
-                    {badge} {ritardo_str}
-                    </div>"""
+                    popup_text = f"<b>{row['nome_cliente']}</b><br>"
+                    if row.get('indirizzo'):
+                        popup_text += f"📍 {row['indirizzo']}<br>"
+                    if usa_posizione and 'distanza_km' in row:
+                        popup_text += f"🚗 {row['distanza_km']:.1f} km"
                     
                     folium.Marker(
-                        [lat_c, lon_c],
-                        popup=folium.Popup(popup_html, max_width=250),
-                        tooltip=f"{nome_c} ({dist_c:.1f}km)",
-                        icon=folium.Icon(color=color, icon='briefcase', prefix='fa')
+                        [row['latitude'], row['longitude']],
+                        popup=popup_text,
+                        icon=folium.Icon(color=color)
                     ).add_to(m)
                 
-                # Mostra mappa e cattura click
-                map_data = st_folium(m, width=None, height=500, use_container_width=True, key="mappa_clienti")
+                st_folium(m, width="100%", height=450, key="mappa_clienti")
                 
-                # Rileva click su marker
-                clicked = map_data.get('last_object_clicked') if map_data else None
-                if clicked:
-                    click_lat = clicked.get('lat', 0)
-                    click_lon = clicked.get('lng', 0)
+                # Lista clienti vicini
+                if usa_posizione and 'distanza_km' in df_filtered.columns:
+                    st.divider()
+                    st.subheader(f"📋 Clienti più vicini ({len(df_filtered)})")
                     
-                    # Trova il cliente più vicino al punto cliccato
-                    min_d = float('inf')
-                    found_nome = None
-                    for _, row in df_filtered.iterrows():
-                        d = haversine(click_lat, click_lon, row['latitude'], row['longitude'])
-                        if d < min_d:
-                            min_d = d
-                            found_nome = row['nome_cliente']
-                    
-                    if found_nome and min_d < 1:  # entro 1km
-                        st.session_state.mappa_cliente_cliccato = found_nome
-                
-                # === SCHEDA CLIENTE CLICCATO ===
-                if st.session_state.mappa_cliente_cliccato:
-                    nome_sel = st.session_state.mappa_cliente_cliccato
-                    cliente_row = df_filtered[df_filtered['nome_cliente'] == nome_sel]
-                    
-                    if not cliente_row.empty:
-                        c = cliente_row.iloc[0]
-                        with st.container(border=True):
-                            st.markdown(f"### 📍 {c['nome_cliente']}")
-                            
-                            info = []
-                            if c.get('indirizzo'):
-                                info.append(f"📍 {c['indirizzo']}")
-                            if c.get('citta'):
-                                info.append(f"🏙️ {c['citta']}")
-                            dist_c = c.get('distanza_km', 0)
-                            info.append(f"🚗 {dist_c:.1f} km da te")
-                            
-                            ultima = c.get('ultima_visita')
-                            if pd.notnull(ultima) and hasattr(ultima, 'strftime'):
-                                info.append(f"📅 Ultima visita: {ultima.strftime('%d/%m/%Y')}")
-                            else:
-                                info.append("📅 Mai visitato")
-                            
-                            st.write(" · ".join(info))
-                            
-                            # Pulsanti azione (HTML flex per mobile)
-                            nav_url = f"https://www.google.com/maps/dir/?api=1&destination={c['latitude']},{c['longitude']}"
-                            cell_val = str(c.get('cellulare', '')) if pd.notna(c.get('cellulare')) else ''
-                            mail_val = str(c.get('email', '')) if pd.notna(c.get('email')) else ''
-                            
-                            btn_s = "display:inline-flex;align-items:center;justify-content:center;padding:8px 12px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:500;flex:1;text-align:center;min-height:38px;border:1px solid #ddd;color:#333;background:#f8f9fa;"
-                            btn_d = btn_s + "opacity:0.35;pointer-events:none;color:#999;"
-                            
-                            html_btns = '<div style="display:flex;gap:6px;margin:4px 0;">'
-                            html_btns += f'<a href="{nav_url}" target="_blank" style="{btn_s}">🚗 Vai</a>'
-                            html_btns += f'<a href="tel:{cell_val}" style="{btn_s}">📱 Chiama</a>' if cell_val and cell_val.strip() and cell_val != 'nan' else f'<span style="{btn_d}">📱 Chiama</span>'
-                            html_btns += f'<a href="mailto:{mail_val}" style="{btn_s}">📧 Mail</a>' if mail_val and mail_val.strip() and mail_val != 'nan' else f'<span style="{btn_d}">📧 Mail</span>'
-                            html_btns += '</div>'
-                            st.markdown(html_btns, unsafe_allow_html=True)
-                            
-                            if st.button("👤 Apri Scheda Cliente", key="apri_scheda_mappa", type="primary", use_container_width=True):
-                                st.session_state.cliente_selezionato = nome_sel
-                                st.session_state.active_tab = "👤 Anagrafica"
-                                st.session_state.mappa_cliente_cliccato = None
-                                st.rerun()
-                
-                # === LISTA CLIENTI VICINI ===
-                st.divider()
-                st.subheader(f"📋 Clienti più vicini ({min(15, len(df_filtered))} di {len(df_filtered)})")
-                
-                for _, row in df_filtered.head(15).iterrows():
-                    dist_c = row.get('distanza_km', 0)
-                    nome_c = row['nome_cliente']
-                    ind_c = row.get('indirizzo', '') or ''
-                    
-                    with st.container(border=True):
-                        st.markdown(f"**{nome_c}** — 🚗 {dist_c:.1f} km  \n📍 {ind_c}")
-                        
-                        nav_url = f"https://www.google.com/maps/dir/?api=1&destination={row['latitude']},{row['longitude']}"
-                        cell_v = str(row.get('cellulare', '')) if pd.notna(row.get('cellulare')) else ''
-                        
-                        btn_s = "display:inline-flex;align-items:center;justify-content:center;padding:8px 4px;border-radius:8px;text-decoration:none;font-size:13px;font-weight:500;flex:1;text-align:center;min-height:36px;border:1px solid #ddd;color:#333;background:#f8f9fa;"
-                        btn_d = btn_s + "opacity:0.35;pointer-events:none;color:#999;"
-                        
-                        h = '<div style="display:flex;gap:5px;margin:2px 0;">'
-                        h += f'<a href="{nav_url}" target="_blank" style="{btn_s}">🚗 Vai</a>'
-                        h += f'<a href="tel:{cell_v}" style="{btn_s}">📱</a>' if cell_v and cell_v.strip() and cell_v != 'nan' else f'<span style="{btn_d}">📱</span>'
-                        h += '</div>'
-                        st.markdown(h, unsafe_allow_html=True)
-                        
-                        if st.button("👤 Scheda", key=f"lista_scheda_{row['id']}", use_container_width=True):
-                            st.session_state.cliente_selezionato = nome_c
-                            st.session_state.active_tab = "👤 Anagrafica"
+                    for _, row in df_filtered.head(10).iterrows():
+                        col1, col2, col3 = st.columns([3, 1, 1])
+                        col1.write(f"**{row['nome_cliente']}** - {row['distanza_km']:.1f} km")
+                        col2.link_button("🚗", f"https://www.google.com/maps/dir/?api=1&destination={row['latitude']},{row['longitude']}", use_container_width=True)
+                        if col3.button("👤", key=f"mappa_cliente_{row['id']}"):
+                            st.session_state.cliente_selezionato = row['nome_cliente']
+                            st.session_state.active_tab = "👤 Clienti"
                             st.rerun()
             else:
                 st.warning("⚠️ Nessun cliente trovato con i filtri selezionati")
@@ -3148,85 +2573,10 @@ def main_app():
             st.info("Nessun cliente da mostrare")
     
     # --- TAB: ANAGRAFICA ---
-    elif st.session_state.active_tab == "👤 Anagrafica":
+    elif st.session_state.active_tab == "👤 Clienti":
         st.header("👤 Anagrafica Cliente")
         
         if not df.empty:
-            # =============================================
-            # GESTIONE RAPIDA GIRO — toggle visitare SI/NO
-            # =============================================
-            with st.expander("⚡ Gestione Rapida — Includi/Escludi dal Giro", expanded=False):
-                st.caption("Attiva/disattiva velocemente i clienti nel giro visite")
-                
-                # Filtri per la gestione rapida
-                col_qf1, col_qf2, col_qf3 = st.columns(3)
-                with col_qf1:
-                    q_filtro = st.selectbox("Mostra:", ["Tutti", "Nel giro", "Fuori giro"], key="q_filtro_giro")
-                with col_qf2:
-                    q_citta = st.selectbox("Città:", ["Tutte"] + sorted(df['citta'].dropna().unique().tolist()), key="q_filtro_citta")
-                with col_qf3:
-                    q_cerca = st.text_input("🔍 Cerca:", key="q_cerca_nome", placeholder="Nome cliente...")
-                
-                df_quick = df.copy()
-                if q_filtro == "Nel giro":
-                    df_quick = df_quick[df_quick['visitare'] == 'SI']
-                elif q_filtro == "Fuori giro":
-                    df_quick = df_quick[df_quick['visitare'] != 'SI']
-                if q_citta != "Tutte":
-                    df_quick = df_quick[df_quick['citta'] == q_citta]
-                if q_cerca:
-                    df_quick = df_quick[df_quick['nome_cliente'].str.contains(q_cerca, case=False, na=False)]
-                
-                df_quick = df_quick.sort_values('nome_cliente')
-                
-                st.write(f"**{len(df_quick)} clienti**")
-                
-                # Pulsanti "Seleziona/Deseleziona tutti" filtrati
-                col_all1, col_all2 = st.columns(2)
-                with col_all1:
-                    if st.button("✅ Tutti nel giro", key="q_tutti_si", use_container_width=True):
-                        ids_da_attivare = df_quick['id'].tolist()
-                        for cid in ids_da_attivare:
-                            update_cliente(cid, {'visitare': 'SI'})
-                        st.session_state.reload_data = True
-                        st.success(f"✅ {len(ids_da_attivare)} clienti attivati!")
-                        time_module.sleep(0.5)
-                        st.rerun()
-                with col_all2:
-                    if st.button("❌ Tutti fuori giro", key="q_tutti_no", use_container_width=True):
-                        ids_da_disattivare = df_quick['id'].tolist()
-                        for cid in ids_da_disattivare:
-                            update_cliente(cid, {'visitare': 'NO'})
-                        st.session_state.reload_data = True
-                        st.warning(f"❌ {len(ids_da_disattivare)} clienti disattivati!")
-                        time_module.sleep(0.5)
-                        st.rerun()
-                
-                st.divider()
-                
-                # Lista clienti con toggle
-                for _, row in df_quick.iterrows():
-                    cid = row['id']
-                    nome = row['nome_cliente']
-                    citta = row.get('citta', '') or ''
-                    attivo = str(row.get('visitare', 'SI')).upper() == 'SI'
-                    
-                    col_nome, col_toggle = st.columns([3, 1])
-                    with col_nome:
-                        badge = "🟢" if attivo else "⚪"
-                        st.write(f"{badge} **{nome}**  \n{citta}")
-                    with col_toggle:
-                        nuovo_stato = st.toggle(
-                            "Giro",
-                            value=attivo,
-                            key=f"q_toggle_{cid}",
-                            label_visibility="collapsed"
-                        )
-                        if nuovo_stato != attivo:
-                            update_cliente(cid, {'visitare': 'SI' if nuovo_stato else 'NO'})
-                            st.session_state.reload_data = True
-                            st.rerun()
-            
             # === 1. BARRA RICERCA CLIENTE ===
             col_filtro1, col_filtro2, col_filtro3 = st.columns([2, 1, 1])
             
@@ -3667,62 +3017,29 @@ def main_app():
         
         # === SEZIONE GPS ===
         st.subheader("📍 Posizione GPS")
-        st.caption("Usa il GPS del dispositivo oppure incolla le coordinate da Google Maps")
+        st.caption("Usa il GPS per compilare automaticamente l'indirizzo del cliente")
         
-        # Controlla se ci sono coordinate GPS dai query params
-        gps_data = read_gps_from_url()
-        if gps_data and 'gps_acquisito_nuovo' not in st.session_state:
-            st.session_state.gps_acquisito_nuovo = True
-            # Reverse geocoding per ottenere indirizzo
-            addr = reverse_geocode(gps_data['latitude'], gps_data['longitude'])
-            if addr:
-                st.session_state.nuovo_cliente_indirizzo = addr.get('via', '')
-                st.session_state.nuovo_cliente_cap = addr.get('cap', '')
-                st.session_state.nuovo_cliente_citta = addr.get('citta', '')
-                st.session_state.nuovo_cliente_provincia = addr.get('provincia', '')
-            st.session_state.nuovo_cliente_lat = gps_data['latitude']
-            st.session_state.nuovo_cliente_lon = gps_data['longitude']
-            clear_gps_from_url()
-            st.rerun()
-        
-        col_gps1, col_gps2 = st.columns([1, 1])
+        col_gps1, col_gps2 = st.columns([2, 1])
         
         with col_gps1:
-            # Pulsante GPS nativo del browser
-            render_gps_button("nuovo_cliente")
-            if st.button("🔄 Conferma posizione GPS", use_container_width=True, 
-                         help="Dopo aver premuto 'Rileva GPS', premi qui per caricare la posizione"):
-                gps_check = read_gps_from_url()
-                if gps_check:
-                    with st.spinner("🔄 Ricerca indirizzo..."):
-                        addr = reverse_geocode(gps_check['latitude'], gps_check['longitude'])
-                    if addr:
-                        st.session_state.nuovo_cliente_indirizzo = addr.get('via', '')
-                        st.session_state.nuovo_cliente_cap = addr.get('cap', '')
-                        st.session_state.nuovo_cliente_citta = addr.get('citta', '')
-                        st.session_state.nuovo_cliente_provincia = addr.get('provincia', '')
-                    st.session_state.nuovo_cliente_lat = gps_check['latitude']
-                    st.session_state.nuovo_cliente_lon = gps_check['longitude']
-                    clear_gps_from_url()
-                    st.success("✅ Posizione GPS acquisita!")
-                    st.rerun()
-                else:
-                    st.warning("⚠️ Premi prima '📍 Rileva Posizione GPS' e poi questo pulsante")
-
-        with col_gps2:
             # Input manuale coordinate (può essere compilato da GPS o manualmente)
             coords_input = st.text_input(
-                "📍 Oppure incolla coordinate (lat, lon):",
-                placeholder="Es: 45.4642, 9.1900 - Da Google Maps",
+                "📍 Coordinate (lat, lon):",
+                placeholder="Es: 45.4642, 9.1900 - Incolla da Google Maps o usa GPS",
                 key="coords_input_nuovo"
             )
-            if st.button("🔍 Cerca Indirizzo da Coordinate", use_container_width=True, type="primary"):
+        
+        with col_gps2:
+            st.write("")  # Spacer
+            if st.button("🔍 Cerca Indirizzo", use_container_width=True, type="primary"):
                 if coords_input:
                     try:
+                        # Parse delle coordinate
                         parts = coords_input.replace(" ", "").split(",")
                         lat = float(parts[0])
                         lon = float(parts[1])
                         
+                        # Reverse geocoding
                         with st.spinner("🔄 Ricerca indirizzo..."):
                             addr = reverse_geocode(lat, lon)
                         
@@ -3733,29 +3050,29 @@ def main_app():
                             st.session_state.nuovo_cliente_provincia = addr.get('provincia', '')
                             st.session_state.nuovo_cliente_lat = lat
                             st.session_state.nuovo_cliente_lon = lon
-                            st.success("✅ Indirizzo trovato!")
+                            st.success(f"✅ Indirizzo trovato!")
                             st.rerun()
                         else:
-                            st.error("❌ Indirizzo non trovato per queste coordinate")
+                            st.error("❌ Indirizzo non trovato")
                     except:
-                        st.error("❌ Formato non valido. Usa: latitudine, longitudine")
+                        st.error("❌ Formato coordinate non valido. Usa: lat, lon")
                 else:
                     st.warning("⚠️ Inserisci le coordinate")
         
         # Istruzioni per ottenere coordinate
         with st.expander("💡 Come ottenere le coordinate"):
             st.markdown("""
-            **Metodo 1 - GPS automatico (da smartphone):**
-            1. Premi **📍 Rileva Posizione GPS** qui sopra
-            2. Consenti l'accesso alla posizione
-            3. Premi **🔄 Conferma posizione GPS**
-            
-            **Metodo 2 - Da Google Maps (smartphone o PC):**
+            **Da smartphone (sul posto):**
             1. Apri **Google Maps**
             2. Tieni premuto sulla posizione esatta
-            3. Tocca/clicca sulle coordinate che appaiono
-            4. Incollale nel campo "Coordinate"
-            5. Premi **🔍 Cerca Indirizzo**
+            3. Tocca le coordinate che appaiono in basso
+            4. Incollale qui sopra
+            
+            **Da PC:**
+            1. Vai su [Google Maps](https://maps.google.com)
+            2. Clicca con il destro sul punto
+            3. Clicca sulle coordinate per copiarle
+            4. Incollale qui sopra
             """)
         
         # Mostra indirizzo trovato
@@ -3862,42 +3179,6 @@ def main_app():
         citta_attuale = config.get('citta_base', 'Roma')
         
         st.info(f"📍 **Posizione attuale:** {citta_attuale} ({lat_attuale:.6f}, {lon_attuale:.6f})")
-        
-        # Controlla se ci sono coordinate GPS dai query params (per la base)
-        gps_data_config = read_gps_from_url()
-        if gps_data_config:
-            with st.spinner("🔄 Aggiornamento posizione base da GPS..."):
-                addr_info = reverse_geocode(gps_data_config['latitude'], gps_data_config['longitude'])
-                citta_nome = addr_info['citta'] if addr_info and addr_info.get('citta') else "Posizione GPS"
-            
-            config['citta_base'] = citta_nome
-            config['lat_base'] = gps_data_config['latitude']
-            config['lon_base'] = gps_data_config['longitude']
-            save_config(config)
-            st.session_state.config = config
-            clear_gps_from_url()
-            st.success(f"✅ Posizione base aggiornata via GPS: {citta_nome}")
-            st.rerun()
-        
-        # Opzione 0: GPS
-        with st.expander("📍 Usa GPS per impostare posizione base"):
-            render_gps_button("config_base")
-            if st.button("🔄 Conferma posizione GPS come base", use_container_width=True, type="primary",
-                         help="Dopo aver premuto 'Rileva GPS', premi qui"):
-                gps_check = read_gps_from_url()
-                if gps_check:
-                    addr_info = reverse_geocode(gps_check['latitude'], gps_check['longitude'])
-                    citta_nome = addr_info['citta'] if addr_info and addr_info.get('citta') else "Posizione GPS"
-                    config['citta_base'] = citta_nome
-                    config['lat_base'] = gps_check['latitude']
-                    config['lon_base'] = gps_check['longitude']
-                    save_config(config)
-                    st.session_state.config = config
-                    clear_gps_from_url()
-                    st.success(f"✅ Base aggiornata: {citta_nome}")
-                    st.rerun()
-                else:
-                    st.warning("⚠️ Premi prima il pulsante GPS, poi conferma qui")
         
         # Opzione 1: Inserisci città
         col_part1, col_part2 = st.columns(2)
@@ -4652,7 +3933,7 @@ def main_app():
     
     # Footer
     st.divider()
-    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 8.0")
+    st.caption("🚀 **Giro Visite CRM Pro** - Versione SaaS 3.1")
 
 # --- RUN APP ---
 init_auth_state()
