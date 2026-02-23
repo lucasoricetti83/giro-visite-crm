@@ -1526,8 +1526,241 @@ def calcola_piano_giornaliero(df, giorno_settimana, config, esclusi=[], variante
     agenda = calcola_agenda_settimanale(df, config, esclusi, settimana_offset=0, variante=variante)
     return agenda.get(giorno_settimana, [])
 
-# --- 6. MAIN APP ---
-# --- 6. MAIN APP ---
+# --- 6. GOOGLE MAPS ROUTING FUNCTIONS ---
+def _gm_request(method, url, **kwargs):
+    """Request con retry e backoff esponenziale."""
+    kwargs.setdefault('timeout', 15)
+    for attempt in range(3):
+        try:
+            resp = requests.request(method, url, **kwargs)
+            if resp.status_code == 429 or resp.status_code >= 500:
+                time_module.sleep(1.0 * (2 ** attempt))
+                continue
+            return resp
+        except requests.exceptions.Timeout:
+            if attempt < 2:
+                time_module.sleep(1.0 * (2 ** attempt))
+                continue
+            raise
+    return resp
+
+def google_route_matrix(points, api_key):
+    """
+    Matrice NxN tempi/distanze reali via Google Routes API.
+    points: lista di (lat, lon)
+    Ritorna: (dur_matrix, dist_matrix) o (None, None)
+    """
+    if not api_key or len(points) < 2:
+        return None, None
+    url = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix"
+    wps = [{"waypoint": {"location": {"latLng": {"latitude": p[0], "longitude": p[1]}}}} for p in points]
+    body = {"origins": wps, "destinations": wps, "travelMode": "DRIVE", "routingPreference": "TRAFFIC_AWARE"}
+    headers = {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': api_key,
+        'X-Goog-FieldMask': 'originIndex,destinationIndex,duration,distanceMeters,status'
+    }
+    try:
+        resp = _gm_request('POST', url, json=body, headers=headers)
+        if resp.status_code != 200:
+            st.session_state._google_last_error = f"Route Matrix HTTP {resp.status_code}: {resp.text[:200]}"
+            return None, None
+        n = len(points)
+        dur = [[0]*n for _ in range(n)]
+        dist = [[0]*n for _ in range(n)]
+        for elem in resp.json():
+            i, j = elem.get('originIndex', 0), elem.get('destinationIndex', 0)
+            d_str = elem.get('duration', '0s')
+            dur[i][j] = int(d_str.rstrip('s')) if isinstance(d_str, str) else int(d_str)
+            dist[i][j] = int(elem.get('distanceMeters', 0))
+        return dur, dist
+    except Exception as e:
+        st.session_state._google_last_error = f"Route Matrix: {str(e)[:200]}"
+        return None, None
+
+def google_compute_route(origin, destination, waypoints, api_key):
+    """
+    Percorso dettagliato con polyline via Google Routes API.
+    origin/destination: (lat, lon)
+    waypoints: [(lat, lon), ...]
+    Ritorna: dict con polyline, duration_s, distance_m, legs o None
+    """
+    if not api_key:
+        return None
+    url = "https://routes.googleapis.com/directions/v2:computeRoutes"
+    def mkwp(p):
+        return {"location": {"latLng": {"latitude": p[0], "longitude": p[1]}}}
+    body = {
+        "origin": {"waypoint": mkwp(origin)},
+        "destination": {"waypoint": mkwp(destination)},
+        "travelMode": "DRIVE", "routingPreference": "TRAFFIC_AWARE",
+        "computeAlternativeRoutes": False, "polylineEncoding": "ENCODED_POLYLINE"
+    }
+    if waypoints:
+        body["intermediates"] = [{"waypoint": mkwp(wp)} for wp in waypoints]
+    headers = {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': api_key,
+        'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline,routes.legs.duration,routes.legs.distanceMeters'
+    }
+    try:
+        resp = _gm_request('POST', url, json=body, headers=headers)
+        if resp.status_code != 200:
+            st.session_state._google_last_error = f"Compute Route HTTP {resp.status_code}: {resp.text[:200]}"
+            return None
+        routes = resp.json().get('routes', [])
+        if not routes:
+            return None
+        r = routes[0]
+        dur_s = r.get('duration', '0s')
+        total_dur = int(dur_s.rstrip('s')) if isinstance(dur_s, str) else int(dur_s)
+        legs = []
+        for leg in r.get('legs', []):
+            ld = leg.get('duration', '0s')
+            legs.append({
+                'dur_s': int(ld.rstrip('s')) if isinstance(ld, str) else int(ld),
+                'dist_m': int(leg.get('distanceMeters', 0))
+            })
+        return {
+            'polyline': r.get('polyline', {}).get('encodedPolyline', ''),
+            'duration_s': total_dur,
+            'distance_m': int(r.get('distanceMeters', 0)),
+            'legs': legs
+        }
+    except Exception as e:
+        st.session_state._google_last_error = f"Compute Route: {str(e)[:200]}"
+        return None
+
+def held_karp_tsp(dist_matrix, start=0):
+    """TSP esatto Held-Karp per ≤12 punti. Ritorna (path, cost)."""
+    n = len(dist_matrix)
+    if n <= 1: return [start], 0
+    if n == 2:
+        other = 1 - start
+        return [start, other], dist_matrix[start][other] + dist_matrix[other][start]
+    INF = float('inf')
+    dp = [[INF]*n for _ in range(1 << n)]
+    parent = [[-1]*n for _ in range(1 << n)]
+    dp[1 << start][start] = 0
+    for S in range(1 << n):
+        for u in range(n):
+            if dp[S][u] == INF or not (S & (1 << u)): continue
+            for v in range(n):
+                if S & (1 << v): continue
+                nS = S | (1 << v)
+                nc = dp[S][u] + dist_matrix[u][v]
+                if nc < dp[nS][v]:
+                    dp[nS][v] = nc; parent[nS][v] = u
+    full = (1 << n) - 1
+    best_c, best_l = INF, -1
+    for u in range(n):
+        c = dp[full][u] + dist_matrix[u][start]
+        if c < best_c: best_c = c; best_l = u
+    path = []; S = full; u = best_l
+    while u != -1:
+        path.append(u); prev = parent[S][u]; S ^= (1 << u); u = prev
+    path.reverse()
+    if path and path[0] != start:
+        try:
+            idx = path.index(start); path = path[idx:] + path[:idx]
+        except: path = [start] + path
+    return path, best_c
+
+def nn_2opt_tsp(dist_matrix, start=0):
+    """TSP euristica NN + 2-opt per >12 punti."""
+    n = len(dist_matrix)
+    visited = [False]*n; path = [start]; visited[start] = True
+    for _ in range(n-1):
+        cur = path[-1]; best_n, best_d = -1, float('inf')
+        for j in range(n):
+            if not visited[j] and dist_matrix[cur][j] < best_d:
+                best_d = dist_matrix[cur][j]; best_n = j
+        if best_n == -1: break
+        path.append(best_n); visited[best_n] = True
+    def rc(p):
+        c = sum(dist_matrix[p[i]][p[i+1]] for i in range(len(p)-1))
+        return c + dist_matrix[p[-1]][start]
+    improved = True
+    while improved:
+        improved = False; bc = rc(path)
+        for i in range(1, len(path)-1):
+            for j in range(i+2, len(path)):
+                np2 = path[:i+1] + path[i+1:j+1][::-1] + path[j+1:]
+                if rc(np2) < bc - 1: path = np2; improved = True; break
+            if improved: break
+    return path, rc(path)
+
+def ottimizza_ordine_con_google(tappe, base_lat, base_lon, api_key):
+    """
+    Prende le tappe calcolate dall'algoritmo e le RIORDINA
+    usando la matrice tempi reali di Google + TSP esatto.
+    Ritorna: (tappe_riordinate, route_info) — route_info ha polyline e legs.
+    """
+    if not api_key or len(tappe) < 2:
+        return tappe, None
+    
+    # Costruisci punti: [BASE] + [tappe...]
+    pts = [(base_lat, base_lon)]
+    for t in tappe:
+        pts.append((t['latitude'], t['longitude']))
+    
+    # Matrice tempi reali
+    dur_matrix, dist_matrix = google_route_matrix(pts, api_key)
+    if dur_matrix is None:
+        return tappe, None
+    
+    # TSP
+    n = len(pts)
+    if n <= 12:
+        order, cost = held_karp_tsp(dur_matrix, start=0)
+    else:
+        order, cost = nn_2opt_tsp(dur_matrix, start=0)
+    
+    # Riordina tappe (salta indice 0 = base)
+    nuove_tappe = []
+    for idx in order:
+        if idx == 0: continue
+        ti = idx - 1
+        if 0 <= ti < len(tappe):
+            nuove_tappe.append(tappe[ti])
+    
+    # Ricalcola distanze e orari nelle tappe
+    prev_lat, prev_lon = base_lat, base_lon
+    for t in nuove_tappe:
+        t['distanza_km'] = round(haversine(prev_lat, prev_lon, t['latitude'], t['longitude']), 1)
+        prev_lat, prev_lon = t['latitude'], t['longitude']
+    
+    # Percorso dettagliato con polyline
+    wps = [(t['latitude'], t['longitude']) for t in nuove_tappe]
+    route = google_compute_route((base_lat, base_lon), (base_lat, base_lon), wps, api_key)
+    
+    # Aggiorna tempi/distanze nelle tappe con dati reali Google
+    if route and route.get('legs'):
+        legs = route['legs']
+        for i, t in enumerate(nuove_tappe):
+            if i < len(legs):
+                t['distanza_km'] = round(legs[i]['dist_m'] / 1000, 1)
+                t['tempo_guida_min'] = legs[i]['dur_s'] // 60
+    
+    return nuove_tappe, route
+
+def decode_google_polyline(encoded):
+    """Decodifica polyline Google → [(lat, lon), ...]"""
+    pts = []; idx = 0; lat = 0; lng = 0
+    while idx < len(encoded):
+        for coord in ['lat', 'lng']:
+            shift = 0; result = 0
+            while True:
+                b = ord(encoded[idx]) - 63; idx += 1
+                result |= (b & 0x1F) << shift; shift += 5
+                if b < 0x20: break
+            delta = ~(result >> 1) if (result & 1) else (result >> 1)
+            if coord == 'lat': lat += delta
+            else: lng += delta
+        pts.append((lat/1e5, lng/1e5))
+    return pts
+
+# --- 7. MAIN APP ---
 def main_app():
     # Verifica che l'utente sia ancora valido
     if not st.session_state.user:
@@ -1589,8 +1822,8 @@ def main_app():
         st.divider()
         
         # === MENU NAVIGAZIONE (nella sidebar) ===
-        menu_keys =   ["🚀 Giro Oggi", "📊 Dashboard", "📅 Agenda", "🗺️ Mappa", "🧭 Routing", "👤 Anagrafica", "➕ Nuovo", "⚙️ Config"]
-        menu_labels = ["🚀 Giro Oggi", "📊 Dashboard", "📅 Agenda", "🗺️ Mappa", "🧭 Giro Google", "👤 Anagrafica", "➕ Nuovo Cliente", "⚙️ Configurazione"]
+        menu_keys =   ["🚀 Giro Oggi", "📊 Dashboard", "📅 Agenda", "🗺️ Mappa", "👤 Anagrafica", "➕ Nuovo", "⚙️ Config"]
+        menu_labels = ["🚀 Giro Oggi", "📊 Dashboard", "📅 Agenda", "🗺️ Mappa", "👤 Anagrafica", "➕ Nuovo Cliente", "⚙️ Configurazione"]
         
         current_key = st.session_state.get('active_tab', "🚀 Giro Oggi")
         # Se siamo in Admin, il radio punta a indice 0 ma NON deve sovrascrivere
@@ -1686,6 +1919,7 @@ def main_app():
         with col_regen:
             if st.button("🔄 Rigenera", use_container_width=True, help="Propone un giro diverso"):
                 st.session_state.variante_giro = st.session_state.get('variante_giro', 0) + 1
+                st.session_state._route_cache_key = None  # forza ricalcolo Google
                 st.rerun()
         with col_refresh:
             if st.button("🔃", use_container_width=True, help="Ricarica dati"):
@@ -1710,6 +1944,7 @@ def main_app():
                 st.info(f"🔄 Giro rigenerato {variante_attuale} volta/e - Premi '🔄 Rigenera' per provare un altro percorso")
                 if st.button("↩️ Torna al giro originale"):
                     st.session_state.variante_giro = 0
+                    st.session_state._route_cache_key = None
                     st.rerun()
             
             st.divider()
@@ -1797,6 +2032,33 @@ def main_app():
             variante = st.session_state.get('variante_giro', 0)
             tappe_oggi = calcola_piano_giornaliero(df, idx_g, config, st.session_state.esclusi_oggi, variante=variante)
             
+            # OTTIMIZZAZIONE ORDINE CON GOOGLE MAPS (tempi stradali reali + TSP)
+            if tappe_oggi and len(tappe_oggi) >= 2 and GOOGLE_MAPS_API_KEY:
+                cache_key = f"route_{idx_g}_{variante}_{len(tappe_oggi)}_{','.join(t['nome_cliente'][:5] for t in tappe_oggi[:3])}"
+                if st.session_state.get('_route_cache_key') != cache_key:
+                    try:
+                        tappe_oggi, route_info = ottimizza_ordine_con_google(
+                            tappe_oggi,
+                            float(config.get('lat_base', 0)),
+                            float(config.get('lon_base', 0)),
+                            GOOGLE_MAPS_API_KEY
+                        )
+                        st.session_state._route_cache_key = cache_key
+                        st.session_state._route_info = route_info
+                        st.session_state._tappe_ottimizzate = tappe_oggi
+                        if route_info and route_info.get('polyline'):
+                            st.toast("🛣️ Giro ottimizzato con Google Maps!", icon="✅")
+                        else:
+                            st.toast("⚠️ Google Route non disponibile, ordine calcolato con algoritmo interno", icon="⚠️")
+                    except Exception as e:
+                        st.toast(f"❌ Errore Google: {str(e)[:80]}", icon="❌")
+                        st.session_state._route_cache_key = cache_key
+                        st.session_state._route_info = None
+                        st.session_state._tappe_ottimizzate = tappe_oggi
+                else:
+                    route_info = st.session_state.get('_route_info')
+                    tappe_oggi = st.session_state.get('_tappe_ottimizzate', tappe_oggi)
+            
             # Trova visitati fuori giro
             nomi_nel_giro = [t['nome_cliente'] for t in tappe_oggi]
             visitati_fuori_giro = [v for v in st.session_state.visitati_oggi if v not in nomi_nel_giro]
@@ -1810,11 +2072,26 @@ def main_app():
                     config.get('durata_visita', 45)
                 )
                 
+                # Usa dati reali Google se disponibili
+                route_info_oggi = st.session_state.get('_route_info')
+                google_badge = ""
+                if route_info_oggi and route_info_oggi.get('duration_s'):
+                    km_tot = round(route_info_oggi['distance_m'] / 1000, 1) if route_info_oggi.get('distance_m') else km_tot
+                    tempo_guida_google = route_info_oggi['duration_s'] // 60
+                    durata_visita = int(config.get('durata_visita', 45))
+                    tempo_tot = tempo_guida_google + (len(tappe_oggi) * durata_visita)
+                    google_badge = " · 🛣️ Google"
+                
                 col_stats, col_mappa = st.columns([4, 1])
                 with col_stats:
-                    st.caption(f"📊 **{len(tappe_oggi)}** visite · ✅ **{len(st.session_state.visitati_oggi)}** fatte · 🛣️ **{km_tot}** km · ⏱️ **{tempo_tot//60}h{tempo_tot%60:02d}m**")
+                    st.caption(f"📊 **{len(tappe_oggi)}** visite · ✅ **{len(st.session_state.visitati_oggi)}** fatte · 🛣️ **{km_tot}** km · ⏱️ **{tempo_tot//60}h{tempo_tot%60:02d}m**{google_badge}")
                 with col_mappa:
                     if st.button("🗺️ Mappa", use_container_width=True, help="Vedi clienti del giorno sulla mappa"):
+                        st.session_state.mappa_giorno_selezionato = {
+                            'data': oggi_date,
+                            'tappe': tappe_oggi,
+                            'giorno_nome': giorni_nomi[idx_g]
+                        }
                         st.session_state.active_tab = "🗺️ Mappa"
                         st.rerun()
                 
@@ -2048,6 +2325,23 @@ def main_app():
                 | 🚗 Nel giro | {tot_visitati - tot_fuori} / {tot_giro} |
                 | ➕ Fuori giro | {tot_fuori} |
                 """)
+                
+                # Stato Google Maps
+                with st.expander("🔧 Stato Google Maps", expanded=False):
+                    route_info_check = st.session_state.get('_route_info')
+                    google_err = st.session_state.get('_google_last_error', '')
+                    if route_info_check and route_info_check.get('polyline'):
+                        st.success(f"✅ **Percorso ottimizzato con Google Maps**\n\n"
+                                  f"🛣️ {round(route_info_check['distance_m']/1000, 1)} km reali · "
+                                  f"⏱️ {route_info_check['duration_s']//60} min guida")
+                    elif GOOGLE_MAPS_API_KEY:
+                        st.warning(f"⚠️ **API Key presente ma percorso non disponibile**\n\n"
+                                  f"Possibili cause:\n"
+                                  f"- Routes API non abilitata in Google Cloud Console\n"
+                                  f"- API Key con restrizioni che bloccano Routes API\n"
+                                  f"- Errore: {google_err[:150] if google_err else 'nessuno registrato'}")
+                    else:
+                        st.info("ℹ️ Google Maps non configurato. Aggiungi GOOGLE_MAPS_API_KEY in Secrets.")
                 
             else:
                 st.info("📭 Nessuna visita pianificata per oggi")
@@ -2598,10 +2892,20 @@ def main_app():
                         # Pulsante MAPPA - mostra giro del giorno sulla mappa
                         if tappe_giorno and not is_ferie:
                             if st.button("🗺️", key=f"mappa_{data_giorno}", help="Vedi su mappa", use_container_width=True):
+                                # Ottimizza ordine con Google se disponibile
+                                tappe_per_mappa = tappe_giorno
+                                route_per_mappa = None
+                                if GOOGLE_MAPS_API_KEY and len(tappe_giorno) >= 2:
+                                    blat = float(config.get('lat_base', 0))
+                                    blon = float(config.get('lon_base', 0))
+                                    if blat != 0 and blon != 0:
+                                        tappe_per_mappa, route_per_mappa = ottimizza_ordine_con_google(
+                                            tappe_giorno, blat, blon, GOOGLE_MAPS_API_KEY)
+                                        st.session_state._route_info = route_per_mappa
                                 # Salva le tappe del giorno per la mappa
                                 st.session_state.mappa_giorno_selezionato = {
                                     'data': data_giorno,
-                                    'tappe': tappe_giorno,
+                                    'tappe': tappe_per_mappa,
                                     'giorno_nome': giorni_nomi_full[giorno_idx]
                                 }
                                 st.session_state.active_tab = "🗺️ Mappa"
@@ -2820,12 +3124,54 @@ def main_app():
                     coords_percorso.append([lat, lon])
                     lookup_tappe[f"{lat:.6f},{lon:.6f}"] = tappa
                 
-                # Linea percorso
-                coords_percorso.append([lat_base, lon_base])
-                folium.PolyLine(coords_percorso, color='blue', weight=3, opacity=0.7, dash_array='10').add_to(m)
+                # Linea percorso — usa percorso stradale Google se disponibile
+                route_info = st.session_state.get('_route_info')
+                
+                # Se non abbiamo la polyline Google, richiedila automaticamente
+                if (not route_info or not route_info.get('polyline')) and GOOGLE_MAPS_API_KEY and len(tappe) >= 2:
+                    try:
+                        tappe_opt, route_info_new = ottimizza_ordine_con_google(
+                            tappe, lat_base, lon_base, GOOGLE_MAPS_API_KEY)
+                        if route_info_new and route_info_new.get('polyline'):
+                            route_info = route_info_new
+                            st.session_state._route_info = route_info
+                            # Aggiorna tappe con ordine ottimizzato
+                            giorno_info['tappe'] = tappe_opt
+                            tappe = tappe_opt
+                            # Ricostruisci coords_percorso
+                            coords_percorso = [[lat_base, lon_base]]
+                            for t in tappe:
+                                coords_percorso.append([t['latitude'], t['longitude']])
+                    except Exception:
+                        pass
+                
+                if route_info and route_info.get('polyline'):
+                    try:
+                        road_coords = decode_google_polyline(route_info['polyline'])
+                        folium.PolyLine(road_coords, color='#4285F4', weight=4, opacity=0.85).add_to(m)
+                    except:
+                        coords_percorso.append([lat_base, lon_base])
+                        folium.PolyLine(coords_percorso, color='blue', weight=3, opacity=0.7, dash_array='10').add_to(m)
+                else:
+                    coords_percorso.append([lat_base, lon_base])
+                    folium.PolyLine(coords_percorso, color='blue', weight=3, opacity=0.7, dash_array='10').add_to(m)
                 
                 # Mostra mappa e cattura click
+                if route_info and route_info.get('polyline'):
+                    st.caption("🛣️ Percorso stradale reale (Google Maps)")
+                else:
+                    st.caption("📐 Percorso in linea retta (attiva Google Maps API per strade reali)")
+                
                 map_data = st_folium(m, width=None, height=500, use_container_width=True, key="mappa_giro")
+                
+                # Link Google Maps navigazione
+                if tappe:
+                    parts = [f"{lat_base},{lon_base}"]
+                    for t in tappe:
+                        parts.append(f"{t['latitude']},{t['longitude']}")
+                    parts.append(f"{lat_base},{lon_base}")
+                    gmaps_url = "https://www.google.com/maps/dir/" + "/".join(parts)
+                    st.link_button("🧭 Apri navigazione in Google Maps", gmaps_url, use_container_width=True)
                 
                 # Rileva click su marker
                 clicked = map_data.get('last_object_clicked') if map_data else None
@@ -3147,456 +3493,6 @@ def main_app():
                 st.warning("⚠️ Nessun cliente trovato con i filtri selezionati")
         else:
             st.info("Nessun cliente da mostrare")
-    
-    # --- TAB: ROUTING GOOGLE ---
-    elif st.session_state.active_tab == "🧭 Routing":
-        st.header("🧭 Giro Ottimizzato con Google Maps")
-        
-        user_id = st.session_state.user.id
-        has_google = bool(GOOGLE_MAPS_API_KEY)
-        base_lat = float(config.get('lat_base', 0))
-        base_lon = float(config.get('lon_base', 0))
-        
-        if not has_google:
-            st.error("⚠️ **GOOGLE_MAPS_API_KEY non trovata.** Aggiungila in Streamlit Secrets.")
-            st.stop()
-        
-        if base_lat == 0 or base_lon == 0:
-            st.error("❌ Imposta le coordinate della base in ⚙️ Configurazione.")
-            st.stop()
-        
-        if df.empty:
-            st.warning("Nessun cliente caricato.")
-            st.stop()
-        
-        # --- Funzioni Google Maps inline ---
-        def _gm_request(method, url, **kwargs):
-            """Request con retry e backoff."""
-            kwargs.setdefault('timeout', 15)
-            for attempt in range(3):
-                try:
-                    resp = requests.request(method, url, **kwargs)
-                    if resp.status_code == 429 or resp.status_code >= 500:
-                        time_module.sleep(1.0 * (2 ** attempt))
-                        continue
-                    return resp
-                except requests.exceptions.Timeout:
-                    if attempt < 2:
-                        time_module.sleep(1.0 * (2 ** attempt))
-                        continue
-                    raise
-            return resp
-        
-        def google_route_matrix(points, api_key):
-            """Matrice NxN tempi/distanze via Google Routes API."""
-            url = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix"
-            wps = []
-            for p in points:
-                wps.append({"waypoint": {"location": {"latLng": {"latitude": p[0], "longitude": p[1]}}}})
-            body = {
-                "origins": wps, "destinations": wps,
-                "travelMode": "DRIVE",
-                "routingPreference": "TRAFFIC_AWARE"
-            }
-            headers = {
-                'Content-Type': 'application/json',
-                'X-Goog-Api-Key': api_key,
-                'X-Goog-FieldMask': 'originIndex,destinationIndex,duration,distanceMeters,status'
-            }
-            resp = _gm_request('POST', url, json=body, headers=headers)
-            if resp.status_code != 200:
-                return None, None
-            n = len(points)
-            dur = [[0]*n for _ in range(n)]
-            dist = [[0]*n for _ in range(n)]
-            for elem in resp.json():
-                i, j = elem.get('originIndex', 0), elem.get('destinationIndex', 0)
-                d_str = elem.get('duration', '0s')
-                dur[i][j] = int(d_str.rstrip('s')) if isinstance(d_str, str) else int(d_str)
-                dist[i][j] = int(elem.get('distanceMeters', 0))
-            return dur, dist
-        
-        def google_compute_route(origin, destination, waypoints, api_key):
-            """Percorso dettagliato con polyline via Google Routes API."""
-            url = "https://routes.googleapis.com/directions/v2:computeRoutes"
-            def mkwp(p):
-                return {"location": {"latLng": {"latitude": p[0], "longitude": p[1]}}}
-            body = {
-                "origin": {"waypoint": mkwp(origin)},
-                "destination": {"waypoint": mkwp(destination)},
-                "travelMode": "DRIVE",
-                "routingPreference": "TRAFFIC_AWARE",
-                "computeAlternativeRoutes": False,
-                "polylineEncoding": "ENCODED_POLYLINE"
-            }
-            if waypoints:
-                body["intermediates"] = [{"waypoint": mkwp(wp)} for wp in waypoints]
-            headers = {
-                'Content-Type': 'application/json',
-                'X-Goog-Api-Key': api_key,
-                'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters,'
-                                    'routes.polyline.encodedPolyline,'
-                                    'routes.legs.duration,routes.legs.distanceMeters'
-            }
-            resp = _gm_request('POST', url, json=body, headers=headers)
-            if resp.status_code != 200:
-                return None
-            data = resp.json()
-            routes = data.get('routes', [])
-            if not routes:
-                return None
-            r = routes[0]
-            dur_s = r.get('duration', '0s')
-            total_dur = int(dur_s.rstrip('s')) if isinstance(dur_s, str) else int(dur_s)
-            legs = []
-            for leg in r.get('legs', []):
-                ld = leg.get('duration', '0s')
-                legs.append({
-                    'dur_s': int(ld.rstrip('s')) if isinstance(ld, str) else int(ld),
-                    'dist_m': int(leg.get('distanceMeters', 0))
-                })
-            return {
-                'polyline': r.get('polyline', {}).get('encodedPolyline', ''),
-                'duration_s': total_dur,
-                'distance_m': int(r.get('distanceMeters', 0)),
-                'legs': legs
-            }
-        
-        def held_karp_tsp(dist_matrix, start=0):
-            """TSP esatto Held-Karp per ≤12 punti."""
-            n = len(dist_matrix)
-            if n <= 1: return [start], 0
-            if n == 2:
-                other = 1 - start
-                return [start, other], dist_matrix[start][other] + dist_matrix[other][start]
-            INF = float('inf')
-            dp = [[INF]*n for _ in range(1 << n)]
-            parent = [[-1]*n for _ in range(1 << n)]
-            dp[1 << start][start] = 0
-            for S in range(1 << n):
-                for u in range(n):
-                    if dp[S][u] == INF or not (S & (1 << u)): continue
-                    for v in range(n):
-                        if S & (1 << v): continue
-                        nS = S | (1 << v)
-                        nc = dp[S][u] + dist_matrix[u][v]
-                        if nc < dp[nS][v]:
-                            dp[nS][v] = nc
-                            parent[nS][v] = u
-            full = (1 << n) - 1
-            best_c, best_l = INF, -1
-            for u in range(n):
-                c = dp[full][u] + dist_matrix[u][start]
-                if c < best_c: best_c = c; best_l = u
-            path = []; S = full; u = best_l
-            while u != -1:
-                path.append(u)
-                prev = parent[S][u]
-                S ^= (1 << u)
-                u = prev
-            path.reverse()
-            if path[0] != start:
-                try:
-                    idx = path.index(start); path = path[idx:] + path[:idx]
-                except: path = [start] + path
-            return path, best_c
-        
-        def nn_2opt_tsp(dist_matrix, start=0):
-            """TSP euristica NN + 2-opt per >12 punti."""
-            n = len(dist_matrix)
-            visited = [False]*n; path = [start]; visited[start] = True
-            for _ in range(n-1):
-                cur = path[-1]; best_n, best_d = -1, float('inf')
-                for j in range(n):
-                    if not visited[j] and dist_matrix[cur][j] < best_d:
-                        best_d = dist_matrix[cur][j]; best_n = j
-                if best_n == -1: break
-                path.append(best_n); visited[best_n] = True
-            def rc(p):
-                c = sum(dist_matrix[p[i]][p[i+1]] for i in range(len(p)-1))
-                return c + dist_matrix[p[-1]][start]
-            improved = True
-            while improved:
-                improved = False; bc = rc(path)
-                for i in range(1, len(path)-1):
-                    for j in range(i+2, len(path)):
-                        np2 = path[:i+1] + path[i+1:j+1][::-1] + path[j+1:]
-                        if rc(np2) < bc - 1: path = np2; improved = True; break
-                    if improved: break
-            return path, rc(path)
-        
-        def decode_polyline(encoded):
-            """Decodifica polyline Google → [(lat, lon), ...]"""
-            pts = []; idx = 0; lat = 0; lng = 0
-            while idx < len(encoded):
-                for coord in ['lat', 'lng']:
-                    shift = 0; result = 0
-                    while True:
-                        b = ord(encoded[idx]) - 63; idx += 1
-                        result |= (b & 0x1F) << shift; shift += 5
-                        if b < 0x20: break
-                    delta = ~(result >> 1) if (result & 1) else (result >> 1)
-                    if coord == 'lat': lat += delta
-                    else: lng += delta
-                pts.append((lat/1e5, lng/1e5))
-            return pts
-        
-        # --- UI: Selezione clienti ---
-        df_valid = df[
-            (df['latitude'].notna()) & (df['longitude'].notna()) &
-            (df['latitude'] != 0) & (df['longitude'] != 0) &
-            (df.get('visitare', pd.Series(['SI']*len(df))).str.upper() == 'SI')
-        ].copy()
-        
-        if df_valid.empty:
-            st.warning("Nessun cliente con coordinate valide. Geocodifica prima i clienti.")
-            st.stop()
-        
-        # Selezione per agenda del giorno o manuale
-        mode = st.radio("Sorgente clienti:", ["📅 Da agenda del giorno", "✏️ Selezione manuale"], horizontal=True)
-        
-        selected_clients = []
-        
-        if mode == "📅 Da agenda del giorno":
-            sel_giorno = st.selectbox("Giorno:", ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato"])
-            g_map = {"Lunedì":0, "Martedì":1, "Mercoledì":2, "Giovedì":3, "Venerdì":4, "Sabato":5}
-            g_idx = g_map.get(sel_giorno, 0)
-            
-            # Calcola agenda se non già presente
-            if 'agenda_corrente' not in st.session_state:
-                agenda = calcola_agenda_settimanale(df, config, settimana_offset=0)
-                st.session_state.agenda_corrente = agenda
-            
-            agenda = st.session_state.agenda_corrente
-            tappe = agenda.get(g_idx, [])
-            
-            if tappe:
-                nomi_agenda = [t['nome_cliente'] for t in tappe]
-                st.success(f"📋 {len(tappe)} clienti in agenda per {sel_giorno}")
-                for t in tappe:
-                    st.caption(f"  • {t['nome_cliente']} — {t.get('citta', '')}")
-                
-                for t in tappe:
-                    row = df_valid[df_valid['nome_cliente'] == t['nome_cliente']]
-                    if not row.empty:
-                        r = row.iloc[0]
-                        selected_clients.append({
-                            'nome': r['nome_cliente'],
-                            'lat': float(r['latitude']),
-                            'lon': float(r['longitude']),
-                            'ind': r.get('indirizzo', ''),
-                            'citta': r.get('citta', '')
-                        })
-            else:
-                st.info(f"Nessun cliente in agenda per {sel_giorno}. Prova la selezione manuale.")
-        else:
-            nomi = df_valid['nome_cliente'].tolist()
-            selected = st.multiselect("Seleziona clienti (9-10 consigliati):", options=nomi, max_selections=15)
-            for nome in selected:
-                row = df_valid[df_valid['nome_cliente'] == nome].iloc[0]
-                selected_clients.append({
-                    'nome': row['nome_cliente'],
-                    'lat': float(row['latitude']),
-                    'lon': float(row['longitude']),
-                    'ind': row.get('indirizzo', ''),
-                    'citta': row.get('citta', '')
-                })
-        
-        if len(selected_clients) < 2:
-            st.info("ℹ️ Seleziona almeno 2 clienti per calcolare il giro.")
-            st.stop()
-        
-        st.divider()
-        
-        # --- Pulsanti ---
-        col_b1, col_b2 = st.columns(2)
-        with col_b1:
-            btn_calc = st.button("🚀 Calcola Giro Ottimizzato", use_container_width=True, type="primary")
-        with col_b2:
-            btn_recalc = st.button("🔄 Ricalcola", use_container_width=True)
-        
-        if btn_calc or btn_recalc or 'routing_result' in st.session_state:
-            if btn_calc or btn_recalc:
-                with st.spinner("⏳ Chiedo a Google Maps la matrice tempi reali..."):
-                    # Prepara punti: [BASE] + [clienti]
-                    pts = [(base_lat, base_lon)] + [(c['lat'], c['lon']) for c in selected_clients]
-                    n = len(pts)
-                    
-                    # STEP 1: Matrice tempi reali
-                    dur_matrix, dist_matrix = google_route_matrix(pts, GOOGLE_MAPS_API_KEY)
-                    
-                    if dur_matrix is None:
-                        st.error("❌ Errore nella Route Matrix. Verifica la API Key e che Routes API sia abilitata.")
-                        st.stop()
-                    
-                    st.success(f"✅ Matrice {n}×{n} ricevuta ({n*n} elementi)")
-                
-                with st.spinner("⏳ Calcolo ordine ottimale (TSP)..."):
-                    # STEP 2: TSP
-                    if n <= 12:
-                        order, total_cost = held_karp_tsp(dur_matrix, start=0)
-                        method = "Held-Karp (esatto)"
-                    else:
-                        order, total_cost = nn_2opt_tsp(dur_matrix, start=0)
-                        method = "NN + 2-Opt (euristica)"
-                    
-                    # Ordine clienti (salta indice 0 = base)
-                    ordered = []
-                    ordered_legs_idx = []
-                    for idx in order:
-                        if idx == 0: continue
-                        ci = idx - 1
-                        if 0 <= ci < len(selected_clients):
-                            ordered.append(selected_clients[ci])
-                            ordered_legs_idx.append(idx)
-                
-                with st.spinner("⏳ Calcolo percorso stradale..."):
-                    # STEP 3: Route dettagliata
-                    wps = [(c['lat'], c['lon']) for c in ordered]
-                    route = google_compute_route(
-                        (base_lat, base_lon),
-                        (base_lat, base_lon),
-                        wps,
-                        GOOGLE_MAPS_API_KEY
-                    )
-                
-                # Salva risultato
-                total_dist = route['distance_m'] if route else sum(dist_matrix[order[i]][order[(i+1) % len(order)]] for i in range(len(order)))
-                
-                st.session_state.routing_result = {
-                    'ordered': ordered,
-                    'order_indices': order,
-                    'total_dur_s': route['duration_s'] if route else total_cost,
-                    'total_dist_m': total_dist,
-                    'method': method,
-                    'route': route,
-                    'dur_matrix': dur_matrix,
-                    'dist_matrix': dist_matrix,
-                    'n': n
-                }
-            
-            # --- Mostra risultati ---
-            res = st.session_state.get('routing_result')
-            if res:
-                st.divider()
-                
-                # Metriche
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("🕐 Tempo totale", f"{res['total_dur_s']//60} min")
-                c2.metric("📏 Distanza", f"{res['total_dist_m']/1000:.1f} km")
-                c3.metric("📍 Tappe", f"{len(res['ordered'])}")
-                c4.metric("⚙️ Metodo", res['method'][:20])
-                
-                # Lista ordinata con dettagli tratta
-                st.subheader("📋 Ordine Visite Ottimizzato")
-                route_data = res.get('route')
-                legs = route_data.get('legs', []) if route_data else []
-                
-                for i, client in enumerate(res['ordered']):
-                    leg = legs[i] if i < len(legs) else {}
-                    dur_min = leg.get('dur_s', 0) // 60
-                    dist_km = round(leg.get('dist_m', 0) / 1000, 1)
-                    
-                    travel_info = f"🚗 {dur_min} min — {dist_km} km" if dur_min > 0 else ""
-                    
-                    if i == 0:
-                        st.markdown(f"🏠 **BASE** → {travel_info}")
-                    
-                    st.markdown(f"**{i+1}.** **{client['nome']}** — {client.get('citta', '')}\n"
-                               f"&nbsp;&nbsp;&nbsp;&nbsp;📍 {client.get('ind', '')[:60]}")
-                
-                # Ritorno
-                if legs and len(legs) > len(res['ordered']):
-                    last_leg = legs[-1]
-                    st.markdown(f"🏠 **RITORNO** — 🚗 {last_leg.get('dur_s',0)//60} min — "
-                               f"{round(last_leg.get('dist_m',0)/1000, 1)} km")
-                
-                # --- MAPPA ---
-                st.subheader("🗺️ Percorso su Mappa")
-                
-                ordered_pts = res['ordered']
-                polyline_enc = route_data.get('polyline', '') if route_data else ''
-                
-                if polyline_enc:
-                    # Mappa Google Maps JS
-                    all_lats = [base_lat] + [c['lat'] for c in ordered_pts]
-                    all_lons = [base_lon] + [c['lon'] for c in ordered_pts]
-                    cl = sum(all_lats)/len(all_lats)
-                    cn = sum(all_lons)/len(all_lons)
-                    
-                    markers_js = f"""
-                        new google.maps.Marker({{
-                            position: {{lat: {base_lat}, lng: {base_lon}}},
-                            map: map,
-                            icon: 'https://maps.google.com/mapfiles/ms/icons/green-dot.png',
-                            title: 'BASE', zIndex: 1000
-                        }});
-                    """
-                    for i, c in enumerate(ordered_pts):
-                        nm = c['nome'][:35].replace("'", "").replace('"', '')
-                        markers_js += f"""
-                        new google.maps.Marker({{
-                            position: {{lat: {c['lat']}, lng: {c['lon']}}},
-                            map: map,
-                            label: {{text: '{i+1}', color: 'white', fontWeight: 'bold'}},
-                            title: '{nm}'
-                        }});
-                        """
-                    
-                    bounds_js = f"bounds.extend({{lat: {base_lat}, lng: {base_lon}}});"
-                    for c in ordered_pts:
-                        bounds_js += f"bounds.extend({{lat: {c['lat']}, lng: {c['lon']}}});"
-                    
-                    map_html = f"""
-                    <div id="map" style="width:100%; height:500px; border-radius:12px;"></div>
-                    <script>
-                    function initMap() {{
-                        var map = new google.maps.Map(document.getElementById('map'), {{
-                            center: {{lat: {cl}, lng: {cn}}}, zoom: 9,
-                            mapTypeControl: false, streetViewControl: false
-                        }});
-                        {markers_js}
-                        var path = google.maps.geometry.encoding.decodePath('{polyline_enc}');
-                        new google.maps.Polyline({{
-                            path: path, geodesic: true,
-                            strokeColor: '#4285F4', strokeOpacity: 0.85, strokeWeight: 4
-                        }}).setMap(map);
-                        var bounds = new google.maps.LatLngBounds();
-                        {bounds_js}
-                        map.fitBounds(bounds, {{padding: 50}});
-                    }}
-                    </script>
-                    <script async defer
-                        src="https://maps.googleapis.com/maps/api/js?key={GOOGLE_MAPS_API_KEY}&libraries=geometry&callback=initMap">
-                    </script>
-                    """
-                    st.components.v1.html(map_html, height=520)
-                else:
-                    # Fallback Folium
-                    all_lats = [base_lat] + [c['lat'] for c in ordered_pts]
-                    all_lons = [base_lon] + [c['lon'] for c in ordered_pts]
-                    center = [sum(all_lats)/len(all_lats), sum(all_lons)/len(all_lons)]
-                    m = folium.Map(location=center, zoom_start=9, tiles='cartodbpositron')
-                    folium.Marker([base_lat, base_lon], popup='🏠 BASE',
-                        icon=folium.Icon(color='green', icon='home', prefix='fa')).add_to(m)
-                    for i, c in enumerate(ordered_pts):
-                        folium.Marker([c['lat'], c['lon']], popup=f"{i+1}. {c['nome']}",
-                            icon=folium.DivIcon(html=f'<div style="background:#4285F4;color:white;'
-                                f'border-radius:50%;width:28px;height:28px;text-align:center;'
-                                f'line-height:28px;font-weight:bold;font-size:13px;'
-                                f'border:2px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.3);">'
-                                f'{i+1}</div>')).add_to(m)
-                    coords = [[base_lat, base_lon]] + [[c['lat'], c['lon']] for c in ordered_pts] + [[base_lat, base_lon]]
-                    folium.PolyLine(coords, color='#4285F4', weight=3, opacity=0.7, dash_array='8').add_to(m)
-                    st_folium(m, width=None, height=500, returned_objects=[])
-                
-                # --- Link Google Maps ---
-                parts = [f"{base_lat},{base_lon}"]
-                for c in ordered_pts:
-                    parts.append(f"{c['lat']},{c['lon']}")
-                parts.append(f"{base_lat},{base_lon}")
-                gmaps_url = "https://www.google.com/maps/dir/" + "/".join(parts)
-                st.link_button("🧭 Apri in Google Maps (navigazione)", gmaps_url, use_container_width=True)
     
     # --- TAB: ANAGRAFICA ---
     elif st.session_state.active_tab == "👤 Anagrafica":
