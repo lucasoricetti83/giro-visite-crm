@@ -1614,16 +1614,16 @@ def google_compute_route(origin, destination, waypoints, api_key):
     if not api_key:
         return None
     url = "https://routes.googleapis.com/directions/v2:computeRoutes"
-    def mkwp(p):
+    def mkloc(p):
         return {"location": {"latLng": {"latitude": p[0], "longitude": p[1]}}}
     body = {
-        "origin": {"waypoint": mkwp(origin)},
-        "destination": {"waypoint": mkwp(destination)},
+        "origin": mkloc(origin),
+        "destination": mkloc(destination),
         "travelMode": "DRIVE", "routingPreference": "TRAFFIC_AWARE",
         "computeAlternativeRoutes": False, "polylineEncoding": "ENCODED_POLYLINE"
     }
     if waypoints:
-        body["intermediates"] = [{"waypoint": mkwp(wp)} for wp in waypoints]
+        body["intermediates"] = [mkloc(wp) for wp in waypoints]
     headers = {
         'Content-Type': 'application/json',
         'X-Goog-Api-Key': api_key,
