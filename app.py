@@ -770,6 +770,31 @@ def save_config(config_data):
         st.error(f"❌ Errore salvataggio config: {str(e)}")
         return False
 
+def save_scambi_giorni(scambi_dict):
+    """Salva scambi giorni su Supabase (campo scambi_json in config_utente)"""
+    import json
+    try:
+        user_id = get_user_id()
+        if not user_id:
+            return
+        scambi_str = json.dumps(scambi_dict)
+        supabase.table('config_utente').update({'scambi_json': scambi_str}).eq('user_id', user_id).execute()
+    except:
+        pass  # Colonna potrebbe non esistere - usa solo session_state
+
+def load_scambi_giorni():
+    """Carica scambi giorni da Supabase"""
+    import json
+    try:
+        config = fetch_config()
+        if config and config.get('scambi_json'):
+            data = json.loads(config['scambi_json'])
+            # Converti liste di liste in liste di tuple
+            return {k: [(a, b) for a, b in v] for k, v in data.items()}
+    except:
+        pass
+    return {}
+
 # --- 4. UTILITY FUNCTIONS ---
 ora_italiana = datetime.now() + timedelta(hours=1)
 
@@ -1943,6 +1968,10 @@ def main_app():
     if isinstance(giorni_lavorativi, str):
         giorni_lavorativi = [int(x) for x in giorni_lavorativi.strip('{}').split(',')]
     
+    # Inizializza scambi giorni (carica da Supabase se primo accesso)
+    if 'scambi_giorni' not in st.session_state:
+        st.session_state.scambi_giorni = load_scambi_giorni()
+    
     # --- TAB: GIRO OGGI ---
     if st.session_state.active_tab == "🚀 Giro Oggi":
         col_header, col_regen, col_refresh = st.columns([4, 1, 1])
@@ -2062,7 +2091,25 @@ def main_app():
             
             # Calcola tappe (con variante giro)
             variante = st.session_state.get('variante_giro', 0)
-            tappe_oggi = calcola_piano_giornaliero(df, idx_g, config, st.session_state.esclusi_oggi, variante=variante)
+            
+            # APPLICA SCAMBI: se oggi è stato scambiato con un altro giorno, mostra quel giorno
+            oggi_date = ora_italiana.date()
+            lunedi_oggi = oggi_date - timedelta(days=oggi_date.weekday())
+            chiave_sett_oggi = lunedi_oggi.isoformat()
+            idx_effettivo = idx_g  # giorno effettivo da mostrare
+            
+            if chiave_sett_oggi in st.session_state.get('scambi_giorni', {}):
+                for s_idx1, s_idx2 in st.session_state.scambi_giorni[chiave_sett_oggi]:
+                    if s_idx1 == idx_g:
+                        idx_effettivo = s_idx2
+                    elif s_idx2 == idx_g:
+                        idx_effettivo = s_idx1
+            
+            if idx_effettivo != idx_g:
+                giorni_nomi_swap = ["Lun","Mar","Mer","Gio","Ven","Sab","Dom"]
+                st.info(f"🔄 Scambio attivo: oggi mostro il giro di **{giorni_nomi_swap[idx_effettivo]}** (scambiato con {giorni_nomi_swap[idx_g]})")
+            
+            tappe_oggi = calcola_piano_giornaliero(df, idx_effettivo, config, st.session_state.esclusi_oggi, variante=variante)
             
             # OTTIMIZZAZIONE ORDINE CON GOOGLE MAPS (tempi stradali reali + TSP)
             if tappe_oggi and len(tappe_oggi) >= 2 and GOOGLE_MAPS_API_KEY:
@@ -2618,7 +2665,7 @@ def main_app():
         
         # Inizializza scambi salvati (dizionario: chiave=settimana, valore=lista di scambi)
         if 'scambi_giorni' not in st.session_state:
-            st.session_state.scambi_giorni = {}
+            st.session_state.scambi_giorni = load_scambi_giorni()
         
         col_nav1, col_nav2, col_nav3, col_nav4, col_nav5 = st.columns([1, 1, 2, 1, 1])
         
@@ -2786,6 +2833,7 @@ def main_app():
                                 if chiave_settimana not in st.session_state.scambi_giorni:
                                     st.session_state.scambi_giorni[chiave_settimana] = []
                                 st.session_state.scambi_giorni[chiave_settimana].append((idx1, idx2))
+                                save_scambi_giorni(st.session_state.scambi_giorni)
                                 st.session_state.giorno_da_scambiare = None
                                 st.toast(f"✅ {giorni_nomi_full[idx1][:3]} ↔️ {giorni_nomi_full[idx2][:3]}")
                                 time_module.sleep(0.3)
@@ -2870,6 +2918,7 @@ def main_app():
             if chiave_sett in st.session_state.scambi_giorni and st.session_state.scambi_giorni[chiave_sett]:
                 if st.button("🗑️ Annulla tutti gli scambi di questa settimana"):
                     st.session_state.scambi_giorni[chiave_sett] = []
+                    save_scambi_giorni(st.session_state.scambi_giorni)
                     st.rerun()
             
             # Info algoritmo
