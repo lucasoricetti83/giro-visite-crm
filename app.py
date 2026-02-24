@@ -1,4 +1,46 @@
 import streamlit as st
+
+# MENU SEMPLICE
+pagina = st.sidebar.selectbox("Menu", ["Home", "Registrazione"])
+
+# HOME (landing)
+if pagina == "Home":
+
+    st.title("Organizza il tuo giro visite in automatico")
+    st.write("Meno km, più clienti visitati. Il CRM pensato per agenti di commercio.")
+
+    if st.button("Provala gratis"):
+        st.session_state["pagina"] = "Registrazione"
+
+    st.markdown("---")
+
+    st.write("❌ Clienti vicini in giorni diversi")
+    st.write("❌ Tempo perso a pianificare")
+    st.write("❌ Troppi km inutili")
+
+    st.markdown("---")
+
+    st.write("✅ Ottimizza i percorsi automaticamente")
+    st.write("✅ Organizza i clienti in modo intelligente")
+    st.write("✅ CRM semplice e veloce")
+
+    st.markdown("---")
+
+    st.write("**+ visite | - km | + vendite**")
+
+    st.markdown("---")
+
+    st.write("""
+    Sono Luca Soricetti, Business Development Viteria Euganea.  
+    Faccio oltre 60.000 km l’anno e ho creato questa app per risolvere un problema reale.
+    """)
+
+# REGISTRAZIONE (la tua attuale)
+elif pagina == "Registrazione":
+    st.title("Registrati")
+    
+    # QUI lasci il tuo codice attuale
+import streamlit as st
 import pandas as pd
 import folium
 from streamlit_folium import st_folium
