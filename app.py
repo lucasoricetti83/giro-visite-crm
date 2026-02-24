@@ -657,6 +657,9 @@ def fetch_clienti():
         if response.data:
             df = pd.DataFrame(response.data)
             
+            # Escludi record speciali (usati per storage interno)
+            df = df[~df['nome_cliente'].str.startswith('__', na=False)]
+            
             # Converti colonne datetime
             if 'ultima_visita' in df.columns:
                 df['ultima_visita'] = pd.to_datetime(df['ultima_visita'], errors='coerce')
@@ -771,29 +774,50 @@ def save_config(config_data):
         return False
 
 def save_scambi_giorni(scambi_dict):
-    """Salva scambi giorni su Supabase (campo scambi_json in config_utente)"""
+    """Salva scambi giorni su Supabase usando record speciale nella tabella clienti"""
     import json
     try:
         user_id = get_user_id()
         if not user_id:
-            return
+            return False
         scambi_str = json.dumps(scambi_dict)
-        supabase.table('config_utente').update({'scambi_json': scambi_str}).eq('user_id', user_id).execute()
-    except:
-        pass  # Colonna potrebbe non esistere - usa solo session_state
+        
+        # Cerca se esiste già il record speciale
+        resp = supabase.table('clienti').select('id').eq('user_id', user_id).eq('nome_cliente', '__SCAMBI_GIORNI__').execute()
+        
+        if resp.data:
+            # Aggiorna
+            supabase.table('clienti').update({'note': scambi_str}).eq('id', resp.data[0]['id']).execute()
+        else:
+            # Crea
+            supabase.table('clienti').insert({
+                'user_id': user_id,
+                'nome_cliente': '__SCAMBI_GIORNI__',
+                'visitare': 'NO',
+                'note': scambi_str
+            }).execute()
+        return True
+    except Exception as e:
+        return False
 
 def load_scambi_giorni():
     """Carica scambi giorni da Supabase"""
     import json
     try:
-        config = fetch_config()
-        if config and config.get('scambi_json'):
-            data = json.loads(config['scambi_json'])
-            # Converti liste di liste in liste di tuple
+        user_id = get_user_id()
+        if not user_id:
+            return {}
+        resp = supabase.table('clienti').select('note').eq('user_id', user_id).eq('nome_cliente', '__SCAMBI_GIORNI__').execute()
+        if resp.data and resp.data[0].get('note'):
+            data = json.loads(resp.data[0]['note'])
             return {k: [(a, b) for a, b in v] for k, v in data.items()}
     except:
         pass
     return {}
+
+def check_scambi_column_exists():
+    """Verifica sempre True — usiamo la tabella clienti"""
+    return True
 
 # --- 4. UTILITY FUNCTIONS ---
 ora_italiana = datetime.now() + timedelta(hours=1)
@@ -1462,10 +1486,12 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         if len(clienti_g) <= 2:
             return sorted(clienti_g, key=lambda c: -c['dist_base'])
         
+        # Strategia 1: Angular sweep attorno al centroide
         cx = sum(c['lat'] for c in clienti_g) / len(clienti_g)
         cy = sum(c['lon'] for c in clienti_g) / len(clienti_g)
         s1 = sorted(clienti_g, key=lambda c: math_degrees(atan2(c['lat']-cx, c['lon']-cy)) % 360)
         
+        # Strategia 2: NN dal più lontano
         farthest = max(clienti_g, key=lambda c: c['dist_base'])
         s2 = [farthest]
         rem = [c for c in clienti_g if c is not farthest]
@@ -1482,11 +1508,28 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             s2.append(picked)
             plat, plon = picked['lat'], picked['lon']
         
+        # Strategia 3: Angular sweep dalla base
         s3 = sorted(clienti_g, key=lambda c: math_degrees(atan2(c['lat']-blat, c['lon']-blon)) % 360)
+        
+        # Strategia 4: NN DALLA BASE (la più naturale per un venditore)
+        s4 = []
+        rem4 = list(clienti_g)
+        plat4, plon4 = blat, blon
+        while rem4:
+            min_d = float('inf')
+            best = -1
+            for idx, c in enumerate(rem4):
+                d = haversine(plat4, plon4, c['lat'], c['lon'])
+                if d < min_d:
+                    min_d = d
+                    best = idx
+            picked = rem4.pop(best)
+            s4.append(picked)
+            plat4, plon4 = picked['lat'], picked['lon']
         
         migliore = None
         migliore_d = float('inf')
-        for strat in [s1, s2, s3]:
+        for strat in [s1, s2, s3, s4]:
             opt = due_opt(strat, blat, blon)
             d = circuito_dist(opt, blat, blon)
             if d < migliore_d:
@@ -2113,7 +2156,7 @@ def main_app():
             
             # OTTIMIZZAZIONE ORDINE CON GOOGLE MAPS (tempi stradali reali + TSP)
             if tappe_oggi and len(tappe_oggi) >= 2 and GOOGLE_MAPS_API_KEY:
-                cache_key = f"route_{idx_g}_{variante}_{len(tappe_oggi)}_{','.join(t['nome_cliente'][:5] for t in tappe_oggi[:3])}"
+                cache_key = f"route_{idx_effettivo}_{variante}_{len(tappe_oggi)}_{','.join(t['nome_cliente'][:5] for t in tappe_oggi[:3])}"
                 if st.session_state.get('_route_cache_key') != cache_key:
                     try:
                         tappe_oggi, route_info = ottimizza_ordine_con_google(
@@ -2833,9 +2876,12 @@ def main_app():
                                 if chiave_settimana not in st.session_state.scambi_giorni:
                                     st.session_state.scambi_giorni[chiave_settimana] = []
                                 st.session_state.scambi_giorni[chiave_settimana].append((idx1, idx2))
-                                save_scambi_giorni(st.session_state.scambi_giorni)
+                                saved = save_scambi_giorni(st.session_state.scambi_giorni)
                                 st.session_state.giorno_da_scambiare = None
-                                st.toast(f"✅ {giorni_nomi_full[idx1][:3]} ↔️ {giorni_nomi_full[idx2][:3]}")
+                                if saved:
+                                    st.toast(f"✅ {giorni_nomi_full[idx1][:3]} ↔️ {giorni_nomi_full[idx2][:3]} — Salvato!", icon="✅")
+                                else:
+                                    st.toast(f"🔄 {giorni_nomi_full[idx1][:3]} ↔️ {giorni_nomi_full[idx2][:3]} — ⚠️ Non salvato (aggiungi colonna scambi_json in Supabase)", icon="⚠️")
                                 time_module.sleep(0.3)
                                 st.rerun()
                     with c2:
