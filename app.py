@@ -2657,138 +2657,21 @@ def main_app():
                 st.markdown(f"### 📆 {st.session_state.current_week_index} Settimana/e")
             st.caption(f"Dal {lunedi_selezionato.strftime('%d/%m/%Y')} al {domenica_selezionata.strftime('%d/%m/%Y')}")
         
-        # Info distribuzione clienti
-        if not df.empty and 'visitare' in df.columns:
-            clienti_attivi = len(df[df['visitare'] == 'SI'])
-            # Stima settimane necessarie (circa 30-40 clienti a settimana)
-            settimane_stimate = max(1, (clienti_attivi + 34) // 35)
-            ciclo_attuale = (st.session_state.current_week_index // settimane_stimate) + 1
-            settimana_nel_ciclo = (st.session_state.current_week_index % settimane_stimate) + 1
-            st.info(f"📊 **{clienti_attivi} clienti** da visitare in **~{settimane_stimate} settimane** | Ciclo {ciclo_attuale}, Settimana {settimana_nel_ciclo}/{settimane_stimate}")
-        
-        # === PANNELLO DEBUG ===
-        with st.expander("🔧 DEBUG - Verifica Configurazione Giro (Motore Portatour)", expanded=False):
-            base_lat = float(config.get('lat_base', 0))
-            base_lon = float(config.get('lon_base', 0))
-            
-            col_dbg1, col_dbg2 = st.columns(2)
-            
-            with col_dbg1:
-                st.write("**📍 Punto di Partenza (BASE):**")
-                if base_lat != 0 and base_lon != 0:
-                    st.success(f"Lat: **{base_lat:.4f}** | Lon: **{base_lon:.4f}**")
-                    st.caption("Se le coordinate sono sbagliate, vai in ⚙️ Config e reimpostale")
-                else:
-                    st.error("⚠️ COORDINATE BASE NON IMPOSTATE!")
-                    st.caption("Vai in ⚙️ Config → Imposta punto di partenza")
-            
-            with col_dbg2:
-                st.write("**⚙️ Parametri Giro (Portatour Engine):**")
-                st.write(f"- Durata visita: **{config.get('durata_visita', 45)} min**")
-                st.write(f"- Orario: **{str(config.get('h_inizio', '09:00'))[:5]} - {str(config.get('h_fine', '18:00'))[:5]}**")
-                giorni_cfg = config.get('giorni_lavorativi', [0,1,2,3,4])
-                if isinstance(giorni_cfg, str):
-                    giorni_cfg = [int(x) for x in giorni_cfg.strip('{}').split(',')]
-                nomi_g = ["Lun","Mar","Mer","Gio","Ven","Sab","Dom"]
-                st.write(f"- Giorni: **{', '.join([nomi_g[g] for g in giorni_cfg])}**")
-                st.write("- Algoritmo: **Clustering + Urgenza + 2-Opt**")
-            
-            st.divider()
-            st.write("**🎯 Come funziona l'algoritmo v10:**")
-            st.markdown("""
-            1. **Appuntamento = baricentro** — Se hai un appuntamento, tutte le visite del giorno ruotano intorno a lui: vengono scelti i clienti più vicini all'appuntamento.
-            2. **Pool 10 giorni** — Clienti scaduti o in scadenza nei prossimi 10 giorni.
-            3. **K-Means geografico** — I giorni senza appuntamento usano zone geografiche compatte.
-            4. **Google Maps** — Riordina con tempi stradali reali + mostra percorso su mappa.
-            5. **Rotazione settimanale** — Le zone ruotano tra i giorni ogni settimana.
-            6. **Rigenera** — Shift della rotazione zone ↔ giorni.
-            """)
-            
-            st.divider()
-            
-            # Mostra i 10 clienti più vicini alla base
-            if base_lat != 0 and base_lon != 0 and not df.empty:
-                st.write("**🎯 TOP 10 Clienti più VICINI alla BASE:**")
-                
-                df_debug = df[
-                    (df['visitare'] == 'SI') & 
-                    (df['latitude'].notna()) & 
-                    (df['longitude'].notna()) &
-                    (df['latitude'] != 0) &
-                    (df['longitude'] != 0)
-                ].copy()
-                
-                if not df_debug.empty:
-                    # Calcola distanza dalla base
-                    df_debug['dist_base'] = df_debug.apply(
-                        lambda r: haversine(base_lat, base_lon, float(r['latitude']), float(r['longitude'])), 
-                        axis=1
-                    )
-                    
-                    # Ordina per distanza
-                    df_debug = df_debug.sort_values('dist_base')
-                    
-                    # Mostra top 10
-                    for idx, (_, r) in enumerate(df_debug.head(10).iterrows(), 1):
-                        citta = r.get('citta', '') or ''
-                        st.write(f"{idx}. **{r['nome_cliente']}** - {citta} ({r['dist_base']:.1f} km)")
-                    
-                    st.divider()
-                    st.write("**❌ TOP 5 Clienti più LONTANI (non dovrebbero essere nel primo giorno!):**")
-                    for idx, (_, r) in enumerate(df_debug.tail(5).iterrows(), 1):
-                        citta = r.get('citta', '') or ''
-                        st.warning(f"{idx}. {r['nome_cliente']} - {citta} ({r['dist_base']:.1f} km)")
-                else:
-                    st.warning("Nessun cliente con coordinate valide")
-        
-        # Giorni lavorativi configurati (definiti prima per poterli usare nell'expander)
+        # Giorni lavorativi configurati
         giorni_nomi_full = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"]
         giorni_attivi = config.get('giorni_lavorativi', [0, 1, 2, 3, 4])
         if isinstance(giorni_attivi, str):
             giorni_attivi = [int(x) for x in giorni_attivi.strip('{}').split(',')]
         
-        # === PANNELLO GESTIONE AGENDA ===
-        with st.expander("⚙️ Gestisci Agenda", expanded=st.session_state.giorno_da_scambiare is not None):
-            col_gest1, col_gest2 = st.columns(2)
-            
-            with col_gest1:
-                st.write("**🔄 Scambia Giorni**")
-                if st.session_state.giorno_da_scambiare:
-                    st.info(f"📅 Selezionato: **{st.session_state.giorno_da_scambiare.strftime('%A %d/%m')}**")
-                    st.caption("Ora clicca su un altro giorno per scambiare le visite")
-                    if st.button("❌ Annulla Scambio"):
-                        st.session_state.giorno_da_scambiare = None
-                        st.rerun()
-                else:
-                    st.caption("Clicca '🔄' su un giorno per iniziare lo scambio")
-                
-                # Mostra scambi attivi per questa settimana
-                chiave_settimana = lunedi_selezionato.isoformat()
-                if chiave_settimana in st.session_state.scambi_giorni and st.session_state.scambi_giorni[chiave_settimana]:
-                    st.divider()
-                    st.write("**📋 Scambi attivi:**")
-                    for idx1, idx2 in st.session_state.scambi_giorni[chiave_settimana]:
-                        st.caption(f"🔄 {giorni_nomi_full[idx1][:3]} ↔️ {giorni_nomi_full[idx2][:3]}")
-                    if st.button("🗑️ Annulla tutti gli scambi"):
-                        st.session_state.scambi_giorni[chiave_settimana] = []
-                        st.rerun()
-            
-            with col_gest2:
-                st.write("**🏖️ Giorni in Ferie**")
-                # Mostra giorni in ferie di questa settimana
-                ferie_settimana = [d for d in st.session_state.giorni_ferie_singoli 
-                                  if lunedi_selezionato <= d <= domenica_selezionata]
-                if ferie_settimana:
-                    for d in ferie_settimana:
-                        col_f1, col_f2 = st.columns([3, 1])
-                        col_f1.write(f"🏖️ {d.strftime('%A %d/%m')}")
-                        if col_f2.button("🗑️", key=f"del_ferie_{d}"):
-                            st.session_state.giorni_ferie_singoli.remove(d)
-                            st.rerun()
-                else:
-                    st.caption("Nessun giorno in ferie. Clicca '🏖️' su un giorno per metterlo in ferie.")
-        
         st.divider()
+        
+        # Mostra banner scambio in corso (se attivo)
+        if st.session_state.giorno_da_scambiare:
+            c1, c2 = st.columns([4, 1])
+            c1.info(f"🔄 Seleziona un altro giorno per scambiare con **{st.session_state.giorno_da_scambiare.strftime('%a %d/%m')}**")
+            if c2.button("❌ Annulla"):
+                st.session_state.giorno_da_scambiare = None
+                st.rerun()
         
         # CALCOLA AGENDA OTTIMIZZATA (escludendo giorni in ferie singoli)
         agenda_settimana = calcola_agenda_settimanale(
@@ -2981,6 +2864,13 @@ def main_app():
             col_stat3.metric("📅 Giorni Lavorativi", len(giorni_attivi))
             media = totale_visite_settimana / len(giorni_attivi) if giorni_attivi else 0
             col_stat4.metric("📈 Media/Giorno", f"{media:.1f}")
+            
+            # Reset scambi se presenti
+            chiave_sett = lunedi_selezionato.isoformat()
+            if chiave_sett in st.session_state.scambi_giorni and st.session_state.scambi_giorni[chiave_sett]:
+                if st.button("🗑️ Annulla tutti gli scambi di questa settimana"):
+                    st.session_state.scambi_giorni[chiave_sett] = []
+                    st.rerun()
             
             # Info algoritmo
             with st.expander("ℹ️ Come funziona l'ottimizzazione"):
