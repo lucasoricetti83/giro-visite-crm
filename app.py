@@ -646,13 +646,25 @@ def get_user_id():
     return None
 
 def fetch_clienti():
-    """Carica tutti i clienti dell'utente corrente"""
+    """Carica clienti: standalone=tutti i propri, agente=assegnati, responsabile=tutti del team"""
     try:
         user_id = get_user_id()
         if not user_id:
             return pd.DataFrame()
         
-        response = supabase.table('clienti').select('*').eq('user_id', user_id).execute()
+        team_info = st.session_state.get('team_info')
+        
+        if team_info and team_info['ruolo'] == 'agente':
+            # AGENTE: vede solo i clienti assegnati a lui
+            response = supabase.table('clienti').select('*').eq('agente_id', user_id).execute()
+        elif team_info and team_info['ruolo'] == 'responsabile':
+            # RESPONSABILE: vede tutti i clienti del team + i propri standalone
+            response = supabase.table('clienti').select('*').or_(
+                f"team_id.eq.{team_info['team_id']},user_id.eq.{user_id}"
+            ).execute()
+        else:
+            # STANDALONE: come prima
+            response = supabase.table('clienti').select('*').eq('user_id', user_id).execute()
         
         if response.data:
             df = pd.DataFrame(response.data)
@@ -818,6 +830,234 @@ def load_scambi_giorni():
 def check_scambi_column_exists():
     """Verifica sempre True — usiamo la tabella clienti"""
     return True
+
+# --- 3b. TEAM MANAGEMENT FUNCTIONS ---
+
+def get_user_team_info():
+    """Ritorna info team dell'utente: {ruolo, team_id, team_nome, ...} o None"""
+    try:
+        user_id = get_user_id()
+        if not user_id:
+            return None
+        
+        # È responsabile di un team?
+        resp = supabase.table('teams').select('*').eq('responsabile_id', user_id).eq('attivo', True).execute()
+        if resp.data:
+            team = resp.data[0]
+            return {
+                'ruolo': 'responsabile',
+                'team_id': team['id'],
+                'team_nome': team['nome'],
+                'codice_invito': team['codice_invito'],
+                'max_agenti': team.get('max_agenti', 20)
+            }
+        
+        # È membro (agente) di un team?
+        resp = supabase.table('team_members').select('*, teams(*)').eq('user_id', user_id).eq('attivo', True).execute()
+        if resp.data:
+            member = resp.data[0]
+            team = member.get('teams', {})
+            return {
+                'ruolo': member.get('ruolo', 'agente'),
+                'team_id': member['team_id'],
+                'team_nome': team.get('nome', ''),
+                'nome_agente': member.get('nome_agente', ''),
+                'zona': member.get('zona', '')
+            }
+        
+        return None  # Standalone
+    except:
+        return None
+
+def create_team(nome_team):
+    """Crea un nuovo team. Ritorna il team creato o None"""
+    import hashlib
+    try:
+        user_id = get_user_id()
+        if not user_id:
+            return None
+        
+        # Genera codice invito
+        raw = f"{user_id}{nome_team}{datetime.now().isoformat()}"
+        codice = 'TEAM-' + hashlib.md5(raw.encode()).hexdigest()[:6].upper()
+        
+        resp = supabase.table('teams').insert({
+            'nome': nome_team,
+            'codice_invito': codice,
+            'responsabile_id': user_id,
+            'max_agenti': 20,
+            'attivo': True
+        }).execute()
+        
+        if resp.data:
+            # Aggiungi anche sé stesso come membro responsabile
+            email = st.session_state.user.email if st.session_state.user else ''
+            supabase.table('team_members').insert({
+                'team_id': resp.data[0]['id'],
+                'user_id': user_id,
+                'email': email,
+                'nome_agente': nome_team,
+                'ruolo': 'responsabile',
+                'attivo': True
+            }).execute()
+            
+            return resp.data[0]
+    except Exception as e:
+        st.error(f"❌ Errore creazione team: {str(e)}")
+    return None
+
+def join_team(codice_invito, nome_agente):
+    """Un agente si unisce a un team col codice invito"""
+    try:
+        user_id = get_user_id()
+        email = st.session_state.user.email if st.session_state.user else ''
+        
+        # Trova team
+        resp = supabase.table('teams').select('*').eq('codice_invito', codice_invito.strip().upper()).eq('attivo', True).execute()
+        if not resp.data:
+            return False, "Codice team non valido"
+        
+        team = resp.data[0]
+        
+        # Verifica non sia già membro
+        check = supabase.table('team_members').select('id').eq('team_id', team['id']).eq('user_id', user_id).execute()
+        if check.data:
+            return False, "Sei già membro di questo team"
+        
+        # Conta membri attuali
+        count = supabase.table('team_members').select('id', count='exact').eq('team_id', team['id']).eq('attivo', True).execute()
+        if count.count >= team.get('max_agenti', 20):
+            return False, "Team al completo"
+        
+        # Aggiungi
+        supabase.table('team_members').insert({
+            'team_id': team['id'],
+            'user_id': user_id,
+            'email': email,
+            'nome_agente': nome_agente,
+            'ruolo': 'agente',
+            'attivo': True
+        }).execute()
+        
+        return True, f"Unito al team '{team['nome']}'"
+    except Exception as e:
+        return False, f"Errore: {str(e)}"
+
+def get_team_members(team_id):
+    """Ritorna lista membri del team"""
+    try:
+        resp = supabase.table('team_members').select('*').eq('team_id', team_id).eq('attivo', True).order('ruolo').execute()
+        return resp.data or []
+    except:
+        return []
+
+def get_team_clienti(team_id):
+    """Ritorna TUTTI i clienti del team (per il responsabile)"""
+    try:
+        resp = supabase.table('clienti').select('*').eq('team_id', team_id).execute()
+        if resp.data:
+            df = pd.DataFrame(resp.data)
+            df = df[~df['nome_cliente'].str.startswith('__', na=False)]
+            return df
+        return pd.DataFrame()
+    except:
+        return pd.DataFrame()
+
+def assegna_clienti_a_agente(cliente_ids, agente_id, team_id):
+    """Assegna una lista di clienti a un agente"""
+    try:
+        user_id = get_user_id()
+        for cid in cliente_ids:
+            supabase.table('clienti').update({
+                'agente_id': agente_id,
+                'assegnato_da': user_id,
+                'data_assegnazione': datetime.now().isoformat()
+            }).eq('id', cid).execute()
+        return True
+    except Exception as e:
+        st.error(f"❌ Errore assegnazione: {str(e)}")
+        return False
+
+def rimuovi_assegnazione(cliente_ids):
+    """Rimuove l'assegnazione di clienti (tornano non assegnati)"""
+    try:
+        for cid in cliente_ids:
+            supabase.table('clienti').update({
+                'agente_id': None,
+                'assegnato_da': None,
+                'data_assegnazione': None
+            }).eq('id', cid).execute()
+        return True
+    except:
+        return False
+
+def importa_clienti_team(df_import, team_id):
+    """Importa clienti nel team (dal responsabile)"""
+    try:
+        user_id = get_user_id()
+        count = 0
+        for _, row in df_import.iterrows():
+            cliente_data = {
+                'user_id': user_id,
+                'team_id': team_id,
+                'nome_cliente': str(row.get('nome cliente', row.get('nome_cliente', ''))),
+                'indirizzo': str(row.get('indirizzo', '')),
+                'citta': str(row.get('citta', row.get('città', ''))),
+                'cap': str(row.get('cap', '')),
+                'provincia': str(row.get('provincia', '')),
+                'cellulare': str(row.get('cellulare', row.get('telefono', ''))),
+                'email_cliente': str(row.get('email', '')),
+                'note': str(row.get('note', '')),
+                'visitare': str(row.get('visitare', 'SI')).upper(),
+                'frequenza_giorni': int(row.get('frequenza_giorni', 30)),
+                'stato_cliente': str(row.get('stato_cliente', 'CLIENTE ATTIVO'))
+            }
+            # Geocodifica se ha coordinate
+            lat = row.get('latitude', row.get('lat', 0))
+            lon = row.get('longitude', row.get('lon', 0))
+            if pd.notna(lat) and pd.notna(lon) and float(lat) != 0:
+                cliente_data['latitude'] = float(lat)
+                cliente_data['longitude'] = float(lon)
+            
+            supabase.table('clienti').insert(cliente_data).execute()
+            count += 1
+        return count
+    except Exception as e:
+        st.error(f"❌ Errore importazione: {str(e)}")
+        return 0
+
+def get_obiettivi_team(team_id, periodo=None):
+    """Carica obiettivi del team"""
+    try:
+        query = supabase.table('obiettivi').select('*').eq('team_id', team_id)
+        if periodo:
+            query = query.eq('periodo', periodo)
+        resp = query.execute()
+        return resp.data or []
+    except:
+        return []
+
+def save_obiettivo(team_id, agente_id, periodo, tipo, valore_target):
+    """Salva/aggiorna un obiettivo"""
+    try:
+        # Cerca se esiste
+        resp = supabase.table('obiettivi').select('id').eq('team_id', team_id).eq('agente_id', agente_id).eq('periodo', periodo).eq('tipo', tipo).execute()
+        if resp.data:
+            supabase.table('obiettivi').update({
+                'valore_target': valore_target,
+                'updated_at': datetime.now().isoformat()
+            }).eq('id', resp.data[0]['id']).execute()
+        else:
+            supabase.table('obiettivi').insert({
+                'team_id': team_id,
+                'agente_id': agente_id,
+                'periodo': periodo,
+                'tipo': tipo,
+                'valore_target': valore_target
+            }).execute()
+        return True
+    except:
+        return False
 
 # --- 4. UTILITY FUNCTIONS ---
 ora_italiana = datetime.now() + timedelta(hours=1)
@@ -1886,6 +2126,11 @@ def main_app():
     subscription = st.session_state.get('subscription')
     user_is_admin = is_admin(st.session_state.user.id) if st.session_state.user else False
     
+    # Carica info team (una volta)
+    if 'team_info' not in st.session_state:
+        st.session_state.team_info = get_user_team_info()
+    team_info = st.session_state.team_info
+    
     # Inizializza navigazione PRIMA della sidebar
     if 'active_tab' not in st.session_state:
         st.session_state.active_tab = "🚀 Giro Oggi"
@@ -1894,9 +2139,16 @@ def main_app():
     with st.sidebar:
         st.markdown(f"### 👤 {st.session_state.user.email}")
         
-        # Badge admin
+        # Badge ruolo
         if user_is_admin:
             st.success("👑 **Amministratore**")
+        
+        if team_info:
+            if team_info['ruolo'] == 'responsabile':
+                st.info(f"🏢 **Responsabile** — {team_info['team_nome']}")
+            elif team_info['ruolo'] == 'agente':
+                zona = team_info.get('zona', '')
+                st.info(f"👤 **Agente** — {team_info['team_nome']}" + (f"\n📍 {zona}" if zona else ""))
         
         # Banner stato abbonamento
         if subscription:
@@ -1924,6 +2176,11 @@ def main_app():
         # === MENU NAVIGAZIONE (nella sidebar) ===
         menu_keys =   ["🚀 Giro Oggi", "📊 Dashboard", "📅 Agenda", "🗺️ Mappa", "👤 Anagrafica", "➕ Nuovo", "⚙️ Config"]
         menu_labels = ["🚀 Giro Oggi", "📊 Dashboard", "📅 Agenda", "🗺️ Mappa", "👤 Anagrafica", "➕ Nuovo Cliente", "⚙️ Configurazione"]
+        
+        # Aggiungi tab Team per responsabile
+        if team_info and team_info['ruolo'] == 'responsabile':
+            menu_keys.insert(1, "👥 Team")
+            menu_labels.insert(1, "👥 Gestione Team")
         
         current_key = st.session_state.get('active_tab', "🚀 Giro Oggi")
         # Se siamo in Admin, il radio punta a indice 0 ma NON deve sovrascrivere
@@ -4170,6 +4427,253 @@ def main_app():
                 else:
                     st.error("❌ Nome e Città sono obbligatori")
     
+    # --- TAB: GESTIONE TEAM (solo responsabile) ---
+    elif st.session_state.active_tab == "👥 Team":
+        if not team_info or team_info['ruolo'] != 'responsabile':
+            st.warning("⚠️ Solo i responsabili possono accedere a questa sezione.")
+        else:
+            st.header(f"👥 Team: {team_info['team_nome']}")
+            
+            # Sub-tabs
+            tab_membri, tab_assegna, tab_kpi, tab_import = st.tabs([
+                "👤 Agenti", "📋 Assegna Clienti", "📊 KPI", "📥 Importa"
+            ])
+            
+            # === TAB AGENTI ===
+            with tab_membri:
+                st.subheader("👤 Agenti nel Team")
+                
+                # Codice invito
+                col_code, col_copy = st.columns([3, 1])
+                col_code.success(f"🔑 **Codice Invito:** `{team_info['codice_invito']}`")
+                col_copy.caption("Condividi questo codice con i tuoi agenti")
+                
+                # Lista membri
+                members = get_team_members(team_info['team_id'])
+                
+                if members:
+                    for m in members:
+                        with st.container(border=True):
+                            c1, c2, c3, c4 = st.columns([3, 2, 2, 1])
+                            icona = "🏢" if m['ruolo'] == 'responsabile' else "👤"
+                            c1.markdown(f"**{icona} {m.get('nome_agente', m['email'])}**")
+                            c2.caption(m['email'])
+                            c3.caption(f"📍 {m.get('zona', '-')}" if m.get('zona') else "📍 —")
+                            
+                            if m['ruolo'] != 'responsabile':
+                                # Conta clienti assegnati
+                                try:
+                                    cnt = supabase.table('clienti').select('id', count='exact').eq('agente_id', m['user_id']).eq('team_id', team_info['team_id']).execute()
+                                    n_cli = cnt.count or 0
+                                except:
+                                    n_cli = 0
+                                c4.metric("Clienti", n_cli)
+                    
+                    st.caption(f"Totale: {len(members)} membri ({len([m for m in members if m['ruolo']=='agente'])} agenti)")
+                else:
+                    st.info("Nessun agente nel team. Condividi il codice invito!")
+                
+                # Modifica zona agente
+                st.divider()
+                st.subheader("✏️ Modifica Zona Agente")
+                agenti = [m for m in members if m['ruolo'] == 'agente']
+                if agenti:
+                    agente_sel = st.selectbox("Seleziona agente", 
+                        [f"{m['nome_agente']} ({m['email']})" for m in agenti],
+                        key="sel_agente_zona")
+                    idx_sel = [f"{m['nome_agente']} ({m['email']})" for m in agenti].index(agente_sel)
+                    nuova_zona = st.text_input("Zona", value=agenti[idx_sel].get('zona', ''), key="nuova_zona_agente")
+                    if st.button("💾 Salva Zona"):
+                        try:
+                            supabase.table('team_members').update({'zona': nuova_zona}).eq('id', agenti[idx_sel]['id']).execute()
+                            st.toast("✅ Zona aggiornata!")
+                            st.session_state.team_info = get_user_team_info()
+                            time_module.sleep(0.5)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Errore: {e}")
+            
+            # === TAB ASSEGNA CLIENTI ===
+            with tab_assegna:
+                st.subheader("📋 Assegnazione Clienti")
+                
+                # Carica tutti i clienti del team
+                df_team = get_team_clienti(team_info['team_id'])
+                members = get_team_members(team_info['team_id'])
+                agenti = [m for m in members if m['ruolo'] == 'agente']
+                
+                if df_team.empty:
+                    st.info("📭 Nessun cliente nel team. Usa la tab 📥 Importa per caricare i clienti.")
+                elif not agenti:
+                    st.warning("👤 Nessun agente nel team. Condividi il codice invito prima!")
+                else:
+                    # Statistiche
+                    n_tot = len(df_team)
+                    n_assegnati = len(df_team[df_team['agente_id'].notna()])
+                    n_liberi = n_tot - n_assegnati
+                    
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("📋 Totale", n_tot)
+                    c2.metric("✅ Assegnati", n_assegnati)
+                    c3.metric("📭 Non assegnati", n_liberi)
+                    
+                    st.divider()
+                    
+                    # Filtro: non assegnati / per agente
+                    filtro = st.radio("Mostra", ["📭 Non assegnati", "👤 Per agente", "📋 Tutti"], horizontal=True, key="filtro_assign")
+                    
+                    if filtro == "📭 Non assegnati":
+                        df_show = df_team[df_team['agente_id'].isna()].copy()
+                    elif filtro == "👤 Per agente":
+                        agente_filtro = st.selectbox("Agente", 
+                            [f"{m['nome_agente']}" for m in agenti], key="filtro_ag")
+                        idx_f = [m['nome_agente'] for m in agenti].index(agente_filtro)
+                        df_show = df_team[df_team['agente_id'] == agenti[idx_f]['user_id']].copy()
+                    else:
+                        df_show = df_team.copy()
+                    
+                    if not df_show.empty:
+                        # Mostra clienti con checkbox + dropdown assegnazione
+                        agente_dest = st.selectbox("Assegna a:", 
+                            ["— Seleziona agente —"] + [f"{m['nome_agente']}" for m in agenti],
+                            key="dest_agente")
+                        
+                        # Seleziona tutti
+                        sel_tutti = st.checkbox("Seleziona tutti", key="sel_tutti_assign")
+                        
+                        clienti_sel = []
+                        for _, row in df_show.head(50).iterrows():
+                            citta = row.get('citta', '') or ''
+                            nome = row.get('nome_cliente', '')
+                            # Trova nome agente attuale
+                            ag_attuale = ""
+                            if pd.notna(row.get('agente_id')):
+                                for m in agenti:
+                                    if m['user_id'] == row['agente_id']:
+                                        ag_attuale = f" → {m['nome_agente']}"
+                                        break
+                            
+                            checked = st.checkbox(
+                                f"{nome} — {citta}{ag_attuale}", 
+                                value=sel_tutti,
+                                key=f"cli_{row['id']}"
+                            )
+                            if checked:
+                                clienti_sel.append(row['id'])
+                        
+                        if len(df_show) > 50:
+                            st.caption(f"Mostrati 50 di {len(df_show)}. Usa i filtri per restringere.")
+                        
+                        col_ass1, col_ass2 = st.columns(2)
+                        with col_ass1:
+                            if st.button(f"✅ Assegna {len(clienti_sel)} clienti", type="primary", 
+                                        disabled=agente_dest == "— Seleziona agente —" or not clienti_sel):
+                                idx_ag = [m['nome_agente'] for m in agenti].index(agente_dest)
+                                ok = assegna_clienti_a_agente(clienti_sel, agenti[idx_ag]['user_id'], team_info['team_id'])
+                                if ok:
+                                    st.toast(f"✅ {len(clienti_sel)} clienti assegnati a {agente_dest}")
+                                    st.session_state.reload_data = True
+                                    time_module.sleep(0.5)
+                                    st.rerun()
+                        
+                        with col_ass2:
+                            if clienti_sel and st.button("🔓 Rimuovi assegnazione"):
+                                rimuovi_assegnazione(clienti_sel)
+                                st.toast("✅ Assegnazione rimossa")
+                                st.session_state.reload_data = True
+                                time_module.sleep(0.5)
+                                st.rerun()
+                    else:
+                        st.info("Nessun cliente da mostrare con questo filtro.")
+            
+            # === TAB KPI ===
+            with tab_kpi:
+                st.subheader("📊 KPI e Obiettivi")
+                
+                members = get_team_members(team_info['team_id'])
+                agenti = [m for m in members if m['ruolo'] == 'agente']
+                
+                periodo = datetime.now().strftime('%Y-%m')
+                st.caption(f"Periodo: **{periodo}**")
+                
+                if agenti:
+                    # Dashboard KPI
+                    for ag in agenti:
+                        with st.container(border=True):
+                            c1, c2, c3, c4, c5 = st.columns([3, 2, 2, 2, 1])
+                            c1.markdown(f"**👤 {ag['nome_agente']}**")
+                            c1.caption(ag.get('zona', '—'))
+                            
+                            # Conta clienti
+                            try:
+                                cnt = supabase.table('clienti').select('id', count='exact').eq('agente_id', ag['user_id']).eq('team_id', team_info['team_id']).execute()
+                                n_clienti = cnt.count or 0
+                            except:
+                                n_clienti = 0
+                            
+                            # Conta visite mese
+                            try:
+                                inizio_mese = datetime.now().replace(day=1).strftime('%Y-%m-%d')
+                                visite_resp = supabase.table('clienti').select('id', count='exact').eq('agente_id', ag['user_id']).gte('ultima_visita', inizio_mese).execute()
+                                n_visite = visite_resp.count or 0
+                            except:
+                                n_visite = 0
+                            
+                            copertura = round(n_visite / n_clienti * 100) if n_clienti > 0 else 0
+                            
+                            c2.metric("Clienti", n_clienti)
+                            c3.metric("Visite mese", n_visite)
+                            c4.metric("Copertura", f"{copertura}%")
+                            
+                            if copertura >= 80:
+                                c5.markdown("🟢")
+                            elif copertura >= 50:
+                                c5.markdown("🟡")
+                            else:
+                                c5.markdown("🔴")
+                    
+                    # Impostazione obiettivi
+                    st.divider()
+                    st.subheader("🎯 Imposta Obiettivi")
+                    
+                    c1, c2, c3 = st.columns(3)
+                    ag_obj = c1.selectbox("Agente", [m['nome_agente'] for m in agenti], key="ag_obj")
+                    tipo_obj = c2.selectbox("Tipo", ["visite_mese", "copertura_pct", "nuovi_clienti"], key="tipo_obj")
+                    valore_obj = c3.number_input("Target", min_value=1, value=30, key="val_obj")
+                    
+                    if st.button("💾 Salva Obiettivo"):
+                        idx_ag = [m['nome_agente'] for m in agenti].index(ag_obj)
+                        ok = save_obiettivo(team_info['team_id'], agenti[idx_ag]['user_id'], periodo, tipo_obj, valore_obj)
+                        if ok:
+                            st.toast("✅ Obiettivo salvato!")
+                else:
+                    st.info("Aggiungi agenti al team per impostare i KPI.")
+            
+            # === TAB IMPORTA ===
+            with tab_import:
+                st.subheader("📥 Importa Clienti nel Team")
+                st.caption("Carica un file Excel con i clienti da assegnare agli agenti.")
+                
+                uploaded = st.file_uploader("Scegli file Excel", type=['xlsx', 'xls'], key="import_team")
+                
+                if uploaded:
+                    try:
+                        df_imp = pd.read_excel(uploaded)
+                        st.success(f"✅ {len(df_imp)} righe trovate")
+                        st.dataframe(df_imp.head(5))
+                        
+                        st.caption("Colonne riconosciute: nome cliente, indirizzo, citta, cap, provincia, cellulare, email, note, visitare, frequenza_giorni, latitude, longitude")
+                        
+                        if st.button("📥 Importa nel Team", type="primary"):
+                            with st.spinner("Importazione in corso..."):
+                                count = importa_clienti_team(df_imp, team_info['team_id'])
+                            st.success(f"✅ {count} clienti importati nel team!")
+                            st.session_state.reload_data = True
+                            time_module.sleep(1)
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Errore lettura file: {e}")
+    
     # --- TAB: CONFIGURAZIONE ---
     elif st.session_state.active_tab == "⚙️ Config":
         st.header("⚙️ Configurazione")
@@ -4378,12 +4882,56 @@ def main_app():
         st.write(f"**Clienti totali:** {len(df)}")
         if not df.empty and 'visitare' in df.columns:
             st.write(f"**Clienti attivi:** {len(df[df['visitare'] == 'SI'])}")
-            # Conta clienti senza coordinate
             senza_coord = df[(df['latitude'].isna()) | (df['longitude'].isna()) | (df['latitude'] == 0) | (df['longitude'] == 0)]
             if len(senza_coord) > 0:
                 st.warning(f"⚠️ **{len(senza_coord)} clienti senza coordinate GPS!**")
         else:
             st.write(f"**Clienti attivi:** 0")
+        
+        # === SEZIONE TEAM ===
+        st.divider()
+        st.subheader("🏢 Team")
+        
+        if team_info:
+            # Mostra info team attuale
+            if team_info['ruolo'] == 'responsabile':
+                st.success(f"🏢 **Responsabile** del team **{team_info['team_nome']}**")
+                st.code(team_info['codice_invito'], language=None)
+                st.caption("☝️ Condividi questo codice con i tuoi agenti per farli unire al team")
+            else:
+                st.info(f"👤 **Agente** nel team **{team_info['team_nome']}**")
+                if team_info.get('zona'):
+                    st.caption(f"📍 Zona: {team_info['zona']}")
+        else:
+            st.caption("Non fai parte di nessun team. Puoi crearne uno o unirti con un codice invito.")
+            
+            col_t1, col_t2 = st.columns(2)
+            
+            with col_t1:
+                st.markdown("**🏢 Crea un Team** (sei il responsabile)")
+                nome_team = st.text_input("Nome Team", placeholder="Es. Vendite Centro Italia", key="nome_nuovo_team")
+                if st.button("🏢 Crea Team", type="primary", use_container_width=True, disabled=not nome_team):
+                    team = create_team(nome_team)
+                    if team:
+                        st.session_state.team_info = get_user_team_info()
+                        st.toast(f"✅ Team '{nome_team}' creato!")
+                        time_module.sleep(1)
+                        st.rerun()
+            
+            with col_t2:
+                st.markdown("**👤 Unisciti a un Team** (sei un agente)")
+                codice = st.text_input("Codice Invito", placeholder="TEAM-XXXXXX", key="codice_join")
+                nome_ag = st.text_input("Il tuo nome", placeholder="Mario Rossi", key="nome_join")
+                if st.button("👤 Unisciti", use_container_width=True, disabled=not codice or not nome_ag):
+                    ok, msg = join_team(codice, nome_ag)
+                    if ok:
+                        st.session_state.team_info = get_user_team_info()
+                        st.session_state.reload_data = True
+                        st.toast(f"✅ {msg}")
+                        time_module.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {msg}")
         
         st.divider()
         st.subheader("🌍 Rigenera Coordinate GPS")
