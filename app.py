@@ -90,7 +90,8 @@ def get_user_subscription(user_id, email=None):
         # Tabella potrebbe non esistere ancora
         return None
 
-def create_user_subscription(user_id, email, is_trial=True):
+def create_user_subscription(user_id, email, is_trial=True, tipo_account='agente_singolo', 
+                             nome_azienda='', nome_referente='', telefono='', notes=''):
     """Crea un nuovo record abbonamento per un utente"""
     try:
         today = datetime.now().date()
@@ -99,7 +100,6 @@ def create_user_subscription(user_id, email, is_trial=True):
         is_admin_user = email.lower() == ADMIN_EMAIL.lower()
         
         if is_admin_user:
-            # Admin: accesso immediato
             data = {
                 'user_id': user_id,
                 'email': email,
@@ -107,17 +107,23 @@ def create_user_subscription(user_id, email, is_trial=True):
                 'is_admin': True,
                 'approved': True,
                 'created_at': datetime.now().isoformat(),
-                'subscription_start': today.isoformat()
+                'subscription_start': today.isoformat(),
+                'tipo_account': 'admin',
+                'nome_referente': 'Admin',
             }
         else:
-            # Nuovi utenti: in attesa di approvazione
             data = {
                 'user_id': user_id,
                 'email': email,
-                'status': 'pending',  # In attesa di approvazione dall'admin
+                'status': 'pending',
                 'is_admin': False,
                 'approved': False,
-                'created_at': datetime.now().isoformat()
+                'created_at': datetime.now().isoformat(),
+                'tipo_account': tipo_account,
+                'nome_azienda': nome_azienda,
+                'nome_referente': nome_referente,
+                'telefono': telefono,
+                'notes': notes
             }
         
         response = supabase.table('user_subscriptions').insert(data).execute()
@@ -344,19 +350,36 @@ def login_page():
                     st.warning("⚠️ Inserisci email e password")
     
     with tab_register:
-        st.info(f"📝 **Registrati per richiedere l'accesso!**")
-        st.caption("⏳ Dopo la registrazione, l'amministratore dovrà approvare il tuo account.")
+        st.markdown("### Scegli il tipo di account")
         
-        with st.form("register_form"):
-            new_email = st.text_input("📧 Email")
-            new_password = st.text_input("🔑 Password", type="password")
-            confirm_password = st.text_input("🔑 Conferma Password", type="password")
-            nome_azienda = st.text_input("🏢 Nome Azienda (opzionale)")
-            submitted = st.form_submit_button("📝 Registrati", use_container_width=True, type="primary")
+        tipo_reg = st.radio(
+            "Come vuoi usare Giro Visite CRM?",
+            ["👤 Agente Singolo", "🏢 Azienda"],
+            horizontal=True,
+            key="tipo_registrazione"
+        )
+        
+        if tipo_reg == "👤 Agente Singolo":
+            st.info("🎯 **Piano Agente** — Per chi lavora in autonomia e vuole ottimizzare i propri giri visite.")
+            st.markdown("""
+            ✅ Giro ottimizzato con Google Maps  
+            ✅ Agenda settimanale intelligente  
+            ✅ Fino a 200 clienti  
+            ✅ Mappa interattiva  
+            """)
             
-            if submitted:
-                if new_email and new_password:
-                    if new_password != confirm_password:
+            with st.form("register_agente"):
+                new_email = st.text_input("📧 Email *")
+                new_password = st.text_input("🔑 Password *", type="password")
+                confirm_password = st.text_input("🔑 Conferma Password *", type="password")
+                nome_completo = st.text_input("👤 Nome e Cognome *")
+                telefono = st.text_input("📱 Telefono (opzionale)")
+                submitted = st.form_submit_button("📝 Registrati come Agente", use_container_width=True, type="primary")
+                
+                if submitted:
+                    if not new_email or not new_password or not nome_completo:
+                        st.warning("⚠️ Compila tutti i campi obbligatori (*)")
+                    elif new_password != confirm_password:
                         st.error("❌ Le password non coincidono")
                     elif len(new_password) < 6:
                         st.error("❌ La password deve avere almeno 6 caratteri")
@@ -366,15 +389,14 @@ def login_page():
                                 "email": new_email,
                                 "password": new_password
                             })
-                            
                             if response.user:
-                                # Crea account in attesa di approvazione
                                 create_user_subscription(
-                                    response.user.id, 
-                                    new_email, 
-                                    is_trial=True
+                                    response.user.id, new_email,
+                                    is_trial=True,
+                                    tipo_account='agente_singolo',
+                                    nome_referente=nome_completo,
+                                    telefono=telefono
                                 )
-                                
                                 st.success(f"""
                                 ✅ **Registrazione completata!**
                                 
@@ -382,16 +404,70 @@ def login_page():
                                 
                                 ⏳ **Il tuo account è in attesa di approvazione.**
                                 
-                                Riceverai l'accesso quando l'amministratore approverà la tua richiesta.
                                 Una volta approvato, avrai **{TRIAL_DAYS} giorni di prova gratuita**!
                                 """)
-                            else:
-                                st.success("✅ Controlla la tua email per confermare l'account.")
-                                
                         except Exception as e:
                             st.error(f"❌ Errore: {str(e)}")
-                else:
-                    st.warning("⚠️ Compila tutti i campi obbligatori")
+        
+        else:  # Azienda
+            st.info("🏢 **Piano Azienda** — Per gestire la rete vendita con dashboard responsabile, assegnazione clienti e KPI.")
+            st.markdown("""
+            ✅ Tutto il Piano Agente, più:  
+            ✅ Dashboard Responsabile con KPI per agente  
+            ✅ Assegnazione centralizzata clienti → agenti  
+            ✅ Fino a 20 agenti per team  
+            ✅ Importazione clienti massiva  
+            ✅ Report e obiettivi per agente  
+            """)
+            
+            with st.form("register_azienda"):
+                new_email = st.text_input("📧 Email aziendale *")
+                new_password = st.text_input("🔑 Password *", type="password")
+                confirm_password = st.text_input("🔑 Conferma Password *", type="password")
+                nome_azienda = st.text_input("🏢 Nome Azienda *")
+                nome_referente = st.text_input("👤 Nome Referente *")
+                telefono = st.text_input("📱 Telefono *")
+                n_agenti = st.selectbox("👥 Numero agenti previsti", ["2-5", "5-10", "10-20", "20+"], key="n_agenti_reg")
+                note_azienda = st.text_area("📝 Note (settore, esigenze specifiche...)", height=80)
+                submitted = st.form_submit_button("🏢 Registrati come Azienda", use_container_width=True, type="primary")
+                
+                if submitted:
+                    if not new_email or not new_password or not nome_azienda or not nome_referente or not telefono:
+                        st.warning("⚠️ Compila tutti i campi obbligatori (*)")
+                    elif new_password != confirm_password:
+                        st.error("❌ Le password non coincidono")
+                    elif len(new_password) < 6:
+                        st.error("❌ La password deve avere almeno 6 caratteri")
+                    else:
+                        try:
+                            response = supabase.auth.sign_up({
+                                "email": new_email,
+                                "password": new_password
+                            })
+                            if response.user:
+                                create_user_subscription(
+                                    response.user.id, new_email,
+                                    is_trial=True,
+                                    tipo_account='azienda',
+                                    nome_azienda=nome_azienda,
+                                    nome_referente=nome_referente,
+                                    telefono=telefono,
+                                    notes=f"Agenti: {n_agenti} | {note_azienda}"
+                                )
+                                st.success(f"""
+                                ✅ **Registrazione Azienda completata!**
+                                
+                                📧 Controlla la tua email per confermare l'account.
+                                
+                                ⏳ **Il tuo account è in attesa di approvazione.**
+                                
+                                Dopo l'approvazione avrai **{TRIAL_DAYS} giorni di prova gratuita** 
+                                con accesso completo alla dashboard Responsabile.
+                                
+                                🏢 **{nome_azienda}** — ti contatteremo al {telefono} per il setup.
+                                """)
+                        except Exception as e:
+                            st.error(f"❌ Errore: {str(e)}")
     
     st.divider()
     st.caption("© 2025 Giro Visite CRM Pro - Versione SaaS")
@@ -449,9 +525,19 @@ def admin_panel():
                 col1, col2, col3 = st.columns([3, 1, 1])
                 
                 with col1:
-                    st.markdown(f"### 📧 {user['email']}")
+                    tipo = user.get('tipo_account', 'agente_singolo')
+                    badge = "🏢 AZIENDA" if tipo == 'azienda' else "👤 Agente"
+                    st.markdown(f"### {badge} — {user['email']}")
+                    
+                    if user.get('nome_referente'):
+                        st.write(f"👤 **{user['nome_referente']}**" + (f" — 🏢 {user['nome_azienda']}" if user.get('nome_azienda') else ""))
+                    if user.get('telefono'):
+                        st.write(f"📱 {user['telefono']}")
+                    
                     created = user.get('created_at', '')[:10] if user.get('created_at') else 'N/D'
                     st.caption(f"📅 Registrato: {created}")
+                    if user.get('notes'):
+                        st.caption(f"📝 {user['notes']}")
                 
                 with col2:
                     if st.button("✅ Approva", key=f"approve_{user['user_id']}", type="primary", use_container_width=True):
@@ -470,21 +556,33 @@ def admin_panel():
     st.divider()
     
     # Filtri
-    col_f1, col_f2 = st.columns(2)
+    col_f1, col_f2, col_f3 = st.columns(3)
     with col_f1:
         filtro_stato = st.selectbox(
             "Filtra per stato:",
             ["Tutti", "active", "trial", "pending", "blocked", "expired"]
         )
     with col_f2:
+        filtro_tipo = st.selectbox(
+            "Filtra per tipo:",
+            ["Tutti", "azienda", "agente_singolo"]
+        )
+    with col_f3:
         cerca_email = st.text_input("🔍 Cerca per email:")
     
     # Filtra utenti
     users_filtrati = users
     if filtro_stato != "Tutti":
         users_filtrati = [u for u in users_filtrati if u['status'] == filtro_stato]
+    if filtro_tipo != "Tutti":
+        users_filtrati = [u for u in users_filtrati if u.get('tipo_account', 'agente_singolo') == filtro_tipo]
     if cerca_email:
         users_filtrati = [u for u in users_filtrati if cerca_email.lower() in u['email'].lower()]
+    
+    # Conteggi per tipo
+    n_aziende = len([u for u in users if u.get('tipo_account') == 'azienda'])
+    n_agenti = len([u for u in users if u.get('tipo_account', 'agente_singolo') == 'agente_singolo' and not u.get('is_admin')])
+    st.caption(f"🏢 {n_aziende} aziende | 👤 {n_agenti} agenti singoli")
     
     st.subheader(f"📋 Tutti gli Utenti ({len(users_filtrati)})")
     
@@ -494,11 +592,22 @@ def admin_panel():
             col1, col2, col3 = st.columns([3, 2, 2])
             
             with col1:
-                # Badge admin
                 admin_badge = "👑 " if user.get('is_admin') else ""
-                st.markdown(f"### {admin_badge}{user['email']}")
+                tipo = user.get('tipo_account', 'agente_singolo')
+                tipo_badge = "🏢" if tipo == 'azienda' else "👤"
+                st.markdown(f"### {admin_badge}{tipo_badge} {user['email']}")
                 
-                # Info
+                # Dettagli extra
+                dettagli = []
+                if user.get('nome_referente'):
+                    dettagli.append(user['nome_referente'])
+                if user.get('nome_azienda'):
+                    dettagli.append(f"🏢 {user['nome_azienda']}")
+                if user.get('telefono'):
+                    dettagli.append(f"📱 {user['telefono']}")
+                if dettagli:
+                    st.write(" — ".join(dettagli))
+                
                 created = user.get('created_at', '')[:10] if user.get('created_at') else 'N/D'
                 st.caption(f"📅 Registrato: {created}")
                 
