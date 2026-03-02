@@ -15,42 +15,6 @@ from supabase import create_client, Client
 # --- 1. CONFIGURAZIONE ---
 st.set_page_config(page_title="Giro Visite CRM Pro", layout="wide", page_icon="🚀")
 
-# === CSS COMPATTO — no scroll pagina, sì scroll interno ===
-st.markdown("""
-<style>
-/* Nascondi header Streamlit per guadagnare ~50px */
-header[data-testid="stHeader"] { height: 0 !important; min-height: 0 !important; }
-.stMainBlockContainer { padding-top: 0.5rem !important; }
-/* Gap ridotti tra blocchi */
-[data-testid="stVerticalBlock"] > div { gap: 0.35rem !important; }
-/* Divider sottile */
-hr { margin: 0.2rem 0 !important; }
-/* Sidebar compatta */
-section[data-testid="stSidebar"] { width: 230px !important; }
-section[data-testid="stSidebar"] .stRadio > div { gap: 0 !important; }
-section[data-testid="stSidebar"] .stRadio label { padding: 0.2rem 0.5rem !important; }
-/* Metriche compatte */
-[data-testid="stMetric"] { padding: 0.2rem 0.4rem !important; }
-/* Tabs compatti */
-.stTabs [data-baseweb="tab-list"] { gap: 0.2rem !important; }
-.stTabs [data-baseweb="tab"] { padding: 0.25rem 0.7rem !important; }
-/* Area scrollabile per liste lunghe */
-.scroll-area { max-height: 55vh; overflow-y: auto; padding-right: 4px; }
-.scroll-area-short { max-height: 40vh; overflow-y: auto; padding-right: 4px; }
-/* Expander compatto */
-[data-testid="stExpander"] { margin-bottom: 0.2rem !important; }
-.streamlit-expanderHeader { padding: 0.3rem 0 !important; }
-/* Alert compatti */
-.stAlert { padding: 0.35rem 0.6rem !important; }
-/* Mobile */
-@media (max-width: 768px) {
-    .stMainBlockContainer { padding: 0.3rem 0.7rem !important; }
-    section[data-testid="stSidebar"] { width: 200px !important; }
-    .scroll-area { max-height: 50vh; }
-}
-</style>
-""", unsafe_allow_html=True)
-
 # --- FUNZIONI PER PERSISTENZA SESSIONE ---
 def generate_session_token(user_id, email):
     """Genera un token di sessione sicuro"""
