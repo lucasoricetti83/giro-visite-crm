@@ -3599,57 +3599,71 @@ def main_app():
         # MAPPA TUTTI I CLIENTI
         # ============================================
         if not df.empty:
-            # --- Geolocalizzazione ---
+            # --- Geolocalizzazione automatica ---
             geo_lat = st.session_state.geo_lat
             geo_lon = st.session_state.geo_lon
             
-            if geo_lat and geo_lon:
-                st.success(f"📍 Posizione rilevata: {geo_lat:.4f}, {geo_lon:.4f}")
-            else:
+            if not geo_lat:
                 render_gps_button("mappa_gps_btn")
             
-            col_f1, col_f2 = st.columns(2)
+            # --- FILTRI ---
+            col_f1, col_f2, col_f3, col_f4 = st.columns(4)
             with col_f1:
-                filtro_stato = st.selectbox("📊 Stato:", ["Tutti", "Solo nel giro", "Fuori giro"], key="filtro_stato_mappa")
+                filtro_stato = st.selectbox("📊 Stato", ["Tutti", "Nel giro", "Fuori giro"], key="filtro_stato_mappa")
             with col_f2:
-                if geo_lat:
-                    raggio_km = st.slider("🎯 Raggio (km)", 1, 100, 30, key="raggio_mappa")
-                else:
-                    raggio_km = 100
+                filtro_urgenza = st.selectbox("⏰ Urgenza", ["Tutti", "🔴 In ritardo", "🟡 In scadenza", "🟢 In regola", "🔵 Mai visitati"], key="filtro_urgenza_mappa")
+            with col_f3:
+                # Lista città disponibili
+                citta_list = sorted(df['citta'].dropna().unique().tolist()) if 'citta' in df.columns else []
+                citta_list = [c for c in citta_list if c.strip()]
+                filtro_citta = st.selectbox("🏙️ Città", ["Tutte"] + citta_list, key="filtro_citta_mappa")
+            with col_f4:
+                usa_raggio = st.checkbox("🎯 Filtra per raggio", value=False, key="usa_raggio_mappa")
+                if usa_raggio:
+                    raggio_km = st.slider("Km", 5, 200, 50, key="raggio_mappa")
             
-            # Posizione manuale
-            with st.expander("📍 Posizione manuale"):
-                col_m1, col_m2, col_m3 = st.columns([2, 2, 1])
-                with col_m1:
-                    manual_lat = st.number_input("Latitudine", value=float(geo_lat or config.get('lat_base', 39.22)), format="%.6f", key="manual_lat")
-                with col_m2:
-                    manual_lon = st.number_input("Longitudine", value=float(geo_lon or config.get('lon_base', 9.12)), format="%.6f", key="manual_lon")
-                with col_m3:
-                    st.write("")
-                    if st.button("📍 Usa", key="usa_manual"):
-                        st.session_state.geo_lat = manual_lat
-                        st.session_state.geo_lon = manual_lon
-                        st.rerun()
-                    if st.button("🏠 Base", key="usa_base"):
-                        st.session_state.geo_lat = float(config.get('lat_base', 39.22))
-                        st.session_state.geo_lon = float(config.get('lon_base', 9.12))
-                        st.rerun()
-            
-            st.divider()
-            
-            # Filtra
+            # --- Filtra clienti ---
             df_filtered = df.copy()
-            if filtro_stato == "Solo nel giro":
+            
+            # Filtro stato
+            if filtro_stato == "Nel giro":
                 df_filtered = df_filtered[df_filtered['visitare'] == 'SI']
             elif filtro_stato == "Fuori giro":
                 df_filtered = df_filtered[df_filtered['visitare'] != 'SI']
             
+            # Solo con coordinate valide
             df_filtered = df_filtered[
                 (df_filtered['latitude'].notna()) & 
                 (df_filtered['longitude'].notna()) &
                 (df_filtered['latitude'] != 0) &
                 (df_filtered['longitude'] != 0)
             ]
+            
+            # Filtro urgenza
+            if filtro_urgenza != "Tutti":
+                rows_keep = []
+                for idx_r, row in df_filtered.iterrows():
+                    ultima = row.get('ultima_visita')
+                    freq = int(row.get('frequenza_giorni', 30))
+                    if pd.isnull(ultima) or (hasattr(ultima, 'year') and ultima.year < 2001):
+                        cat = "🔵 Mai visitati"
+                    else:
+                        ultima_date = ultima.date() if hasattr(ultima, 'date') else ultima
+                        prossima = ultima_date + timedelta(days=freq)
+                        ritardo_gg = (ora_italiana.date() - prossima).days
+                        if ritardo_gg > 0:
+                            cat = "🔴 In ritardo"
+                        elif ritardo_gg >= -7:
+                            cat = "🟡 In scadenza"
+                        else:
+                            cat = "🟢 In regola"
+                    if cat == filtro_urgenza:
+                        rows_keep.append(idx_r)
+                df_filtered = df_filtered.loc[rows_keep]
+            
+            # Filtro città
+            if filtro_citta != "Tutte":
+                df_filtered = df_filtered[df_filtered['citta'] == filtro_citta]
             
             # Calcola distanze dalla posizione
             pos_lat = geo_lat or float(config.get('lat_base', 39.22))
@@ -3659,12 +3673,17 @@ def main_app():
                 lambda row: haversine(pos_lat, pos_lon, row['latitude'], row['longitude']), axis=1
             )
             
-            if geo_lat:
+            # Filtro raggio (solo se attivato)
+            if usa_raggio:
                 df_filtered = df_filtered[df_filtered['distanza_km'] <= raggio_km]
             
             df_filtered = df_filtered.sort_values('distanza_km')
             
-            st.write(f"📍 **{len(df_filtered)} clienti** nel raggio di {raggio_km} km")
+            # Info posizione
+            if geo_lat:
+                st.caption(f"📍 Posizione GPS rilevata · **{len(df_filtered)} clienti**")
+            else:
+                st.caption(f"🏠 Posizione base · **{len(df_filtered)} clienti** · Premi 📍 per usare il GPS")
             
             if not df_filtered.empty:
                 # Costruisci mappa
@@ -3689,15 +3708,15 @@ def main_app():
                     icon=folium.Icon(color='blue', icon='user', prefix='fa')
                 ).add_to(m)
                 
-                # Cerchio raggio
-                if geo_lat:
+                # Cerchio raggio (solo se filtro attivo)
+                if usa_raggio:
                     folium.Circle(
                         [pos_lat, pos_lon],
                         radius=raggio_km * 1000,
                         color='blue', fill=True, fillOpacity=0.05, weight=1
                     ).add_to(m)
                 
-                # Marker clienti con tooltip (nome) e popup (dettagli)
+                # Marker clienti con colore per urgenza
                 for _, row in df_filtered.iterrows():
                     lat_c = row['latitude']
                     lon_c = row['longitude']
@@ -3706,15 +3725,17 @@ def main_app():
                     dist_c = row.get('distanza_km', 0)
                     visitare = str(row.get('visitare', 'SI')).upper()
                     
-                    # Colore: verde = nel giro, grigio = fuori giro
-                    color = 'green' if visitare == 'SI' else 'lightgray'
-                    
-                    # Ritardo
+                    # Ritardo e colore marker
                     ultima = row.get('ultima_visita')
                     freq = int(row.get('frequenza_giorni', 30))
-                    if pd.isnull(ultima) or (hasattr(ultima, 'year') and ultima.year < 2001):
+                    if visitare != 'SI':
+                        color = 'lightgray'
+                        ritardo_str = "Fuori giro"
+                        badge = "⚪"
+                    elif pd.isnull(ultima) or (hasattr(ultima, 'year') and ultima.year < 2001):
                         ritardo_str = "Mai visitato"
                         badge = "🔵"
+                        color = 'blue'
                     else:
                         ultima_date = ultima.date() if hasattr(ultima, 'date') else ultima
                         prossima = ultima_date + timedelta(days=freq)
@@ -3722,12 +3743,15 @@ def main_app():
                         if ritardo_gg > 0:
                             ritardo_str = f"In ritardo di {ritardo_gg}gg"
                             badge = "🔴"
+                            color = 'red'
                         elif ritardo_gg >= -7:
                             ritardo_str = f"Scade tra {abs(ritardo_gg)}gg"
                             badge = "🟡"
+                            color = 'orange'
                         else:
                             ritardo_str = f"OK (tra {abs(ritardo_gg)}gg)"
                             badge = "🟢"
+                            color = 'green'
                     
                     popup_html = f"""<div style="min-width:180px;font-size:13px;">
                     <b>{nome_c}</b><br>
