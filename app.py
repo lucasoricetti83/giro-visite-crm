@@ -15,157 +15,23 @@ from supabase import create_client, Client
 # --- 1. CONFIGURAZIONE ---
 st.set_page_config(page_title="Giro Visite CRM Pro", layout="wide", page_icon="🚀")
 
-# === CSS RESPONSIVO — Mobile + Desktop ===
+# === CSS RESPONSIVO LEGGERO ===
 st.markdown("""
 <style>
-/* ===== DESKTOP: tutto compatto, meno scroll ===== */
-.stMainBlockContainer {
-    padding-top: 1rem !important;
-    padding-bottom: 0 !important;
-    max-width: 100% !important;
-}
-section[data-testid="stSidebar"] {
-    width: 220px !important;
-    min-width: 220px !important;
-}
-section[data-testid="stSidebar"] .stRadio > div {
-    gap: 0.1rem !important;
-}
-section[data-testid="stSidebar"] .stRadio label {
-    padding: 0.25rem 0.5rem !important;
-    font-size: 0.9rem !important;
-}
-/* Header più compatti */
-h1 { font-size: 1.5rem !important; margin-bottom: 0.3rem !important; }
-h2 { font-size: 1.2rem !important; margin-bottom: 0.2rem !important; margin-top: 0.3rem !important; }
-h3 { font-size: 1.05rem !important; margin-bottom: 0.1rem !important; margin-top: 0.2rem !important; }
-/* Metriche compatte */
-[data-testid="stMetric"] {
-    padding: 0.3rem 0.5rem !important;
-}
-[data-testid="stMetricValue"] {
-    font-size: 1.3rem !important;
-}
-[data-testid="stMetricLabel"] {
-    font-size: 0.75rem !important;
-}
-/* Container e divider più stretti */
-[data-testid="stVerticalBlock"] > div {
-    gap: 0.4rem !important;
-}
-hr { margin: 0.3rem 0 !important; }
-/* Tabs compatti */
-.stTabs [data-baseweb="tab-list"] {
-    gap: 0.3rem !important;
-}
-.stTabs [data-baseweb="tab"] {
-    padding: 0.3rem 0.8rem !important;
-    font-size: 0.85rem !important;
-}
-/* Bottoni compatti */
-.stButton > button {
-    padding: 0.3rem 0.8rem !important;
-    font-size: 0.85rem !important;
-    min-height: 2rem !important;
-}
-/* Info/Success/Warning box compatti */
-.stAlert {
-    padding: 0.4rem 0.7rem !important;
-    font-size: 0.85rem !important;
-}
-/* Expander compatto */
-.streamlit-expanderHeader {
-    font-size: 0.9rem !important;
-    padding: 0.3rem 0 !important;
-}
-/* Container con bordo */
-[data-testid="stExpander"] {
-    margin-bottom: 0.3rem !important;
+/* Sidebar leggermente più stretta su desktop */
+@media (min-width: 1025px) {
+    section[data-testid="stSidebar"] {
+        width: 240px !important;
+    }
+    /* Nascondi header Streamlit per guadagnare spazio */
+    .stApp > header { height: 0px !important; min-height: 0px !important; }
+    .stMainBlockContainer { padding-top: 1rem !important; }
 }
 
-/* ===== MOBILE: tutto proporzionato ===== */
+/* Mobile: padding ridotto */
 @media (max-width: 768px) {
     .stMainBlockContainer {
-        padding: 0.5rem 0.8rem !important;
-    }
-    /* Sidebar overlay compatta */
-    section[data-testid="stSidebar"] {
-        width: 200px !important;
-        min-width: 200px !important;
-    }
-    section[data-testid="stSidebar"] .stRadio label {
-        padding: 0.15rem 0.4rem !important;
-        font-size: 0.82rem !important;
-    }
-    /* Header mobile */
-    h1 { font-size: 1.2rem !important; }
-    h2 { font-size: 1rem !important; }
-    h3 { font-size: 0.9rem !important; }
-    /* Metriche mobile: più piccole */
-    [data-testid="stMetricValue"] {
-        font-size: 1.1rem !important;
-    }
-    [data-testid="stMetricLabel"] {
-        font-size: 0.65rem !important;
-    }
-    [data-testid="stMetric"] {
-        padding: 0.2rem 0.3rem !important;
-    }
-    /* Colonne: meno gap */
-    [data-testid="stHorizontalBlock"] {
-        gap: 0.3rem !important;
-    }
-    /* Bottoni mobile */
-    .stButton > button {
-        padding: 0.25rem 0.5rem !important;
-        font-size: 0.8rem !important;
-        min-height: 1.8rem !important;
-    }
-    /* Testo generale */
-    p, li, span, .stMarkdown {
-        font-size: 0.85rem !important;
-    }
-    /* Input più compatti */
-    .stTextInput input, .stSelectbox select, .stNumberInput input {
-        font-size: 0.85rem !important;
-        padding: 0.3rem !important;
-    }
-    /* Container bordo mobile */
-    [data-testid="stVerticalBlock"] > div {
-        gap: 0.25rem !important;
-    }
-    /* Alert compatti mobile */
-    .stAlert {
-        padding: 0.3rem 0.5rem !important;
-        font-size: 0.8rem !important;
-    }
-    /* Mappa altezza auto */
-    iframe {
-        max-height: 45vh !important;
-    }
-}
-
-/* ===== TABLET (iPad) ===== */
-@media (min-width: 769px) and (max-width: 1024px) {
-    .stMainBlockContainer {
-        padding: 0.8rem 1rem !important;
-    }
-    h1 { font-size: 1.3rem !important; }
-    [data-testid="stMetricValue"] {
-        font-size: 1.2rem !important;
-    }
-}
-
-/* ===== DESKTOP GRANDE: meno altezza sprecata ===== */
-@media (min-width: 1025px) {
-    /* Riduci padding top globale */
-    .stApp > header { display: none !important; }
-    .stMainBlockContainer {
-        padding-top: 0.5rem !important;
-    }
-    /* Mappa grande su desktop */
-    iframe {
-        min-height: 450px !important;
+        padding: 0.5rem 1rem !important;
     }
 }
 </style>
@@ -921,15 +787,15 @@ def fetch_clienti():
         
         if team_info and team_info['ruolo'] == 'agente':
             # AGENTE: vede solo i clienti assegnati a lui
-            response = supabase.table('clienti').select('*').eq('agente_id', user_id).execute()
+            response = supabase.table('clienti').select('*').eq('agente_id', user_id).order('id').execute()
         elif team_info and team_info['ruolo'] == 'responsabile':
             # RESPONSABILE: vede tutti i clienti del team + i propri standalone
             response = supabase.table('clienti').select('*').or_(
                 f"team_id.eq.{team_info['team_id']},user_id.eq.{user_id}"
-            ).execute()
+            ).order('id').execute()
         else:
             # STANDALONE: come prima
-            response = supabase.table('clienti').select('*').eq('user_id', user_id).execute()
+            response = supabase.table('clienti').select('*').eq('user_id', user_id).order('id').execute()
         
         if response.data:
             df = pd.DataFrame(response.data)
@@ -1811,6 +1677,9 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     
     pool = scaduti + mv_sett
     
+    # Ordine deterministico per garantire stesso risultato su tutti i dispositivi
+    pool.sort(key=lambda c: c['id'])
+    
     if not pool and not app_per_giorno:
         return agenda
     
@@ -2159,7 +2028,7 @@ def google_route_matrix(points, api_key):
         return None, None
     url = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix"
     wps = [{"waypoint": {"location": {"latLng": {"latitude": p[0], "longitude": p[1]}}}} for p in points]
-    body = {"origins": wps, "destinations": wps, "travelMode": "DRIVE", "routingPreference": "TRAFFIC_AWARE"}
+    body = {"origins": wps, "destinations": wps, "travelMode": "DRIVE", "routingPreference": "TRAFFIC_UNAWARE"}
     headers = {
         'Content-Type': 'application/json',
         'X-Goog-Api-Key': api_key,
@@ -2198,7 +2067,7 @@ def google_compute_route(origin, destination, waypoints, api_key):
     body = {
         "origin": mkloc(origin),
         "destination": mkloc(destination),
-        "travelMode": "DRIVE", "routingPreference": "TRAFFIC_AWARE",
+        "travelMode": "DRIVE", "routingPreference": "TRAFFIC_UNAWARE",
         "computeAlternativeRoutes": False, "polylineEncoding": "ENCODED_POLYLINE"
     }
     if waypoints:
