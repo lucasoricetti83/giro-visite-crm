@@ -3394,6 +3394,9 @@ def main_app():
                 
                 m = folium.Map(location=[lat_center, lon_center], zoom_start=12)
                 
+                # Raccogli tutti i punti per fit_bounds
+                all_points = []
+                
                 # Posizione utente
                 try:
                     from folium.plugins import LocateControl
@@ -3419,6 +3422,7 @@ def main_app():
                     tooltip="🏠 BASE",
                     icon=folium.Icon(color='green', icon='home', prefix='fa')
                 ).add_to(m)
+                all_points.append([lat_base, lon_base])
                 
                 # Tappe numerate con tooltip (nome) e popup (dettagli)
                 coords_percorso = [[lat_base, lon_base]]
@@ -3462,6 +3466,7 @@ def main_app():
                     ).add_to(m)
                     
                     coords_percorso.append([lat, lon])
+                    all_points.append([lat, lon])
                     lookup_tappe[f"{lat:.6f},{lon:.6f}"] = tappa
                 
                 # Linea percorso — usa percorso stradale Google se disponibile
@@ -3501,6 +3506,10 @@ def main_app():
                     st.caption("🛣️ Percorso stradale reale (Google Maps)")
                 else:
                     st.caption("📐 Percorso in linea retta (attiva Google Maps API per strade reali)")
+                
+                # Fit bounds per mostrare tutto il percorso
+                if all_points and len(all_points) >= 2:
+                    m.fit_bounds(all_points, padding=[30, 30])
                 
                 map_data = st_folium(m, width=None, height=500, use_container_width=True, key="mappa_giro")
                 
@@ -3660,6 +3669,7 @@ def main_app():
             if not df_filtered.empty:
                 # Costruisci mappa
                 m = folium.Map(location=[pos_lat, pos_lon], zoom_start=12 if geo_lat else 9)
+                all_client_points = [[pos_lat, pos_lon]]  # includi posizione utente
                 
                 # Locate control (pulsante GPS nativo nella mappa)
                 try:
@@ -3732,6 +3742,11 @@ def main_app():
                         tooltip=f"{nome_c} ({dist_c:.1f}km)",
                         icon=folium.Icon(color=color, icon='briefcase', prefix='fa')
                     ).add_to(m)
+                    all_client_points.append([lat_c, lon_c])
+                
+                # Fit bounds per mostrare tutti i clienti
+                if len(all_client_points) >= 2:
+                    m.fit_bounds(all_client_points, padding=[30, 30])
                 
                 # Mostra mappa e cattura click
                 map_data = st_folium(m, width=None, height=500, use_container_width=True, key="mappa_clienti")
