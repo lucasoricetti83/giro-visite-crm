@@ -2652,56 +2652,46 @@ def main_app():
                                 else:
                                     urgenza_badge = "🟢"
                                 
-                                # Info cliente — riga unica compatta
-                                st.markdown(f"**{t['tipo_tappa'].split()[0]} {i}. {t['nome_cliente']}** — ⏰ {t['ora_arrivo']} · {urgenza_badge} {ritardo:+d}gg · {t.get('distanza_km', 0)}km")
-                                
-                                if t.get('indirizzo'):
-                                    st.caption(f"📍 {t['indirizzo']}")
-                                
-                                # Promemoria
-                                if cliente_row is not None and pd.notnull(cliente_row.get('promemoria')) and str(cliente_row.get('promemoria')).strip():
-                                    st.warning(f"📝 **Promemoria:** {cliente_row['promemoria']}")
-                                
-                                # === PULSANTE VISITA ===
-                                if st.button("✅ Registra Visita", key=f"visita_{t['id']}", type="primary", use_container_width=True):
-                                    st.session_state.cliente_report_aperto = t['id']
-                                    st.rerun()
-                                
-                                # === 4 PULSANTI AZIONE IN LINEA (HTML flex = sempre orizzontali su iPhone) ===
+                                # Prepara URL per i pulsanti link
                                 nav_url = f"https://www.google.com/maps/dir/?api=1&destination={t['latitude']},{t['longitude']}"
                                 cell_val = str(t.get('cellulare', '')).strip()
-                                tel_url = f"tel:{cell_val}" if cell_val else ""
+                                tel_url = f"tel:{cell_val}" if cell_val else None
                                 mail_val = ""
                                 if cliente_row is not None and pd.notnull(cliente_row.get('mail')):
                                     mail_val = str(cliente_row.get('mail', '')).strip()
-                                mail_url = f"mailto:{mail_val}" if mail_val else ""
-                                
-                                btn_style = (
-                                    "display:inline-flex;align-items:center;justify-content:center;"
-                                    "padding:8px 4px;border-radius:8px;text-decoration:none;"
-                                    "font-size:14px;font-weight:500;flex:1;text-align:center;"
-                                    "min-height:38px;border:1px solid #ddd;color:#333;background:#f8f9fa;"
-                                )
-                                btn_disabled = btn_style + "opacity:0.35;pointer-events:none;color:#999;"
-                                
-                                html_btns = f'<div style="display:flex;gap:6px;margin:4px 0 2px 0;">'
-                                html_btns += f'<a href="{nav_url}" target="_blank" style="{btn_style}">🚗 Vai</a>'
-                                if tel_url:
-                                    html_btns += f'<a href="{tel_url}" style="{btn_style}">📱 Chiama</a>'
-                                else:
-                                    html_btns += f'<span style="{btn_disabled}">📱 Chiama</span>'
-                                if mail_url:
-                                    html_btns += f'<a href="{mail_url}" style="{btn_style}">📧 Mail</a>'
-                                else:
-                                    html_btns += f'<span style="{btn_disabled}">📧 Mail</span>'
-                                html_btns += '</div>'
-                                st.markdown(html_btns, unsafe_allow_html=True)
-                                
-                                # Scheda cliente (richiede Streamlit per navigazione)
-                                if st.button("👤 Scheda cliente", key=f"scheda_{t['id']}", use_container_width=True):
-                                    st.session_state.cliente_selezionato = t['nome_cliente']
-                                    st.session_state.active_tab = "👤 Anagrafica"
-                                    st.rerun()
+                                mail_url = f"mailto:{mail_val}" if mail_val else None
+
+                                # === RIGA NOME + 4 PULSANTI COMPATTI ===
+                                col_info, col_b1, col_b2, col_b3, col_b4 = st.columns([5, 1, 1, 1, 1])
+
+                                with col_info:
+                                    st.markdown(f"**{t['tipo_tappa'].split()[0]} {i}. {t['nome_cliente']}**  \n⏰ {t['ora_arrivo']} · {urgenza_badge} {ritardo:+d}gg · {t.get('distanza_km', 0)}km")
+                                    if t.get('indirizzo'):
+                                        st.caption(f"📍 {t['indirizzo']}")
+
+                                with col_b1:
+                                    if st.button("✅", key=f"visita_{t['id']}", help="Registra Visita", use_container_width=True):
+                                        st.session_state.cliente_report_aperto = t['id']
+                                        st.rerun()
+
+                                with col_b2:
+                                    st.link_button("🚗", nav_url, help="Naviga con Google Maps", use_container_width=True)
+
+                                with col_b3:
+                                    if tel_url:
+                                        st.link_button("📱", tel_url, help="Chiama", use_container_width=True)
+                                    else:
+                                        st.button("📱", key=f"tel_dis_{t['id']}", help="Telefono non disponibile", disabled=True, use_container_width=True)
+
+                                with col_b4:
+                                    if st.button("👤", key=f"scheda_{t['id']}", help="Scheda cliente", use_container_width=True):
+                                        st.session_state.cliente_selezionato = t['nome_cliente']
+                                        st.session_state.active_tab = "👤 Anagrafica"
+                                        st.rerun()
+
+                                # Promemoria (sotto la riga, solo se presente)
+                                if cliente_row is not None and pd.notnull(cliente_row.get('promemoria')) and str(cliente_row.get('promemoria')).strip():
+                                    st.warning(f"📝 **Promemoria:** {cliente_row['promemoria']}")
                             
                             else:
                                 # FORM REPORT APERTO
