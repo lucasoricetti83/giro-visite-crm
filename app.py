@@ -10,7 +10,8 @@ import re
 import time as time_module
 import requests
 import hashlib
-from supabase import create_client, Client
+import concurrent.futures
+from supabase import create_client, Client, ClientOptions
 
 # --- 1. CONFIGURAZIONE ---
 st.set_page_config(page_title="Giro Visite CRM Pro", layout="wide", page_icon="🚀")
@@ -74,7 +75,28 @@ TRIAL_DAYS = 14
 
 @st.cache_resource
 def get_supabase_client():
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+    """Crea il client Supabase con timeout per evitare blocchi infiniti"""
+    try:
+        options = ClientOptions(
+            postgrest_client_timeout=10,
+            storage_client_timeout=10,
+        )
+        client = create_client(SUPABASE_URL, SUPABASE_KEY, options=options)
+        return client
+    except Exception as e:
+        st.error(f"❌ Impossibile connettersi a Supabase: {str(e)}")
+        st.stop()
+
+def get_session_safe(timeout_seconds=5):
+    """Recupera la sessione Supabase con timeout per evitare blocchi"""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(supabase.auth.get_session)
+        try:
+            return future.result(timeout=timeout_seconds)
+        except concurrent.futures.TimeoutError:
+            return None
+        except Exception:
+            return None
 
 supabase: Client = get_supabase_client()
 
@@ -279,7 +301,7 @@ def init_auth_state():
         
         # METODO 2: Prova Supabase (fallback)
         try:
-            session_response = supabase.auth.get_session()
+            session_response = get_session_safe(timeout_seconds=5)
             
             if session_response and session_response.session:
                 user = session_response.session.user
@@ -2227,7 +2249,7 @@ def main_app():
     time_since_check = (datetime.now() - st.session_state.last_session_check).seconds
     if time_since_check > 600:  # 10 minuti
         try:
-            session_response = supabase.auth.get_session()
+            session_response = get_session_safe(timeout_seconds=5)
             if session_response and session_response.session:
                 st.session_state.session = session_response.session
             st.session_state.last_session_check = datetime.now()
