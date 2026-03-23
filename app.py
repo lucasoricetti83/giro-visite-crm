@@ -1510,7 +1510,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     # Capacità giornaliera
     ore = (datetime.combine(oggi, ora_fine) - datetime.combine(oggi, ora_inizio)).seconds / 3600
     pausa_ore = (datetime.combine(oggi, pausa_a) - datetime.combine(oggi, pausa_da)).seconds / 3600
-    max_visite = max(4, min(10, int(ore - pausa_ore)))
+    max_visite = max(4, min(12, int(ore - pausa_ore)))
     
     # ========================================
     # 1. RACCOGLI CLIENTI + PARSE APPUNTAMENTI
@@ -1621,12 +1621,14 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 nomi_app.add(c['nome'])
     
     # ========================================
-    # 4. FILTRA PER FREQUENZA (entro 10 giorni)
+    # 4. FILTRA PER FREQUENZA (entro 21 giorni dalla settimana)
     # ========================================
     scaduti = []
     mai_visitati = []
+    numero_settimana = lunedi.isocalendar()[1]
     
-    soglia_10gg = lunedi + timedelta(days=10)
+    # Finestra ampia: fine settimana + 14 giorni di anticipo
+    soglia = fine_settimana + timedelta(days=14)
     
     for c in tutti:
         if c['nome'] in nomi_app:
@@ -1634,29 +1636,31 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         pv = c.get('prossima_visita')
         if pv is None:
             mai_visitati.append(c)
-        elif pv <= soglia_10gg:
+        elif pv <= soglia:
             scaduti.append(c)
     
-    # Mai visitati: distribuisci gradualmente
+    # Ordina scaduti per urgenza (i più urgenti prima)
+    scaduti.sort(key=lambda c: -c['urgenza'])
+    
+    # Mai visitati: includi TUTTI, ordinati per distanza dalla base
     mai_visitati.sort(key=lambda c: c['dist_base'])
     cap_settimana = max_visite * n_giorni
-    slot_mv = max(0, cap_settimana - len(scaduti))
     
-    numero_settimana = lunedi.isocalendar()[1]
-    if mai_visitati and slot_mv > 0:
-        n_blocchi = max(1, -(-len(mai_visitati) // slot_mv))
-        blocco = numero_settimana % n_blocchi
-        start = blocco * slot_mv
-        mv_sett = mai_visitati[start : start + slot_mv]
-        if len(mv_sett) < slot_mv and len(mai_visitati) > slot_mv:
-            mv_sett += mai_visitati[:slot_mv - len(mv_sett)]
-    else:
-        mv_sett = []
+    # Pool: prima gli scaduti (urgenti), poi i mai visitati
+    # Limita al totale di slot disponibili + 20% buffer per k-means
+    pool_limit = int(cap_settimana * 1.3)
+    pool = scaduti + mai_visitati
+    if len(pool) > pool_limit:
+        # Tieni tutti gli scaduti, limita i mai visitati
+        pool = scaduti + mai_visitati[:max(0, pool_limit - len(scaduti))]
     
-    pool = scaduti + mv_sett
-    
-    # Ordine deterministico per garantire stesso risultato su tutti i dispositivi
-    pool.sort(key=lambda c: c['id'])
+    # Ordine deterministico ma VARIANTE-dipendente per diversità
+    # Ogni variante produce un ordine diverso → zone diverse → giri diversi
+    import hashlib as _hl
+    def _sort_key(c):
+        h = _hl.md5(f"{c['id']}_{variante}_{numero_settimana}".encode()).hexdigest()
+        return (round(-c['urgenza']), h)  # urgenza prima, poi hash per parità
+    pool.sort(key=_sort_key)
     
     if not pool and not app_per_giorno:
         return agenda
@@ -1669,8 +1673,9 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         if len(punti) <= k:
             return [[p] for p in punti] + [[] for _ in range(k - len(punti))]
         
-        # Init: farthest-first per centri ben distribuiti
-        centers = [(punti[0]['lat'], punti[0]['lon'])]
+        # Init: farthest-first, ma punto di partenza varia con variante
+        start_idx = variante % len(punti)
+        centers = [(punti[start_idx]['lat'], punti[start_idx]['lon'])]
         for _ in range(k - 1):
             max_min_d, best = 0, 0
             for i, p in enumerate(punti):
@@ -1911,7 +1916,12 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             day_pool = [c for c in zi['clienti'] if c['nome'] not in nomi_usati_da_app]
             
             cx, cy = zi.get('center', (base_lat, base_lon))
-            day_pool.sort(key=lambda c: (-c['urgenza'], haversine(c['lat'], c['lon'], cx, cy)))
+            # Ordinamento: urgenza prima, poi distanza dal centro zona
+            # Con variante: a parità di urgenza (arrotondata), mescola diversamente
+            day_pool.sort(key=lambda c: (
+                -round(c['urgenza'] / 10) * 10,  # urgenza arrotondata a decine
+                _hl.md5(f"{c['id']}_{variante}_{giorno}".encode()).hexdigest()
+            ))
             if len(day_pool) > slot:
                 day_pool = day_pool[:slot]
         
@@ -3972,9 +3982,17 @@ def main_app():
                     }
                     icona_stato, _ = colori_stato.get(stato, ('⚪', 'gray'))
                     
-                    col_nome, col_stato = st.columns([3, 1])
+                    col_nome, col_stato, col_nav = st.columns([3, 1, 1])
                     col_nome.markdown(f"## {scelto}")
                     col_stato.markdown(f"### {icona_stato} {stato.replace('CLIENTE ', '')}")
+                    
+                    # Pulsante navigazione grande e visibile
+                    with col_nav:
+                        if pd.notnull(cliente.get('latitude')) and cliente.get('latitude') != 0:
+                            nav_url = f"https://www.google.com/maps/dir/?api=1&destination={cliente['latitude']},{cliente['longitude']}"
+                            st.link_button("🚗 NAVIGA", nav_url, use_container_width=True, type="primary")
+                        else:
+                            st.button("🚗 NAVIGA", disabled=True, use_container_width=True, help="Coordinate mancanti")
                     
                     # Dati principali in colonne
                     col_info1, col_info2 = st.columns(2)
