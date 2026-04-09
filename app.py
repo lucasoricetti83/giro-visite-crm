@@ -10,8 +10,7 @@ import re
 import time as time_module
 import requests
 import hashlib
-import concurrent.futures
-from supabase import create_client, Client, ClientOptions
+from supabase import create_client, Client
 
 # --- 1. CONFIGURAZIONE ---
 st.set_page_config(page_title="Giro Visite CRM Pro", layout="wide", page_icon="🚀")
@@ -75,28 +74,7 @@ TRIAL_DAYS = 14
 
 @st.cache_resource
 def get_supabase_client():
-    """Crea il client Supabase con timeout per evitare blocchi infiniti"""
-    try:
-        options = ClientOptions(
-            postgrest_client_timeout=10,
-            storage_client_timeout=10,
-        )
-        client = create_client(SUPABASE_URL, SUPABASE_KEY, options=options)
-        return client
-    except Exception as e:
-        st.error(f"❌ Impossibile connettersi a Supabase: {str(e)}")
-        st.stop()
-
-def get_session_safe(timeout_seconds=5):
-    """Recupera la sessione Supabase con timeout per evitare blocchi"""
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(supabase.auth.get_session)
-        try:
-            return future.result(timeout=timeout_seconds)
-        except concurrent.futures.TimeoutError:
-            return None
-        except Exception:
-            return None
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 supabase: Client = get_supabase_client()
 
@@ -301,7 +279,7 @@ def init_auth_state():
         
         # METODO 2: Prova Supabase (fallback)
         try:
-            session_response = get_session_safe(timeout_seconds=5)
+            session_response = supabase.auth.get_session()
             
             if session_response and session_response.session:
                 user = session_response.session.user
@@ -1532,7 +1510,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     # Capacità giornaliera
     ore = (datetime.combine(oggi, ora_fine) - datetime.combine(oggi, ora_inizio)).seconds / 3600
     pausa_ore = (datetime.combine(oggi, pausa_a) - datetime.combine(oggi, pausa_da)).seconds / 3600
-    max_visite = max(4, min(10, int(ore - pausa_ore)))
+    max_visite = max(4, min(12, int(ore - pausa_ore)))
     
     # ========================================
     # 1. RACCOGLI CLIENTI + PARSE APPUNTAMENTI
@@ -1563,10 +1541,30 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 except:
                     ultima_date = oggi
             prossima_visita = ultima_date + timedelta(days=freq)
-            giorni_ritardo = (lunedi - prossima_visita).days
-            if giorni_ritardo >= 0:
+            
+            # Se la prossima visita cade in un giorno NON lavorativo,
+            # anticipala al giorno lavorativo precedente più vicino.
+            for _ in range(7):
+                pv_weekday = prossima_visita.weekday()
+                in_ferie_pv = ferie_attive and ferie_inizio and ferie_fine and ferie_inizio <= prossima_visita <= ferie_fine
+                if pv_weekday not in giorni_lavorativi or in_ferie_pv:
+                    prossima_visita -= timedelta(days=1)
+                else:
+                    break
+            
+            giorni_ritardo = (oggi - prossima_visita).days  # positivo = in ritardo, negativo = in anticipo
+            
+            if giorni_ritardo > 0:
+                # GIÀ SCADUTO: urgenza alta, cresce col ritardo
                 urgenza = min(100, 50 + (giorni_ritardo / max(freq, 1)) * 50)
+            elif giorni_ritardo >= -7:
+                # SCADE ENTRO QUESTA SETTIMANA: urgenza media-alta (35-50)
+                urgenza = 35 + (7 - abs(giorni_ritardo)) * 2
+            elif giorni_ritardo >= -14:
+                # SCADE ENTRO 2 SETTIMANE: urgenza media (20-35)
+                urgenza = 20 + (14 - abs(giorni_ritardo)) * 1.5
             else:
+                # PIÙ LONTANO: urgenza bassa
                 urgenza = max(0, 20 - abs(giorni_ritardo))
         
         # Parse appuntamento
@@ -1643,12 +1641,14 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 nomi_app.add(c['nome'])
     
     # ========================================
-    # 4. FILTRA PER FREQUENZA (entro 10 giorni)
+    # 4. FILTRA PER FREQUENZA (entro 21 giorni dalla settimana)
     # ========================================
     scaduti = []
     mai_visitati = []
+    numero_settimana = lunedi.isocalendar()[1]
     
-    soglia_10gg = lunedi + timedelta(days=10)
+    # Finestra ampia: fine settimana + 14 giorni di anticipo
+    soglia = fine_settimana + timedelta(days=14)
     
     for c in tutti:
         if c['nome'] in nomi_app:
@@ -1656,29 +1656,31 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         pv = c.get('prossima_visita')
         if pv is None:
             mai_visitati.append(c)
-        elif pv <= soglia_10gg:
+        elif pv <= soglia:
             scaduti.append(c)
     
-    # Mai visitati: distribuisci gradualmente
+    # Ordina scaduti per urgenza (i più urgenti prima)
+    scaduti.sort(key=lambda c: -c['urgenza'])
+    
+    # Mai visitati: includi TUTTI, ordinati per distanza dalla base
     mai_visitati.sort(key=lambda c: c['dist_base'])
     cap_settimana = max_visite * n_giorni
-    slot_mv = max(0, cap_settimana - len(scaduti))
     
-    numero_settimana = lunedi.isocalendar()[1]
-    if mai_visitati and slot_mv > 0:
-        n_blocchi = max(1, -(-len(mai_visitati) // slot_mv))
-        blocco = numero_settimana % n_blocchi
-        start = blocco * slot_mv
-        mv_sett = mai_visitati[start : start + slot_mv]
-        if len(mv_sett) < slot_mv and len(mai_visitati) > slot_mv:
-            mv_sett += mai_visitati[:slot_mv - len(mv_sett)]
-    else:
-        mv_sett = []
+    # Pool: prima gli scaduti (urgenti), poi i mai visitati
+    # Limita al totale di slot disponibili + 20% buffer per k-means
+    pool_limit = int(cap_settimana * 1.3)
+    pool = scaduti + mai_visitati
+    if len(pool) > pool_limit:
+        # Tieni tutti gli scaduti, limita i mai visitati
+        pool = scaduti + mai_visitati[:max(0, pool_limit - len(scaduti))]
     
-    pool = scaduti + mv_sett
-    
-    # Ordine deterministico per garantire stesso risultato su tutti i dispositivi
-    pool.sort(key=lambda c: c['id'])
+    # Ordine deterministico ma VARIANTE-dipendente per diversità
+    # Ogni variante produce un ordine diverso → zone diverse → giri diversi
+    import hashlib as _hl
+    def _sort_key(c):
+        h = _hl.md5(f"{c['id']}_{variante}_{numero_settimana}".encode()).hexdigest()
+        return (round(-c['urgenza']), h)  # urgenza prima, poi hash per parità
+    pool.sort(key=_sort_key)
     
     if not pool and not app_per_giorno:
         return agenda
@@ -1691,8 +1693,9 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         if len(punti) <= k:
             return [[p] for p in punti] + [[] for _ in range(k - len(punti))]
         
-        # Init: farthest-first per centri ben distribuiti
-        centers = [(punti[0]['lat'], punti[0]['lon'])]
+        # Init: farthest-first, ma punto di partenza varia con variante
+        start_idx = variante % len(punti)
+        centers = [(punti[start_idx]['lat'], punti[start_idx]['lon'])]
         for _ in range(k - 1):
             max_min_d, best = 0, 0
             for i, p in enumerate(punti):
@@ -1933,7 +1936,12 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             day_pool = [c for c in zi['clienti'] if c['nome'] not in nomi_usati_da_app]
             
             cx, cy = zi.get('center', (base_lat, base_lon))
-            day_pool.sort(key=lambda c: (-c['urgenza'], haversine(c['lat'], c['lon'], cx, cy)))
+            # Ordinamento: urgenza prima, poi distanza dal centro zona
+            # Con variante: a parità di urgenza (arrotondata), mescola diversamente
+            day_pool.sort(key=lambda c: (
+                -round(c['urgenza'] / 10) * 10,  # urgenza arrotondata a decine
+                _hl.md5(f"{c['id']}_{variante}_{giorno}".encode()).hexdigest()
+            ))
             if len(day_pool) > slot:
                 day_pool = day_pool[:slot]
         
@@ -2249,7 +2257,7 @@ def main_app():
     time_since_check = (datetime.now() - st.session_state.last_session_check).seconds
     if time_since_check > 600:  # 10 minuti
         try:
-            session_response = get_session_safe(timeout_seconds=5)
+            session_response = supabase.auth.get_session()
             if session_response and session_response.session:
                 st.session_state.session = session_response.session
             st.session_state.last_session_check = datetime.now()
@@ -2652,46 +2660,56 @@ def main_app():
                                 else:
                                     urgenza_badge = "🟢"
                                 
-                                # Prepara URL per i pulsanti link
+                                # Info cliente — riga unica compatta
+                                st.markdown(f"**{t['tipo_tappa'].split()[0]} {i}. {t['nome_cliente']}** — ⏰ {t['ora_arrivo']} · {urgenza_badge} {ritardo:+d}gg · {t.get('distanza_km', 0)}km")
+                                
+                                if t.get('indirizzo'):
+                                    st.caption(f"📍 {t['indirizzo']}")
+                                
+                                # Promemoria
+                                if cliente_row is not None and pd.notnull(cliente_row.get('promemoria')) and str(cliente_row.get('promemoria')).strip():
+                                    st.warning(f"📝 **Promemoria:** {cliente_row['promemoria']}")
+                                
+                                # === PULSANTE VISITA ===
+                                if st.button("✅ Registra Visita", key=f"visita_{t['id']}", type="primary", use_container_width=True):
+                                    st.session_state.cliente_report_aperto = t['id']
+                                    st.rerun()
+                                
+                                # === 4 PULSANTI AZIONE IN LINEA (HTML flex = sempre orizzontali su iPhone) ===
                                 nav_url = f"https://www.google.com/maps/dir/?api=1&destination={t['latitude']},{t['longitude']}"
                                 cell_val = str(t.get('cellulare', '')).strip()
-                                tel_url = f"tel:{cell_val}" if cell_val else None
+                                tel_url = f"tel:{cell_val}" if cell_val else ""
                                 mail_val = ""
                                 if cliente_row is not None and pd.notnull(cliente_row.get('mail')):
                                     mail_val = str(cliente_row.get('mail', '')).strip()
-                                mail_url = f"mailto:{mail_val}" if mail_val else None
-
-                                # === RIGA NOME + 4 PULSANTI COMPATTI ===
-                                col_info, col_b1, col_b2, col_b3, col_b4 = st.columns([5, 1, 1, 1, 1])
-
-                                with col_info:
-                                    st.markdown(f"**{t['tipo_tappa'].split()[0]} {i}. {t['nome_cliente']}**  \n⏰ {t['ora_arrivo']} · {urgenza_badge} {ritardo:+d}gg · {t.get('distanza_km', 0)}km")
-                                    if t.get('indirizzo'):
-                                        st.caption(f"📍 {t['indirizzo']}")
-
-                                with col_b1:
-                                    if st.button("✅", key=f"visita_{t['id']}", help="Registra Visita", use_container_width=True):
-                                        st.session_state.cliente_report_aperto = t['id']
-                                        st.rerun()
-
-                                with col_b2:
-                                    st.link_button("🚗", nav_url, help="Naviga con Google Maps", use_container_width=True)
-
-                                with col_b3:
-                                    if tel_url:
-                                        st.link_button("📱", tel_url, help="Chiama", use_container_width=True)
-                                    else:
-                                        st.button("📱", key=f"tel_dis_{t['id']}", help="Telefono non disponibile", disabled=True, use_container_width=True)
-
-                                with col_b4:
-                                    if st.button("👤", key=f"scheda_{t['id']}", help="Scheda cliente", use_container_width=True):
-                                        st.session_state.cliente_selezionato = t['nome_cliente']
-                                        st.session_state.active_tab = "👤 Anagrafica"
-                                        st.rerun()
-
-                                # Promemoria (sotto la riga, solo se presente)
-                                if cliente_row is not None and pd.notnull(cliente_row.get('promemoria')) and str(cliente_row.get('promemoria')).strip():
-                                    st.warning(f"📝 **Promemoria:** {cliente_row['promemoria']}")
+                                mail_url = f"mailto:{mail_val}" if mail_val else ""
+                                
+                                btn_style = (
+                                    "display:inline-flex;align-items:center;justify-content:center;"
+                                    "padding:8px 4px;border-radius:8px;text-decoration:none;"
+                                    "font-size:14px;font-weight:500;flex:1;text-align:center;"
+                                    "min-height:38px;border:1px solid #ddd;color:#333;background:#f8f9fa;"
+                                )
+                                btn_disabled = btn_style + "opacity:0.35;pointer-events:none;color:#999;"
+                                
+                                html_btns = f'<div style="display:flex;gap:6px;margin:4px 0 2px 0;">'
+                                html_btns += f'<a href="{nav_url}" target="_blank" style="{btn_style}">🚗 Vai</a>'
+                                if tel_url:
+                                    html_btns += f'<a href="{tel_url}" style="{btn_style}">📱 Chiama</a>'
+                                else:
+                                    html_btns += f'<span style="{btn_disabled}">📱 Chiama</span>'
+                                if mail_url:
+                                    html_btns += f'<a href="{mail_url}" style="{btn_style}">📧 Mail</a>'
+                                else:
+                                    html_btns += f'<span style="{btn_disabled}">📧 Mail</span>'
+                                html_btns += '</div>'
+                                st.markdown(html_btns, unsafe_allow_html=True)
+                                
+                                # Scheda cliente (richiede Streamlit per navigazione)
+                                if st.button("👤 Scheda cliente", key=f"scheda_{t['id']}", use_container_width=True):
+                                    st.session_state.cliente_selezionato = t['nome_cliente']
+                                    st.session_state.active_tab = "👤 Anagrafica"
+                                    st.rerun()
                             
                             else:
                                 # FORM REPORT APERTO
@@ -3984,9 +4002,17 @@ def main_app():
                     }
                     icona_stato, _ = colori_stato.get(stato, ('⚪', 'gray'))
                     
-                    col_nome, col_stato = st.columns([3, 1])
+                    col_nome, col_stato, col_nav = st.columns([3, 1, 1])
                     col_nome.markdown(f"## {scelto}")
                     col_stato.markdown(f"### {icona_stato} {stato.replace('CLIENTE ', '')}")
+                    
+                    # Pulsante navigazione grande e visibile
+                    with col_nav:
+                        if pd.notnull(cliente.get('latitude')) and cliente.get('latitude') != 0:
+                            nav_url = f"https://www.google.com/maps/dir/?api=1&destination={cliente['latitude']},{cliente['longitude']}"
+                            st.link_button("🚗 NAVIGA", nav_url, use_container_width=True, type="primary")
+                        else:
+                            st.button("🚗 NAVIGA", disabled=True, use_container_width=True, help="Coordinate mancanti")
                     
                     # Dati principali in colonne
                     col_info1, col_info2 = st.columns(2)
@@ -4144,7 +4170,90 @@ def main_app():
                 
                 st.divider()
                 
-                # === 3. REGISTRA VISITA + PROMEMORIA (affiancati) ===
+                # === 3. STORICO REPORT (sempre visibile) ===
+                with st.container(border=True):
+                    storico_raw = str(cliente.get('storico_report', '') or '')
+                    note_cliente = str(cliente.get('note', '') or '')
+                    
+                    # Conta report
+                    report_entries = [r.strip() for r in storico_raw.split('\n\n') if r.strip()] if storico_raw.strip() else []
+                    
+                    col_storico_h, col_storico_count = st.columns([3, 1])
+                    col_storico_h.markdown("### 📜 Storico Report")
+                    col_storico_count.metric("Report", len(report_entries))
+                    
+                    # Note generali (se presenti)
+                    if note_cliente.strip():
+                        st.info(f"📝 **Note:** {note_cliente}")
+                    
+                    # Promemoria (se presente)
+                    promemoria_val = cliente.get('promemoria', '') if pd.notnull(cliente.get('promemoria')) else ''
+                    if promemoria_val and str(promemoria_val).strip():
+                        st.warning(f"⚠️ **Promemoria:** {promemoria_val}")
+                    
+                    if report_entries:
+                        for idx_rep, entry in enumerate(report_entries):
+                            # Parsa data e tipo dal formato [dd/mm/YYYY] [TIPO] testo
+                            entry_text = entry.strip()
+                            
+                            # Estrai data
+                            data_rep = ""
+                            tipo_rep = ""
+                            testo_rep = entry_text
+                            
+                            if entry_text.startswith('['):
+                                # Cerca prima parentesi chiusa per la data
+                                end_data = entry_text.find(']')
+                                if end_data > 0:
+                                    data_rep = entry_text[1:end_data]
+                                    resto = entry_text[end_data+1:].strip()
+                                    
+                                    # Cerca tipo [VISITA] o [TELEFONATA]
+                                    if resto.startswith('['):
+                                        end_tipo = resto.find(']')
+                                        if end_tipo > 0:
+                                            tipo_rep = resto[1:end_tipo]
+                                            testo_rep = resto[end_tipo+1:].strip()
+                                        else:
+                                            testo_rep = resto
+                                    else:
+                                        testo_rep = resto
+                            
+                            # Icona per tipo
+                            if 'TELEFONATA' in tipo_rep.upper():
+                                icona_rep = "📞"
+                            elif 'VISITA' in tipo_rep.upper():
+                                icona_rep = "🚗"
+                            else:
+                                icona_rep = "📝"
+                            
+                            # Mostra entry compatta
+                            col_rep_ico, col_rep_txt = st.columns([1, 11])
+                            with col_rep_ico:
+                                st.markdown(f"**{icona_rep}**")
+                            with col_rep_txt:
+                                header_parts = []
+                                if data_rep:
+                                    header_parts.append(f"**{data_rep}**")
+                                if tipo_rep:
+                                    header_parts.append(f"*{tipo_rep}*")
+                                header_line = " — ".join(header_parts) if header_parts else ""
+                                
+                                if header_line and testo_rep:
+                                    st.markdown(f"{header_line}  \n{testo_rep}")
+                                elif header_line:
+                                    st.markdown(header_line)
+                                else:
+                                    st.markdown(testo_rep if testo_rep else entry_text)
+                            
+                            if idx_rep < len(report_entries) - 1:
+                                st.markdown("---")
+                    else:
+                        st.caption("Nessun report registrato. Usa la sezione sottostante per registrare la prima visita.")
+                
+                st.divider()
+                
+                # === 4. REGISTRA VISITA + PROMEMORIA (affiancati) ===
                 col_visita, col_promemoria = st.columns(2)
                 
                 # --- Colonna Registra Visita ---
@@ -4222,7 +4331,7 @@ def main_app():
                 
                 st.divider()
                 
-                # === 4. GEOLOCALIZZA CLIENTE ===
+                # === 5. GEOLOCALIZZA CLIENTE ===
                 with st.container(border=True):
                     st.subheader("📍 Geolocalizza Cliente")
                     
@@ -4281,7 +4390,7 @@ def main_app():
                         
                         st.caption("💡 Da Google Maps: tieni premuto → copia coordinate")
                 
-                # === 5. MODIFICA DATI (in expander) ===
+                # === 6. MODIFICA DATI (in expander) ===
                 with st.expander("✏️ Modifica tutti i dati"):
                     with st.form(f"edit_cliente_{cliente['id']}"):
                         c1, c2 = st.columns(2)
@@ -4343,7 +4452,7 @@ def main_app():
                             else:
                                 st.error("❌ Errore nel salvataggio")
                 
-                # === 6. ELIMINA CLIENTE ===
+                # === 7. ELIMINA CLIENTE ===
                 with st.expander("🗑️ Elimina Cliente"):
                     st.warning(f"⚠️ L'eliminazione di **{scelto}** è DEFINITIVA e non può essere annullata!")
                     conferma = st.checkbox("Confermo di voler eliminare questo cliente")
