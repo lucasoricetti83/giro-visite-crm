@@ -3299,19 +3299,25 @@ def main_app():
         # APPLICA SCAMBI SALVATI per questa settimana
         chiave_settimana = lunedi_selezionato.isoformat()
         if chiave_settimana in st.session_state.scambi_giorni:
-            # Crea una copia dell'agenda originale
             agenda_originale = {k: list(v) for k, v in agenda_settimana.items()}
-            
-            # Applica tutti gli scambi
             for idx1, idx2 in st.session_state.scambi_giorni[chiave_settimana]:
-                # Scambia usando i valori originali
                 tappe1 = agenda_originale.get(idx1, [])
                 tappe2 = agenda_originale.get(idx2, [])
                 agenda_settimana[idx1] = tappe2
                 agenda_settimana[idx2] = tappe1
-                # Aggiorna anche l'originale per scambi successivi
                 agenda_originale[idx1] = tappe2
                 agenda_originale[idx2] = tappe1
+        
+        # Se settimana corrente: sovrascrive OGGI con il giro SALVATO (coerente con Giro Oggi)
+        # Questo va DOPO gli scambi, così il giorno di oggi mostra sempre il giro persistito
+        if st.session_state.current_week_index == 0:
+            oggi_str_agenda = ora_italiana.strftime('%Y-%m-%d')
+            giro_salvato_agenda = load_giro_giorno(oggi_str_agenda)
+            if giro_salvato_agenda and giro_salvato_agenda.get('ids'):
+                tappe_salvate = ricostruisci_tappe_da_ids(df, giro_salvato_agenda['ids'], config)
+                if tappe_salvate:
+                    idx_oggi = ora_italiana.weekday()
+                    agenda_settimana[idx_oggi] = tappe_salvate
         
         # Funzione per verificare se un giorno è in ferie (range O singolo)
         def is_giorno_ferie_agenda(data):
