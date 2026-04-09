@@ -949,7 +949,7 @@ def save_giro_giorno(data_str, client_ids, variante=0, esclusi=[]):
         if not user_id:
             return False
         payload = json.dumps({
-            'v': 3,  # versione algoritmo — incrementare per invalidare giri vecchi
+            'v': 4,  # versione algoritmo — incrementare per invalidare giri vecchi
             'data': data_str,
             'ids': client_ids,
             'variante': variante,
@@ -980,7 +980,7 @@ def load_giro_giorno(data_str):
         resp = supabase.table('clienti').select('note').eq('user_id', user_id).eq('nome_cliente', '__GIRO_SALVATO__').execute()
         if resp.data and resp.data[0].get('note'):
             giro = json.loads(resp.data[0]['note'])
-            if giro.get('data') == data_str and giro.get('v', 0) >= 3:
+            if giro.get('data') == data_str and giro.get('v', 0) >= 4:
                 return giro
     except:
         pass
@@ -1644,7 +1644,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         
         if pd.isnull(ultima) or (hasattr(ultima, 'year') and ultima.year < 2001):
             giorni_ritardo = 999
-            urgenza = 100.0
+            urgenza = 85.0  # Alta ma non massima — clienti scaduti 90+ giorni competono
             prossima_visita = None
         else:
             ultima_date = ultima.date() if hasattr(ultima, 'date') else ultima
@@ -1655,73 +1655,53 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                     ultima_date = oggi
             prossima_visita = ultima_date + timedelta(days=freq)
             
-            # Aggiusta prossima visita se cade in giorno NON lavorativo:
-            # - Sabato → anticipa a venerdì (giorno lavorativo precedente)
-            # - Domenica → posticipa a lunedì (giorno lavorativo successivo)
-            # - Ferie/altro giorno libero → giorno lavorativo più vicino
+            # Aggiusta se cade in giorno non lavorativo
             pv_weekday = prossima_visita.weekday()
             in_ferie_pv = ferie_attive and ferie_inizio and ferie_fine and ferie_inizio <= prossima_visita <= ferie_fine
             
             if pv_weekday not in giorni_lavorativi or in_ferie_pv:
                 if pv_weekday == 5:
-                    # SABATO → indietro al venerdì (o primo lavorativo prima)
                     for delta in range(1, 8):
                         candidata = prossima_visita - timedelta(days=delta)
                         c_ferie = ferie_attive and ferie_inizio and ferie_fine and ferie_inizio <= candidata <= ferie_fine
                         if candidata.weekday() in giorni_lavorativi and not c_ferie:
-                            prossima_visita = candidata
-                            break
+                            prossima_visita = candidata; break
                 elif pv_weekday == 6:
-                    # DOMENICA → avanti al lunedì (o primo lavorativo dopo)
                     for delta in range(1, 8):
                         candidata = prossima_visita + timedelta(days=delta)
                         c_ferie = ferie_attive and ferie_inizio and ferie_fine and ferie_inizio <= candidata <= ferie_fine
                         if candidata.weekday() in giorni_lavorativi and not c_ferie:
-                            prossima_visita = candidata
-                            break
+                            prossima_visita = candidata; break
                 else:
-                    # FERIE o giorno libero infrasettimanale → cerca il più vicino (prima indietro, poi avanti)
-                    trovato = False
                     for delta in range(1, 8):
-                        # Prova indietro
                         cand_indietro = prossima_visita - timedelta(days=delta)
                         cf1 = ferie_attive and ferie_inizio and ferie_fine and ferie_inizio <= cand_indietro <= ferie_fine
                         if cand_indietro.weekday() in giorni_lavorativi and not cf1:
-                            prossima_visita = cand_indietro
-                            trovato = True
-                            break
-                        # Prova avanti
+                            prossima_visita = cand_indietro; break
                         cand_avanti = prossima_visita + timedelta(days=delta)
                         cf2 = ferie_attive and ferie_inizio and ferie_fine and ferie_inizio <= cand_avanti <= ferie_fine
                         if cand_avanti.weekday() in giorni_lavorativi and not cf2:
-                            prossima_visita = cand_avanti
-                            trovato = True
-                            break
+                            prossima_visita = cand_avanti; break
             
-            # Calcola urgenza rispetto alla FINE della settimana pianificata
-            # Così un cliente che scade lunedì prossimo ha urgenza alta già questa settimana
-            _ritardo_vs_finesett = (fine_settimana - prossima_visita).days
-            
-            # Per display: ritardo reale da oggi (positivo = in ritardo)
             giorni_ritardo = (oggi - prossima_visita).days
             
-            if prossima_visita <= oggi:
-                # GIÀ SCADUTO rispetto a oggi: urgenza massima
-                urgenza = min(100, 60 + (giorni_ritardo / max(freq, 1)) * 40)
-            elif prossima_visita <= fine_settimana:
-                # SCADE ENTRO QUESTA SETTIMANA: urgenza alta (45-60)
-                gg_a_scadenza = (prossima_visita - oggi).days
-                urgenza = max(45, 60 - gg_a_scadenza * 2)
-            elif _ritardo_vs_finesett >= -7:
-                # SCADE ENTRO 7GG DOPO FINE SETTIMANA: urgenza media (25-45)
-                # -1 = domani dopo fine sett → 43, -7 = tra una settimana → 25
-                urgenza = max(25, 45 + _ritardo_vs_finesett * 3)
-            elif _ritardo_vs_finesett >= -14:
-                # SCADE ENTRO 2 SETTIMANE: urgenza bassa (15-25)
-                urgenza = max(15, 25 + (_ritardo_vs_finesett + 7) * 1.5)
+            # Urgenza PROPORZIONALE ai giorni reali di ritardo
+            if giorni_ritardo > 90:
+                urgenza = min(100, 88 + min(giorni_ritardo - 90, 120) / 10)
+            elif giorni_ritardo > 30:
+                urgenza = 75 + (giorni_ritardo - 30) * 0.22
+            elif giorni_ritardo > 7:
+                urgenza = 58 + (giorni_ritardo - 7) * 0.74
+            elif giorni_ritardo > 0:
+                urgenza = 48 + giorni_ritardo * 1.4
+            elif giorni_ritardo >= -3:
+                urgenza = 40 + (3 + giorni_ritardo) * 2.5
+            elif giorni_ritardo >= -7:
+                urgenza = 30 + (7 + giorni_ritardo) * 2.5
+            elif giorni_ritardo >= -14:
+                urgenza = 20 + (14 + giorni_ritardo) * 1.4
             else:
-                # PIÙ LONTANO: urgenza minima
-                urgenza = max(5, 15 + (_ritardo_vs_finesett + 14))
+                urgenza = max(5, 20 + giorni_ritardo / 5)
         
         # Parse appuntamento
         app_raw = r.get('appuntamento')
@@ -1932,7 +1912,10 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     # 5c. K-MEANS SUL POOL RIMANENTE (giorni senza app)
     # ========================================
     pool_rimanente = [c for c in pool if c['nome'] not in nomi_usati_da_app]
-    n_zone = max(1, n_giorni_senza_app)
+    # Zone: più granulari per compattezza geografica
+    # Creo PIÙ zone di quanti sono i giorni, poi assegno le zone più vicine a ogni giorno
+    n_zone = max(n_giorni_senza_app, min(n_giorni_senza_app * 4, len(pool_rimanente) // 3)) if pool_rimanente else n_giorni_senza_app
+    n_zone = max(1, n_zone)
     
     if len(pool_rimanente) >= n_zone and n_zone > 0:
         zone_raw, zone_centers = kmeans_geo(pool_rimanente, n_zone)
@@ -1968,18 +1951,37 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         zone_info = zone_info[shift:] + zone_info[:shift]
     
     # ========================================
-    # 7. ROTAZIONE SETTIMANALE (solo giorni senza app)
+    # 7. RAGGRUPPA ZONE → GIORNI (zone consecutive = geograficamente vicine)
     # ========================================
-    offset = numero_settimana % max(1, n_zone)
+    offset = numero_settimana % max(1, len(zone_info))
+    # Ruota per settimana
+    zone_ruotate = zone_info[offset:] + zone_info[:offset]
     
     assegnazione = {}
     giorni_senza_app = [g for g in giorni if g not in giorni_con_app]
-    for idx, g in enumerate(giorni_senza_app):
-        z_idx = (idx + offset) % max(1, len(zone_info))
-        if z_idx < len(zone_info):
-            assegnazione[g] = zone_info[z_idx]
-        else:
-            assegnazione[g] = {'clienti': [], 'center': (base_lat, base_lon)}
+    n_gsa = len(giorni_senza_app)
+    
+    if n_gsa > 0 and zone_ruotate:
+        # Distribuisci zone equamente tra i giorni
+        # Es: 8 zone, 2 giorni → giorno1 = zone[0-3], giorno2 = zone[4-7]
+        zone_per_giorno = max(1, len(zone_ruotate) // n_gsa)
+        
+        for idx, g in enumerate(giorni_senza_app):
+            start_z = idx * zone_per_giorno
+            end_z = start_z + zone_per_giorno if idx < n_gsa - 1 else len(zone_ruotate)
+            
+            # Unisci clienti delle zone assegnate a questo giorno
+            clienti_giorno = []
+            for z in zone_ruotate[start_z:end_z]:
+                clienti_giorno.extend(z['clienti'])
+            
+            if clienti_giorno:
+                cx = sum(c['lat'] for c in clienti_giorno) / len(clienti_giorno)
+                cy = sum(c['lon'] for c in clienti_giorno) / len(clienti_giorno)
+            else:
+                cx, cy = base_lat, base_lon
+            
+            assegnazione[g] = {'clienti': clienti_giorno, 'center': (cx, cy)}
     
     # ========================================
     # 9-10. COSTRUISCI ANELLO PER OGNI GIORNO
@@ -2097,13 +2099,12 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             day_pool = [c for c in zi['clienti'] if c['nome'] not in nomi_usati_da_app]
             
             cx, cy = zi.get('center', (base_lat, base_lon))
-            # Ordinamento: bilanciamento urgenza + distanza dal centro zona
-            # Score = urgenza_normalizzata - penalità_distanza
-            # Così un cliente molto urgente ma lontanissimo perde punti
+            # Score bilanciato: 50% urgenza + 50% vicinanza al centro zona
+            # Clienti molto lontani dal centro zona vengono penalizzati fortemente
             max_dist_zona = max((haversine(c['lat'], c['lon'], cx, cy) for c in day_pool), default=1) or 1
             day_pool.sort(key=lambda c: -(
-                c['urgenza'] * 0.7 + 
-                (1 - haversine(c['lat'], c['lon'], cx, cy) / max_dist_zona) * 30 * 0.3
+                c['urgenza'] / 100 * 50 + 
+                (1 - haversine(c['lat'], c['lon'], cx, cy) / max_dist_zona) * 50
             ))
             if len(day_pool) > slot:
                 day_pool = day_pool[:slot]
@@ -6147,7 +6148,7 @@ def main_app():
                         debug_lines.append(f"- Variante: {giro_s.get('variante', 0)}")
                         debug_lines.append(f"- Esclusi: {giro_s.get('esclusi', [])}")
                         debug_lines.append(f"- Timestamp: {giro_s.get('ts', '?')}")
-                        if giro_s.get('v', 0) < 3:
+                        if giro_s.get('v', 0) < 4:
                             debug_lines.append(f"- ⚠️ **VERSIONE VECCHIA** — verrà ricalcolato")
                     else:
                         debug_lines.append("- Nessun giro salvato per oggi → verrà calcolato da zero")
