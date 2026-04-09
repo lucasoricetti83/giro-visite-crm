@@ -1698,20 +1698,30 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                             trovato = True
                             break
             
-            giorni_ritardo = (oggi - prossima_visita).days  # positivo = in ritardo, negativo = in anticipo
+            # Calcola urgenza rispetto alla FINE della settimana pianificata
+            # Così un cliente che scade lunedì prossimo ha urgenza alta già questa settimana
+            _ritardo_vs_finesett = (fine_settimana - prossima_visita).days
             
-            if giorni_ritardo > 0:
-                # GIÀ SCADUTO: urgenza alta, cresce col ritardo
-                urgenza = min(100, 50 + (giorni_ritardo / max(freq, 1)) * 50)
-            elif giorni_ritardo >= -7:
-                # SCADE ENTRO QUESTA SETTIMANA: urgenza media-alta (35-50)
-                urgenza = 35 + (7 - abs(giorni_ritardo)) * 2
-            elif giorni_ritardo >= -14:
-                # SCADE ENTRO 2 SETTIMANE: urgenza media (20-35)
-                urgenza = 20 + (14 - abs(giorni_ritardo)) * 1.5
+            # Per display: ritardo reale da oggi (positivo = in ritardo)
+            giorni_ritardo = (oggi - prossima_visita).days
+            
+            if prossima_visita <= oggi:
+                # GIÀ SCADUTO rispetto a oggi: urgenza massima
+                urgenza = min(100, 60 + (giorni_ritardo / max(freq, 1)) * 40)
+            elif prossima_visita <= fine_settimana:
+                # SCADE ENTRO QUESTA SETTIMANA: urgenza alta (45-60)
+                gg_a_scadenza = (prossima_visita - oggi).days
+                urgenza = max(45, 60 - gg_a_scadenza * 2)
+            elif _ritardo_vs_finesett >= -7:
+                # SCADE ENTRO 7GG DOPO FINE SETTIMANA: urgenza media (25-45)
+                # -1 = domani dopo fine sett → 43, -7 = tra una settimana → 25
+                urgenza = max(25, 45 + _ritardo_vs_finesett * 3)
+            elif _ritardo_vs_finesett >= -14:
+                # SCADE ENTRO 2 SETTIMANE: urgenza bassa (15-25)
+                urgenza = max(15, 25 + (_ritardo_vs_finesett + 7) * 1.5)
             else:
-                # PIÙ LONTANO: urgenza bassa
-                urgenza = max(0, 20 - abs(giorni_ritardo))
+                # PIÙ LONTANO: urgenza minima
+                urgenza = max(5, 15 + (_ritardo_vs_finesett + 14))
         
         # Parse appuntamento
         app_raw = r.get('appuntamento')
