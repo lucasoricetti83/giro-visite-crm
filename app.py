@@ -1654,15 +1654,48 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                     ultima_date = oggi
             prossima_visita = ultima_date + timedelta(days=freq)
             
-            # Se la prossima visita cade in un giorno NON lavorativo,
-            # anticipala al giorno lavorativo precedente più vicino.
-            for _ in range(7):
-                pv_weekday = prossima_visita.weekday()
-                in_ferie_pv = ferie_attive and ferie_inizio and ferie_fine and ferie_inizio <= prossima_visita <= ferie_fine
-                if pv_weekday not in giorni_lavorativi or in_ferie_pv:
-                    prossima_visita -= timedelta(days=1)
+            # Aggiusta prossima visita se cade in giorno NON lavorativo:
+            # - Sabato → anticipa a venerdì (giorno lavorativo precedente)
+            # - Domenica → posticipa a lunedì (giorno lavorativo successivo)
+            # - Ferie/altro giorno libero → giorno lavorativo più vicino
+            pv_weekday = prossima_visita.weekday()
+            in_ferie_pv = ferie_attive and ferie_inizio and ferie_fine and ferie_inizio <= prossima_visita <= ferie_fine
+            
+            if pv_weekday not in giorni_lavorativi or in_ferie_pv:
+                if pv_weekday == 5:
+                    # SABATO → indietro al venerdì (o primo lavorativo prima)
+                    for delta in range(1, 8):
+                        candidata = prossima_visita - timedelta(days=delta)
+                        c_ferie = ferie_attive and ferie_inizio and ferie_fine and ferie_inizio <= candidata <= ferie_fine
+                        if candidata.weekday() in giorni_lavorativi and not c_ferie:
+                            prossima_visita = candidata
+                            break
+                elif pv_weekday == 6:
+                    # DOMENICA → avanti al lunedì (o primo lavorativo dopo)
+                    for delta in range(1, 8):
+                        candidata = prossima_visita + timedelta(days=delta)
+                        c_ferie = ferie_attive and ferie_inizio and ferie_fine and ferie_inizio <= candidata <= ferie_fine
+                        if candidata.weekday() in giorni_lavorativi and not c_ferie:
+                            prossima_visita = candidata
+                            break
                 else:
-                    break
+                    # FERIE o giorno libero infrasettimanale → cerca il più vicino (prima indietro, poi avanti)
+                    trovato = False
+                    for delta in range(1, 8):
+                        # Prova indietro
+                        cand_indietro = prossima_visita - timedelta(days=delta)
+                        cf1 = ferie_attive and ferie_inizio and ferie_fine and ferie_inizio <= cand_indietro <= ferie_fine
+                        if cand_indietro.weekday() in giorni_lavorativi and not cf1:
+                            prossima_visita = cand_indietro
+                            trovato = True
+                            break
+                        # Prova avanti
+                        cand_avanti = prossima_visita + timedelta(days=delta)
+                        cf2 = ferie_attive and ferie_inizio and ferie_fine and ferie_inizio <= cand_avanti <= ferie_fine
+                        if cand_avanti.weekday() in giorni_lavorativi and not cf2:
+                            prossima_visita = cand_avanti
+                            trovato = True
+                            break
             
             giorni_ritardo = (oggi - prossima_visita).days  # positivo = in ritardo, negativo = in anticipo
             
