@@ -949,6 +949,7 @@ def save_giro_giorno(data_str, client_ids, variante=0, esclusi=[]):
         if not user_id:
             return False
         payload = json.dumps({
+            'v': 3,  # versione algoritmo — incrementare per invalidare giri vecchi
             'data': data_str,
             'ids': client_ids,
             'variante': variante,
@@ -979,7 +980,7 @@ def load_giro_giorno(data_str):
         resp = supabase.table('clienti').select('note').eq('user_id', user_id).eq('nome_cliente', '__GIRO_SALVATO__').execute()
         if resp.data and resp.data[0].get('note'):
             giro = json.loads(resp.data[0]['note'])
-            if giro.get('data') == data_str:
+            if giro.get('data') == data_str and giro.get('v', 0) >= 3:
                 return giro
     except:
         pass
@@ -1821,13 +1822,9 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         # Tieni tutti gli scaduti, limita i mai visitati
         pool = scaduti + mai_visitati[:max(0, pool_limit - len(scaduti))]
     
-    # Ordine deterministico ma VARIANTE-dipendente per diversità
-    # Ogni variante produce un ordine diverso → zone diverse → giri diversi
-    import hashlib as _hl
-    def _sort_key(c):
-        h = _hl.md5(f"{c['id']}_{variante}_{numero_settimana}".encode()).hexdigest()
-        return (round(-c['urgenza']), h)  # urgenza prima, poi hash per parità
-    pool.sort(key=_sort_key)
+    # Ordine: urgenza decrescente, poi distanza dalla base crescente
+    # Questo garantisce che k-means trovi zone compatte
+    pool.sort(key=lambda c: (-c['urgenza'], c['dist_base']))
     
     if not pool and not app_per_giorno:
         return agenda
@@ -1840,8 +1837,8 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         if len(punti) <= k:
             return [[p] for p in punti] + [[] for _ in range(k - len(punti))]
         
-        # Init: farthest-first, ma punto di partenza varia con variante
-        start_idx = variante % len(punti)
+        # Init: farthest-first, punto di partenza ruota con settimana + variante
+        start_idx = (variante + numero_settimana) % len(punti)
         centers = [(punti[start_idx]['lat'], punti[start_idx]['lon'])]
         for _ in range(k - 1):
             max_min_d, best = 0, 0
@@ -2083,11 +2080,13 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             day_pool = [c for c in zi['clienti'] if c['nome'] not in nomi_usati_da_app]
             
             cx, cy = zi.get('center', (base_lat, base_lon))
-            # Ordinamento: urgenza prima, poi distanza dal centro zona
-            # Con variante: a parità di urgenza (arrotondata), mescola diversamente
-            day_pool.sort(key=lambda c: (
-                -round(c['urgenza'] / 10) * 10,  # urgenza arrotondata a decine
-                _hl.md5(f"{c['id']}_{variante}_{giorno}".encode()).hexdigest()
+            # Ordinamento: bilanciamento urgenza + distanza dal centro zona
+            # Score = urgenza_normalizzata - penalità_distanza
+            # Così un cliente molto urgente ma lontanissimo perde punti
+            max_dist_zona = max((haversine(c['lat'], c['lon'], cx, cy) for c in day_pool), default=1) or 1
+            day_pool.sort(key=lambda c: -(
+                c['urgenza'] * 0.7 + 
+                (1 - haversine(c['lat'], c['lon'], cx, cy) / max_dist_zona) * 30 * 0.3
             ))
             if len(day_pool) > slot:
                 day_pool = day_pool[:slot]
@@ -4246,17 +4245,49 @@ def main_app():
                         else:
                             prossima = ultima + timedelta(days=frequenza)
                         
+                        # Aggiusta se cade in giorno non lavorativo
+                        pv_originale = prossima
+                        pv_wd = prossima.weekday()
+                        if pv_wd not in giorni_lavorativi:
+                            if pv_wd == 5:  # Sabato → indietro
+                                for _d in range(1, 8):
+                                    _c = prossima - timedelta(days=_d)
+                                    if _c.weekday() in giorni_lavorativi:
+                                        prossima = _c
+                                        break
+                            elif pv_wd == 6:  # Domenica → avanti
+                                for _d in range(1, 8):
+                                    _c = prossima + timedelta(days=_d)
+                                    if _c.weekday() in giorni_lavorativi:
+                                        prossima = _c
+                                        break
+                            else:  # Ferie/altro → più vicino
+                                for _d in range(1, 8):
+                                    _ci = prossima - timedelta(days=_d)
+                                    if _ci.weekday() in giorni_lavorativi:
+                                        prossima = _ci
+                                        break
+                                    _ca = prossima + timedelta(days=_d)
+                                    if _ca.weekday() in giorni_lavorativi:
+                                        prossima = _ca
+                                        break
+                        
+                        nota_aggiust = ""
+                        if prossima != pv_originale:
+                            giorni_nomi_it = ["Lun","Mar","Mer","Gio","Ven","Sab","Dom"]
+                            nota_aggiust = f" (da {giorni_nomi_it[pv_originale.weekday()]})"
+                        
                         oggi_date = ora_italiana.date()
                         giorni_mancanti = (prossima - oggi_date).days
                         
                         if giorni_mancanti < 0:
-                            col_vis2.metric("📆 Prossima visita", prossima.strftime('%d/%m/%Y'), f"🔴 {abs(giorni_mancanti)} gg fa!")
+                            col_vis2.metric("📆 Prossima visita", prossima.strftime('%d/%m/%Y'), f"🔴 {abs(giorni_mancanti)} gg fa!{nota_aggiust}")
                         elif giorni_mancanti == 0:
-                            col_vis2.metric("📆 Prossima visita", "OGGI", "🟡 Scade oggi!")
+                            col_vis2.metric("📆 Prossima visita", "OGGI", f"🟡 Scade oggi!{nota_aggiust}")
                         elif giorni_mancanti <= 7:
-                            col_vis2.metric("📆 Prossima visita", prossima.strftime('%d/%m/%Y'), f"🟠 tra {giorni_mancanti} gg")
+                            col_vis2.metric("📆 Prossima visita", prossima.strftime('%d/%m/%Y'), f"🟠 tra {giorni_mancanti} gg{nota_aggiust}")
                         else:
-                            col_vis2.metric("📆 Prossima visita", prossima.strftime('%d/%m/%Y'), f"🟢 tra {giorni_mancanti} gg")
+                            col_vis2.metric("📆 Prossima visita", prossima.strftime('%d/%m/%Y'), f"🟢 tra {giorni_mancanti} gg{nota_aggiust}")
                     else:
                         col_vis1.metric("📅 Ultima visita", "Mai")
                         col_vis2.metric("📆 Prossima visita", "ASAP", "🔴 Mai visitato!")
