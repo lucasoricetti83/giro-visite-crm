@@ -6036,6 +6036,191 @@ def main_app():
         # =============================================
         
         st.divider()
+        st.subheader("🔍 Debug Algoritmo Giro")
+        st.caption("Analisi dettagliata di come vengono calcolati i giri")
+        
+        if st.button("🔍 Esegui Diagnostica Completa", type="primary", use_container_width=True):
+            with st.spinner("Analisi in corso..."):
+                debug_lines = []
+                
+                # 1. CLIENTI TOTALI
+                debug_lines.append(f"## 📊 Stato Clienti")
+                debug_lines.append(f"- **Totale clienti nel DB:** {len(df)}")
+                
+                if df.empty:
+                    debug_lines.append("❌ NESSUN CLIENTE NEL DATABASE")
+                else:
+                    # Visitare
+                    n_si = len(df[df['visitare'] == 'SI']) if 'visitare' in df.columns else 0
+                    n_no = len(df) - n_si
+                    debug_lines.append(f"- **Visitare = SI:** {n_si}")
+                    debug_lines.append(f"- **Visitare = NO:** {n_no}")
+                    
+                    # Coordinate
+                    df_si = df[df['visitare'] == 'SI'] if 'visitare' in df.columns else df
+                    df_si_coord = df_si[
+                        (df_si['latitude'].notna()) & 
+                        (df_si['longitude'].notna()) &
+                        (df_si['latitude'] != 0) &
+                        (df_si['longitude'] != 0)
+                    ]
+                    n_senza_coord = len(df_si) - len(df_si_coord)
+                    debug_lines.append(f"- **Con coordinate GPS:** {len(df_si_coord)}")
+                    if n_senza_coord > 0:
+                        debug_lines.append(f"- ⚠️ **SENZA coordinate (esclusi dal giro):** {n_senza_coord}")
+                        senza = df_si[
+                            (df_si['latitude'].isna()) | (df_si['longitude'].isna()) |
+                            (df_si['latitude'] == 0) | (df_si['longitude'] == 0)
+                        ]['nome_cliente'].tolist()[:10]
+                        for s in senza:
+                            debug_lines.append(f"  - ❌ {s}")
+                    
+                    # 2. ANALISI FREQUENZE E SCADENZE
+                    debug_lines.append(f"\n## ⏰ Scadenze Clienti")
+                    oggi_dbg = ora_italiana.date()
+                    lunedi_dbg = oggi_dbg - timedelta(days=oggi_dbg.weekday())
+                    fine_sett_dbg = lunedi_dbg + timedelta(days=6)
+                    giorni_lav_dbg = config.get('giorni_lavorativi', [0,1,2,3,4])
+                    if isinstance(giorni_lav_dbg, str):
+                        giorni_lav_dbg = [int(x) for x in giorni_lav_dbg.strip('{}').split(',')]
+                    
+                    n_scaduti = 0
+                    n_questa_sett = 0
+                    n_pross_sett = 0
+                    n_lontani = 0
+                    n_mai = 0
+                    clienti_dettaglio = []
+                    
+                    for _, r in df_si_coord.iterrows():
+                        nome = r['nome_cliente']
+                        freq = int(r.get('frequenza_giorni', 30))
+                        ultima = r.get('ultima_visita')
+                        
+                        if pd.isnull(ultima) or (hasattr(ultima, 'year') and ultima.year < 2001):
+                            n_mai += 1
+                            clienti_dettaglio.append((nome, "Mai visitato", 100, "🔴"))
+                        else:
+                            u = ultima.date() if hasattr(ultima, 'date') else ultima
+                            pv = u + timedelta(days=freq)
+                            
+                            # Aggiusta weekend
+                            if pv.weekday() == 5:
+                                for _d in range(1,8):
+                                    _c = pv - timedelta(days=_d)
+                                    if _c.weekday() in giorni_lav_dbg:
+                                        pv = _c; break
+                            elif pv.weekday() == 6:
+                                for _d in range(1,8):
+                                    _c = pv + timedelta(days=_d)
+                                    if _c.weekday() in giorni_lav_dbg:
+                                        pv = _c; break
+                            
+                            rit = (oggi_dbg - pv).days
+                            
+                            if pv <= oggi_dbg:
+                                n_scaduti += 1
+                                clienti_dettaglio.append((nome, f"SCADUTO {rit}gg ({pv.strftime('%d/%m')})", 70, "🔴"))
+                            elif pv <= fine_sett_dbg:
+                                n_questa_sett += 1
+                                clienti_dettaglio.append((nome, f"Questa sett ({pv.strftime('%d/%m')})", 50, "🟡"))
+                            elif pv <= fine_sett_dbg + timedelta(days=7):
+                                n_pross_sett += 1
+                                clienti_dettaglio.append((nome, f"Pross sett ({pv.strftime('%d/%m')})", 35, "🟠"))
+                            else:
+                                n_lontani += 1
+                                clienti_dettaglio.append((nome, f"Lontano ({pv.strftime('%d/%m')})", 10, "⚪"))
+                    
+                    debug_lines.append(f"- 🔴 **Già scaduti:** {n_scaduti}")
+                    debug_lines.append(f"- 🟡 **Scadono questa settimana:** {n_questa_sett}")
+                    debug_lines.append(f"- 🟠 **Scadono prossima settimana:** {n_pross_sett}")
+                    debug_lines.append(f"- ⚪ **Lontani (>2 sett):** {n_lontani}")
+                    debug_lines.append(f"- 🔵 **Mai visitati:** {n_mai}")
+                    debug_lines.append(f"- **TOTALE nel pool:** {n_scaduti + n_questa_sett + n_pross_sett + n_mai}")
+                    
+                    # 3. GIRO SALVATO
+                    debug_lines.append(f"\n## 💾 Giro Salvato")
+                    giro_s = load_giro_giorno(oggi_dbg.strftime('%Y-%m-%d'))
+                    if giro_s:
+                        debug_lines.append(f"- Versione: {giro_s.get('v', '?')}")
+                        debug_lines.append(f"- Data: {giro_s.get('data', '?')}")
+                        debug_lines.append(f"- Clienti: {len(giro_s.get('ids', []))}")
+                        debug_lines.append(f"- Variante: {giro_s.get('variante', 0)}")
+                        debug_lines.append(f"- Esclusi: {giro_s.get('esclusi', [])}")
+                        debug_lines.append(f"- Timestamp: {giro_s.get('ts', '?')}")
+                        if giro_s.get('v', 0) < 3:
+                            debug_lines.append(f"- ⚠️ **VERSIONE VECCHIA** — verrà ricalcolato")
+                    else:
+                        debug_lines.append("- Nessun giro salvato per oggi → verrà calcolato da zero")
+                    
+                    # 4. CONFIGURAZIONE
+                    debug_lines.append(f"\n## ⚙️ Configurazione")
+                    debug_lines.append(f"- Giorni lavorativi: {giorni_lav_dbg}")
+                    debug_lines.append(f"- Max visite calc: {max(4, min(12, 8))}")
+                    debug_lines.append(f"- Variante: {st.session_state.get('variante_giro', 0)}")
+                    debug_lines.append(f"- Esclusi oggi: {st.session_state.get('esclusi_oggi', [])}")
+                    debug_lines.append(f"- Giorno settimana: {oggi_dbg.weekday()} ({['Lun','Mar','Mer','Gio','Ven','Sab','Dom'][oggi_dbg.weekday()]})")
+                    
+                    giorni_calcolo_dbg = [g for g in giorni_lav_dbg if (lunedi_dbg + timedelta(days=g)) >= oggi_dbg]
+                    debug_lines.append(f"- Giorni rimasti settimana: {giorni_calcolo_dbg} → {len(giorni_calcolo_dbg)} zone")
+                    
+                    # 5. CALCOLA GIRO E MOSTRA RISULTATO
+                    debug_lines.append(f"\n## 🗺️ Giro Calcolato (da zero)")
+                    try:
+                        variante_dbg = st.session_state.get('variante_giro', 0)
+                        esclusi_dbg = st.session_state.get('esclusi_oggi', [])
+                        agenda_dbg = calcola_agenda_settimanale(df, config, esclusi_dbg, settimana_offset=0, variante=variante_dbg)
+                        
+                        for g_idx in sorted(agenda_dbg.keys()):
+                            tappe = agenda_dbg[g_idx]
+                            giorno_data = lunedi_dbg + timedelta(days=g_idx)
+                            g_nome = ['Lun','Mar','Mer','Gio','Ven','Sab','Dom'][g_idx]
+                            if g_idx in giorni_lav_dbg:
+                                is_oggi = " ← OGGI" if g_idx == oggi_dbg.weekday() else ""
+                                debug_lines.append(f"\n**{g_nome} {giorno_data.strftime('%d/%m')}{is_oggi}:** {len(tappe)} visite")
+                                for t in tappe:
+                                    debug_lines.append(f"  - {t['nome_cliente']} (urg: {t.get('urgenza', '?')}, {t.get('distanza_km', '?')}km)")
+                            
+                    except Exception as e:
+                        debug_lines.append(f"❌ Errore calcolo: {str(e)}")
+                    
+                    # 6. CLIENTI MANCANTI
+                    debug_lines.append(f"\n## ❓ Clienti nel Giro ma NON nell'Agenda")
+                    nomi_in_agenda = set()
+                    try:
+                        for g_idx, tappe in agenda_dbg.items():
+                            for t in tappe:
+                                nomi_in_agenda.add(t['nome_cliente'])
+                    except:
+                        pass
+                    
+                    clienti_mancanti = [(n, desc, urg, ico) for n, desc, urg, ico in clienti_dettaglio 
+                                       if n not in nomi_in_agenda and urg >= 25]
+                    if clienti_mancanti:
+                        debug_lines.append(f"**{len(clienti_mancanti)} clienti con urgenza ≥25 NON pianificati:**")
+                        for nome, desc, urg, ico in sorted(clienti_mancanti, key=lambda x: -x[2])[:20]:
+                            debug_lines.append(f"  - {ico} **{nome}** — {desc} (urg:{urg})")
+                    else:
+                        debug_lines.append("✅ Tutti i clienti urgenti sono nell'agenda")
+                
+                st.markdown("\n".join(debug_lines))
+                
+                # Bottone per forzare ricalcolo
+                st.divider()
+                if st.button("🔄 FORZA RICALCOLO GIRO (cancella giro salvato)", type="primary"):
+                    try:
+                        user_id = get_user_id()
+                        supabase.table('clienti').delete().eq('user_id', user_id).eq('nome_cliente', '__GIRO_SALVATO__').execute()
+                        st.session_state._forza_ricalcolo = True
+                        st.session_state.variante_giro = 0
+                        st.session_state._route_cache_key = None
+                        st.session_state.reload_data = True
+                        st.success("✅ Giro salvato eliminato! Torna su 🚀 Giro Oggi per vedere il nuovo giro.")
+                        time_module.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Errore: {e}")
+        
+        st.divider()
         st.subheader("🗑️ Elimina Tutti i Dati")
         st.warning("⚠️ Questa azione è **IRREVERSIBILE**!")
         
