@@ -1799,38 +1799,45 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 nomi_app.add(c['nome'])
     
     # ========================================
-    # 4. FILTRA PER FREQUENZA (entro 21 giorni dalla settimana)
+    # 4. COSTRUISCI POOL — TUTTI i clienti da visitare
     # ========================================
     scaduti = []
     mai_visitati = []
+    non_ancora = []  # clienti con prossima visita lontana
     numero_settimana = lunedi.isocalendar()[1]
-    
-    # Finestra ampia: fine settimana + 14 giorni di anticipo
-    soglia = fine_settimana + timedelta(days=14)
     
     for c in tutti:
         if c['nome'] in nomi_app:
             continue
         pv = c.get('prossima_visita')
         if pv is None:
+            # Mai visitato → SEMPRE nel pool
             mai_visitati.append(c)
-        elif pv <= soglia:
+        elif pv <= fine_settimana:
+            # Scaduto o scade questa settimana → priorità massima
             scaduti.append(c)
+        elif pv <= fine_settimana + timedelta(days=14):
+            # Scade entro 2 settimane → nel pool con priorità minore
+            scaduti.append(c)
+        else:
+            # Scade oltre 2 settimane → tenere come riserva
+            non_ancora.append(c)
     
     # Ordina scaduti per urgenza (i più urgenti prima)
     scaduti.sort(key=lambda c: -c['urgenza'])
     
-    # Mai visitati: includi TUTTI, ordinati per distanza dalla base
+    # Mai visitati: includi TUTTI
     mai_visitati.sort(key=lambda c: c['dist_base'])
-    cap_settimana = max_visite * n_giorni
     
-    # Pool: prima gli scaduti (urgenti), poi i mai visitati
-    # Limita al totale di slot disponibili + 20% buffer per k-means
-    pool_limit = int(cap_settimana * 1.3)
+    # Pool: TUTTI gli scaduti + TUTTI i mai visitati (nessun taglio)
+    # Il max_visite per giorno farà da filtro naturale
     pool = scaduti + mai_visitati
-    if len(pool) > pool_limit:
-        # Tieni tutti gli scaduti, limita i mai visitati
-        pool = scaduti + mai_visitati[:max(0, pool_limit - len(scaduti))]
+    
+    # Se restano pochi slot, aggiungi anche i "non ancora" come riserva
+    cap_settimana = max_visite * n_giorni
+    if len(pool) < cap_settimana and non_ancora:
+        non_ancora.sort(key=lambda c: -c['urgenza'])
+        pool += non_ancora
     
     # Ordine: urgenza decrescente, poi distanza dalla base crescente
     # Questo garantisce che k-means trovi zone compatte
@@ -4321,6 +4328,52 @@ def main_app():
                                 update_cliente(cliente['id'], {'visitare': 'SI'})
                                 st.session_state.reload_data = True
                                 st.rerun()
+                    
+                    # === DIAGNOSTICA: perché nel/non nel giro ===
+                    with st.expander("🔍 Diagnostica pianificazione", expanded=False):
+                        problemi = []
+                        
+                        # Check 1: visitare
+                        if not is_nel_giro:
+                            problemi.append("❌ **Visitare = NO** — Il cliente è escluso dal giro. Premi '✅ Metti nel giro' sopra.")
+                        
+                        # Check 2: coordinate
+                        lat_c = cliente.get('latitude', 0)
+                        lon_c = cliente.get('longitude', 0)
+                        if pd.isna(lat_c) or pd.isna(lon_c) or float(lat_c or 0) == 0 or float(lon_c or 0) == 0:
+                            problemi.append("❌ **Coordinate GPS mancanti** — Vai sotto in 'Geolocalizza Cliente' per impostare le coordinate.")
+                        
+                        # Check 3: frequenza e prossima visita
+                        if pd.notnull(ultima):
+                            if hasattr(ultima, 'date'):
+                                _u = ultima.date()
+                            else:
+                                _u = ultima
+                            _pv = _u + timedelta(days=frequenza)
+                            _oggi = ora_italiana.date()
+                            _lun = _oggi - timedelta(days=_oggi.weekday())
+                            _fine_sett = _lun + timedelta(days=6)
+                            
+                            if _pv <= _oggi:
+                                st.success(f"✅ **Scaduto** il {_pv.strftime('%d/%m/%Y')} — urgenza ALTA, dovrebbe essere nel giro")
+                            elif _pv <= _fine_sett:
+                                st.success(f"✅ **Scade questa settimana** ({_pv.strftime('%d/%m/%Y')}) — urgenza ALTA")
+                            elif _pv <= _fine_sett + timedelta(days=14):
+                                st.info(f"ℹ️ **Scade il {_pv.strftime('%d/%m/%Y')}** — nel pool, verrà pianificato se c'è posto")
+                            else:
+                                problemi.append(f"⚠️ **Prossima visita il {_pv.strftime('%d/%m/%Y')}** — troppo lontana, non ancora nel pool questa settimana")
+                        else:
+                            st.success("✅ **Mai visitato** — urgenza MASSIMA, dovrebbe essere nel giro")
+                        
+                        # Check 4: escluso manualmente oggi
+                        if scelto in st.session_state.get('esclusi_oggi', []):
+                            problemi.append("❌ **Escluso manualmente** dal giro di oggi. Vai in 'Gestisci Giro' per rimuovere l'esclusione.")
+                        
+                        if problemi:
+                            for p in problemi:
+                                st.warning(p)
+                        elif is_nel_giro and not (pd.isna(lat_c) or float(lat_c or 0) == 0):
+                            st.success("✅ Nessun problema — il cliente dovrebbe comparire nel giro. Se non appare, premi 🔄 Rigenera in 'Giro Oggi'.")
                     
                     # === SEZIONE APPUNTAMENTO ===
                     st.divider()
