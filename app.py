@@ -940,6 +940,118 @@ def check_scambi_column_exists():
     """Verifica sempre True — usiamo la tabella clienti"""
     return True
 
+# --- PERSISTENZA GIRO DEL GIORNO ---
+def save_giro_giorno(data_str, client_ids, variante=0, esclusi=[]):
+    """Salva il giro del giorno su Supabase"""
+    import json
+    try:
+        user_id = get_user_id()
+        if not user_id:
+            return False
+        payload = json.dumps({
+            'data': data_str,
+            'ids': client_ids,
+            'variante': variante,
+            'esclusi': esclusi,
+            'ts': datetime.now().isoformat()
+        })
+        resp = supabase.table('clienti').select('id').eq('user_id', user_id).eq('nome_cliente', '__GIRO_SALVATO__').execute()
+        if resp.data:
+            supabase.table('clienti').update({'note': payload}).eq('id', resp.data[0]['id']).execute()
+        else:
+            supabase.table('clienti').insert({
+                'user_id': user_id,
+                'nome_cliente': '__GIRO_SALVATO__',
+                'visitare': 'NO',
+                'note': payload
+            }).execute()
+        return True
+    except:
+        return False
+
+def load_giro_giorno(data_str):
+    """Carica il giro salvato per la data specificata. Ritorna dict o None"""
+    import json
+    try:
+        user_id = get_user_id()
+        if not user_id:
+            return None
+        resp = supabase.table('clienti').select('note').eq('user_id', user_id).eq('nome_cliente', '__GIRO_SALVATO__').execute()
+        if resp.data and resp.data[0].get('note'):
+            giro = json.loads(resp.data[0]['note'])
+            if giro.get('data') == data_str:
+                return giro
+    except:
+        pass
+    return None
+
+def ricostruisci_tappe_da_ids(df, client_ids, config):
+    """Ricostruisce le tappe con orari dai client_ids salvati"""
+    base_lat = float(config.get('lat_base', 41.9028))
+    base_lon = float(config.get('lon_base', 12.4964))
+    durata_visita = int(config.get('durata_visita', 45))
+    
+    def get_time_val(val, default):
+        if val is None: return default
+        if isinstance(val, str):
+            try: return datetime.strptime(val[:5], '%H:%M').time()
+            except: return default
+        return val if hasattr(val, 'hour') else default
+    
+    ora_inizio = get_time_val(config.get('h_inizio'), time(9, 0))
+    pausa_da = get_time_val(config.get('pausa_inizio'), time(13, 0))
+    pausa_a = get_time_val(config.get('pausa_fine'), time(14, 0))
+    
+    tappe = []
+    pos_lat, pos_lon = base_lat, base_lon
+    ora = datetime.combine(ora_italiana.date(), ora_inizio)
+    
+    for cid in client_ids:
+        rows = df[df['id'] == cid]
+        if rows.empty:
+            continue
+        r = rows.iloc[0]
+        lat = r.get('latitude', 0)
+        lon = r.get('longitude', 0)
+        if pd.isna(lat) or pd.isna(lon) or lat == 0:
+            continue
+        
+        dist = haversine(pos_lat, pos_lon, float(lat), float(lon))
+        tempo = (dist / 40) * 60
+        arrivo = ora + timedelta(minutes=tempo)
+        
+        if arrivo.time() >= pausa_da and arrivo.time() < pausa_a:
+            ora = datetime.combine(ora_italiana.date(), pausa_a)
+            arrivo = ora + timedelta(minutes=tempo)
+        
+        freq = int(r.get('frequenza_giorni', 30))
+        ultima = r.get('ultima_visita')
+        if pd.isnull(ultima):
+            giorni_ritardo = 999
+        else:
+            ultima_date = ultima.date() if hasattr(ultima, 'date') else ultima
+            prossima = ultima_date + timedelta(days=freq)
+            giorni_ritardo = (ora_italiana.date() - prossima).days
+        
+        tappe.append({
+            'id': cid,
+            'nome_cliente': r['nome_cliente'],
+            'latitude': float(lat),
+            'longitude': float(lon),
+            'indirizzo': r.get('indirizzo', ''),
+            'cellulare': str(r.get('cellulare', '')),
+            'ora_arrivo': arrivo.strftime('%H:%M'),
+            'distanza_km': round(dist, 1),
+            'ritardo': giorni_ritardo,
+            'urgenza': 50,
+            'tipo_tappa': '🔴' if giorni_ritardo >= 14 else '🟡' if giorni_ritardo >= 0 else '🟢'
+        })
+        
+        pos_lat, pos_lon = float(lat), float(lon)
+        ora = arrivo + timedelta(minutes=durata_visita)
+    
+    return tappe
+
 # --- 3b. TEAM MANAGEMENT FUNCTIONS ---
 
 def get_user_team_info():
@@ -2424,7 +2536,8 @@ def main_app():
         with col_regen:
             if st.button("🔄 Rigenera", use_container_width=True, help="Propone un giro diverso"):
                 st.session_state.variante_giro = st.session_state.get('variante_giro', 0) + 1
-                st.session_state._route_cache_key = None  # forza ricalcolo Google
+                st.session_state._route_cache_key = None
+                st.session_state._forza_ricalcolo = True
                 st.rerun()
         with col_refresh:
             if st.button("🔃", use_container_width=True, help="Ricarica dati"):
@@ -2434,7 +2547,16 @@ def main_app():
         idx_g = ora_italiana.weekday()
         giorni_nomi = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"]
         
-        # Inizializza esclusi_oggi se non esiste
+        # === CARICA GIRO SALVATO DA DB ===
+        oggi_str = ora_italiana.strftime('%Y-%m-%d')
+        giro_salvato = load_giro_giorno(oggi_str)
+        
+        # Ripristina variante/esclusi dal giro salvato (persistenza cross-device)
+        if giro_salvato and 'esclusi_oggi' not in st.session_state:
+            st.session_state.esclusi_oggi = giro_salvato.get('esclusi', [])
+        if giro_salvato and 'variante_giro' not in st.session_state:
+            st.session_state.variante_giro = giro_salvato.get('variante', 0)
+        
         if 'esclusi_oggi' not in st.session_state:
             st.session_state.esclusi_oggi = []
         if 'variante_giro' not in st.session_state:
@@ -2450,6 +2572,7 @@ def main_app():
                 if st.button("↩️ Torna al giro originale"):
                     st.session_state.variante_giro = 0
                     st.session_state._route_cache_key = None
+                    st.session_state._forza_ricalcolo = True
                     st.rerun()
             
             st.divider()
@@ -2474,11 +2597,13 @@ def main_app():
                 with col_esc1:
                     if st.button("🔄 Ricalcola Giro", type="primary", use_container_width=True):
                         st.session_state.esclusi_oggi = esclusi_selezionati
+                        st.session_state._forza_ricalcolo = True
                         st.rerun()
                 
                 with col_esc2:
                     if st.button("🗑️ Rimuovi Esclusioni", use_container_width=True):
                         st.session_state.esclusi_oggi = []
+                        st.session_state._forza_ricalcolo = True
                         st.rerun()
                 
                 if st.session_state.esclusi_oggi:
@@ -2533,8 +2658,9 @@ def main_app():
             if critici:
                 st.error(f"🚨 **{len(critici)} clienti critici** da visitare urgentemente!")
             
-            # Calcola tappe (con variante giro)
+            # Calcola tappe — USA GIRO SALVATO se disponibile
             variante = st.session_state.get('variante_giro', 0)
+            forza_ricalcolo = st.session_state.pop('_forza_ricalcolo', False)
             
             # APPLICA SCAMBI: se oggi è stato scambiato con un altro giorno, mostra quel giorno
             oggi_date = ora_italiana.date()
@@ -2553,7 +2679,27 @@ def main_app():
                 giorni_nomi_swap = ["Lun","Mar","Mer","Gio","Ven","Sab","Dom"]
                 st.info(f"🔄 Scambio attivo: oggi mostro il giro di **{giorni_nomi_swap[idx_effettivo]}** (scambiato con {giorni_nomi_swap[idx_g]})")
             
-            tappe_oggi = calcola_piano_giornaliero(df, idx_effettivo, config, st.session_state.esclusi_oggi, variante=variante)
+            # === LOGICA SALVATAGGIO GIRO ===
+            # 1. Se c'è un giro salvato per oggi E non è stato forzato il ricalcolo → usa quello
+            # 2. Altrimenti → calcola nuovo → salva su DB
+            tappe_oggi = None
+            
+            if giro_salvato and not forza_ricalcolo:
+                # Ricostruisci tappe dal giro salvato
+                saved_ids = giro_salvato.get('ids', [])
+                if saved_ids:
+                    tappe_oggi = ricostruisci_tappe_da_ids(df, saved_ids, config)
+                    if tappe_oggi:
+                        st.caption("💾 Giro salvato")
+            
+            if tappe_oggi is None:
+                # Calcola nuovo giro
+                tappe_oggi = calcola_piano_giornaliero(df, idx_effettivo, config, st.session_state.esclusi_oggi, variante=variante)
+                
+                # Segna che è un giro nuovo da salvare
+                _giro_da_salvare = True
+            else:
+                _giro_da_salvare = False
             
             # OTTIMIZZAZIONE ORDINE CON GOOGLE MAPS (tempi stradali reali + TSP)
             if tappe_oggi and len(tappe_oggi) >= 2 and GOOGLE_MAPS_API_KEY:
@@ -2569,6 +2715,7 @@ def main_app():
                         st.session_state._route_cache_key = cache_key
                         st.session_state._route_info = route_info
                         st.session_state._tappe_ottimizzate = tappe_oggi
+                        _giro_da_salvare = True  # ordine cambiato da Google
                         if route_info and route_info.get('polyline'):
                             st.toast("🛣️ Giro ottimizzato con Google Maps!", icon="✅")
                         else:
@@ -2581,6 +2728,15 @@ def main_app():
                 else:
                     route_info = st.session_state.get('_route_info')
                     tappe_oggi = st.session_state.get('_tappe_ottimizzate', tappe_oggi)
+            
+            # === SALVA GIRO SU DB (persiste cross-refresh e cross-device) ===
+            if _giro_da_salvare and tappe_oggi:
+                ids_da_salvare = [t['id'] for t in tappe_oggi]
+                save_giro_giorno(
+                    oggi_str, ids_da_salvare,
+                    variante=variante,
+                    esclusi=st.session_state.esclusi_oggi
+                )
             
             # Trova visitati fuori giro
             nomi_nel_giro = [t['nome_cliente'] for t in tappe_oggi]
