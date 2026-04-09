@@ -1619,7 +1619,9 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     if not giorni:
         return agenda
     
-    n_giorni = len(giorni_calcolo)
+    # n_giorni = giorni RIMANENTI (non tutti i lavorativi!)
+    # Così il pool viene diviso solo sui giorni che verranno effettivamente mostrati
+    n_giorni = len(giorni)
     
     # ========================================
     # 3. SEPARA APPUNTAMENTI
@@ -1745,7 +1747,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     n_giorni_senza_app = n_giorni
     
     for g_app in sorted(app_per_giorno.keys()):
-        if g_app not in giorni_calcolo:
+        if g_app not in giorni:
             continue
         tappe_app = app_per_giorno[g_app]
         giorni_con_app.add(g_app)
@@ -1812,7 +1814,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     offset = numero_settimana % max(1, n_zone)
     
     assegnazione = {}
-    giorni_senza_app = [g for g in giorni_calcolo if g not in giorni_con_app]
+    giorni_senza_app = [g for g in giorni if g not in giorni_con_app]
     for idx, g in enumerate(giorni_senza_app):
         z_idx = (idx + offset) % max(1, len(zone_info))
         if z_idx < len(zone_info):
