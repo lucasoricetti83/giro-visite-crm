@@ -949,7 +949,7 @@ def save_giro_giorno(data_str, client_ids, variante=0, esclusi=[]):
         if not user_id:
             return False
         payload = json.dumps({
-            'v': 7,  # versione algoritmo — incrementare per invalidare giri vecchi
+            'v': 8,  # versione algoritmo — incrementare per invalidare giri vecchi
             'data': data_str,
             'ids': client_ids,
             'variante': variante,
@@ -980,7 +980,7 @@ def load_giro_giorno(data_str):
         resp = supabase.table('clienti').select('note').eq('user_id', user_id).eq('nome_cliente', '__GIRO_SALVATO__').execute()
         if resp.data and resp.data[0].get('note'):
             giro = json.loads(resp.data[0]['note'])
-            if giro.get('data') == data_str and giro.get('v', 0) >= 7:
+            if giro.get('data') == data_str and giro.get('v', 0) >= 8:
                 return giro
     except:
         pass
@@ -2008,17 +2008,16 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                         continue
                     for c in z2['clienti']:
                         d = haversine(c['lat'], c['lon'], cx_z, cy_z)
-                        if d <= 25:  # solo entro 25km dal centro
+                        if d <= 20:  # solo entro 20km dal centro
                             vicini.append((d, c, i))
                 
                 vicini.sort(key=lambda x: x[0])
-                # Aggiungi vicini fino a riempire max_visite * 1.5
-                target = int(max_visite * 1.5)
+                # Aggiungi vicini fino a riempire max_visite (no buffer per evitare outlier)
+                target = max_visite
                 for d, c, i_zona in vicini:
                     if len(cls_zona) >= target:
                         break
                     cls_zona.append(c)
-                    # Marca solo la zona come parzialmente usata se ne prendiamo molti
             
             # Ricalcola centro dopo l'aggiunta
             cx = sum(c['lat'] for c in cls_zona) / len(cls_zona)
@@ -2141,10 +2140,42 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             
             day_pool = [c for c in zi['clienti'] if c['nome'] not in nomi_usati_da_app]
             
-            cx, cy = zi.get('center', (base_lat, base_lon))
+            if not day_pool:
+                continue
             
-            # FILTRO OUTLIER MOLTO STRETTO: max 30km dal centro zona, sempre
-            day_pool = [c for c in day_pool if haversine(c['lat'], c['lon'], cx, cy) <= 30]
+            # FILTRO OUTLIER ITERATIVO: ricalcola centro e rimuovi outlier finché stabili
+            for _iter in range(5):
+                cx_iter = sum(c['lat'] for c in day_pool) / len(day_pool)
+                cy_iter = sum(c['lon'] for c in day_pool) / len(day_pool)
+                # Rimuovi qualsiasi cliente oltre 25km dal centro corrente
+                nuovo_pool = [c for c in day_pool if haversine(c['lat'], c['lon'], cx_iter, cy_iter) <= 25]
+                if len(nuovo_pool) == len(day_pool):
+                    break  # stabile
+                day_pool = nuovo_pool
+                if not day_pool:
+                    break
+            
+            if not day_pool:
+                continue
+            
+            # Centro finale
+            cx = sum(c['lat'] for c in day_pool) / len(day_pool)
+            cy = sum(c['lon'] for c in day_pool) / len(day_pool)
+            
+            # VERIFICA FINALE: nessun cliente deve essere a >40km da OGNI altro cliente
+            # Se qualcuno è isolato, rimuovilo
+            puliti = []
+            for c in day_pool:
+                ha_vicini = False
+                for c2 in day_pool:
+                    if c is c2:
+                        continue
+                    if haversine(c['lat'], c['lon'], c2['lat'], c2['lon']) <= 40:
+                        ha_vicini = True
+                        break
+                if ha_vicini or len(day_pool) == 1:
+                    puliti.append(c)
+            day_pool = puliti
             
             # Score: 60% urgenza + 40% vicinanza
             max_dist_zona = max((haversine(c['lat'], c['lon'], cx, cy) for c in day_pool), default=1) or 1
@@ -6212,7 +6243,7 @@ def main_app():
                         debug_lines.append(f"- Variante: {giro_s.get('variante', 0)}")
                         debug_lines.append(f"- Esclusi: {giro_s.get('esclusi', [])}")
                         debug_lines.append(f"- Timestamp: {giro_s.get('ts', '?')}")
-                        if giro_s.get('v', 0) < 7:
+                        if giro_s.get('v', 0) < 8:
                             debug_lines.append(f"- ⚠️ **VERSIONE VECCHIA** — verrà ricalcolato")
                     else:
                         debug_lines.append("- Nessun giro salvato per oggi → verrà calcolato da zero")
