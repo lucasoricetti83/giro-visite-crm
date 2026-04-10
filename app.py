@@ -949,7 +949,7 @@ def save_giro_giorno(data_str, client_ids, variante=0, esclusi=[]):
         if not user_id:
             return False
         payload = json.dumps({
-            'v': 9,  # versione algoritmo — incrementare per invalidare giri vecchi
+            'v': 10,  # versione algoritmo — incrementare per invalidare giri vecchi
             'data': data_str,
             'ids': client_ids,
             'variante': variante,
@@ -980,7 +980,7 @@ def load_giro_giorno(data_str):
         resp = supabase.table('clienti').select('note').eq('user_id', user_id).eq('nome_cliente', '__GIRO_SALVATO__').execute()
         if resp.data and resp.data[0].get('note'):
             giro = json.loads(resp.data[0]['note'])
-            if giro.get('data') == data_str and giro.get('v', 0) >= 9:
+            if giro.get('data') == data_str and giro.get('v', 0) >= 10:
                 return giro
     except:
         pass
@@ -2143,47 +2143,65 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             if not day_pool:
                 continue
             
-            # === SELEZIONE GREEDY GARANTITA COMPATTA ===
-            # 1. Prendi il cliente più urgente come "seme"
-            # 2. Aggiungi sempre il più vicino al seme (non al gruppo)
-            # 3. Stop quando max_visite raggiunto O nessun cliente entro 30km
+            # === SELEZIONE SEME INTELLIGENTE ===
+            # Il seme deve essere un cliente urgente CHE HA VICINI nel pool
+            # Altrimenti è un outlier isolato che inquina tutto il giro
             
-            day_pool.sort(key=lambda c: -c['urgenza'])
-            seme = day_pool[0]
+            # Tutti i clienti con visitare=SI e coordinate valide
+            tutti_disponibili = [c for c in pool if c['nome'] not in nomi_usati_da_app]
+            
+            if not tutti_disponibili:
+                continue
+            
+            # Per ogni candidato seme, conta quanti vicini ha entro 25km
+            candidati_seme = sorted(tutti_disponibili, key=lambda c: -c['urgenza'])
+            
+            seme = None
+            for candidato in candidati_seme[:30]:  # prova i 30 più urgenti
+                vicini_count = sum(
+                    1 for c in tutti_disponibili 
+                    if c['nome'] != candidato['nome']
+                    and haversine(c['lat'], c['lon'], candidato['lat'], candidato['lon']) <= 25
+                )
+                # Un buon seme deve avere almeno (max_visite - 1) vicini
+                if vicini_count >= max_visite - 1:
+                    seme = candidato
+                    break
+            
+            # Se nessun candidato urgente ha abbastanza vicini, prendi quello con più vicini
+            if seme is None:
+                migliore = None
+                migliore_score = -1
+                for candidato in candidati_seme[:50]:
+                    vicini_count = sum(
+                        1 for c in tutti_disponibili 
+                        if c['nome'] != candidato['nome']
+                        and haversine(c['lat'], c['lon'], candidato['lat'], candidato['lon']) <= 25
+                    )
+                    score = vicini_count + candidato['urgenza'] / 20
+                    if score > migliore_score:
+                        migliore_score = score
+                        migliore = candidato
+                seme = migliore
+            
+            if seme is None:
+                continue
+            
             seme_lat, seme_lon = seme['lat'], seme['lon']
             
-            # Tutti i clienti entro 30km dal seme
-            candidati_vicini = [
-                c for c in day_pool 
-                if haversine(c['lat'], c['lon'], seme_lat, seme_lon) <= 30
+            # Prendi tutti i clienti entro 25km dal seme (incluso il seme)
+            candidati_finali = [
+                c for c in tutti_disponibili
+                if haversine(c['lat'], c['lon'], seme_lat, seme_lon) <= 25
             ]
             
-            # Se sono pochi (es. cluster isolato), allarga la ricerca a tutto il pool del giorno
-            if len(candidati_vicini) < max_visite:
-                # Cerca nel pool generale (non solo zona) clienti vicini al seme
-                tutti_vicini = [
-                    c for c in pool 
-                    if c['nome'] not in nomi_usati_da_app
-                    and c['nome'] != seme['nome']
-                    and haversine(c['lat'], c['lon'], seme_lat, seme_lon) <= 30
-                ]
-                # Combina ed elimina duplicati
-                visti = set()
-                tutti_combinati = [seme]
-                visti.add(seme['nome'])
-                for c in candidati_vicini + tutti_vicini:
-                    if c['nome'] not in visti:
-                        tutti_combinati.append(c)
-                        visti.add(c['nome'])
-                candidati_vicini = tutti_combinati
-            
-            # Score: urgenza alta + distanza dal seme bassa
-            candidati_vicini.sort(key=lambda c: -(
+            # Ordina per urgenza, poi vicinanza al seme
+            candidati_finali.sort(key=lambda c: -(
                 c['urgenza'] / 100 * 60 + 
-                (1 - min(haversine(c['lat'], c['lon'], seme_lat, seme_lon) / 30, 1)) * 40
+                (1 - haversine(c['lat'], c['lon'], seme_lat, seme_lon) / 25) * 40
             ))
             
-            day_pool = candidati_vicini[:max_visite]
+            day_pool = candidati_finali[:max_visite]
         
         giro = list(tappe_app) + day_pool
         
@@ -6242,7 +6260,7 @@ def main_app():
                         debug_lines.append(f"- Variante: {giro_s.get('variante', 0)}")
                         debug_lines.append(f"- Esclusi: {giro_s.get('esclusi', [])}")
                         debug_lines.append(f"- Timestamp: {giro_s.get('ts', '?')}")
-                        if giro_s.get('v', 0) < 9:
+                        if giro_s.get('v', 0) < 10:
                             debug_lines.append(f"- ⚠️ **VERSIONE VECCHIA** — verrà ricalcolato")
                     else:
                         debug_lines.append("- Nessun giro salvato per oggi → verrà calcolato da zero")
