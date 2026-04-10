@@ -949,7 +949,7 @@ def save_giro_giorno(data_str, client_ids, variante=0, esclusi=[]):
         if not user_id:
             return False
         payload = json.dumps({
-            'v': 4,  # versione algoritmo — incrementare per invalidare giri vecchi
+            'v': 5,  # versione algoritmo — incrementare per invalidare giri vecchi
             'data': data_str,
             'ids': client_ids,
             'variante': variante,
@@ -980,7 +980,7 @@ def load_giro_giorno(data_str):
         resp = supabase.table('clienti').select('note').eq('user_id', user_id).eq('nome_cliente', '__GIRO_SALVATO__').execute()
         if resp.data and resp.data[0].get('note'):
             giro = json.loads(resp.data[0]['note'])
-            if giro.get('data') == data_str and giro.get('v', 0) >= 4:
+            if giro.get('data') == data_str and giro.get('v', 0) >= 5:
                 return giro
     except:
         pass
@@ -2099,12 +2099,21 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             day_pool = [c for c in zi['clienti'] if c['nome'] not in nomi_usati_da_app]
             
             cx, cy = zi.get('center', (base_lat, base_lon))
-            # Score bilanciato: 50% urgenza + 50% vicinanza al centro zona
-            # Clienti molto lontani dal centro zona vengono penalizzati fortemente
+            
+            # FILTRO OUTLIER: rimuovi clienti troppo lontani dal centro zona
+            # Calcola distanza mediana per stabilire una soglia
+            if len(day_pool) > 3:
+                distanze = sorted(haversine(c['lat'], c['lon'], cx, cy) for c in day_pool)
+                mediana = distanze[len(distanze) // 2]
+                # Soglia: max(20km, 3x mediana) — gli outlier vengono esclusi
+                soglia_outlier = max(20, mediana * 3)
+                day_pool = [c for c in day_pool if haversine(c['lat'], c['lon'], cx, cy) <= soglia_outlier]
+            
+            # Score bilanciato: 60% urgenza + 40% vicinanza al centro zona
             max_dist_zona = max((haversine(c['lat'], c['lon'], cx, cy) for c in day_pool), default=1) or 1
             day_pool.sort(key=lambda c: -(
-                c['urgenza'] / 100 * 50 + 
-                (1 - haversine(c['lat'], c['lon'], cx, cy) / max_dist_zona) * 50
+                c['urgenza'] / 100 * 60 + 
+                (1 - haversine(c['lat'], c['lon'], cx, cy) / max_dist_zona) * 40
             ))
             if len(day_pool) > slot:
                 day_pool = day_pool[:slot]
@@ -6118,18 +6127,36 @@ def main_app():
                             
                             rit = (oggi_dbg - pv).days
                             
+                            # Stessa formula dell'algoritmo reale
+                            if rit > 90:
+                                _urg = min(100, 88 + min(rit - 90, 120) / 10)
+                            elif rit > 30:
+                                _urg = 75 + (rit - 30) * 0.22
+                            elif rit > 7:
+                                _urg = 58 + (rit - 7) * 0.74
+                            elif rit > 0:
+                                _urg = 48 + rit * 1.4
+                            elif rit >= -3:
+                                _urg = 40 + (3 + rit) * 2.5
+                            elif rit >= -7:
+                                _urg = 30 + (7 + rit) * 2.5
+                            elif rit >= -14:
+                                _urg = 20 + (14 + rit) * 1.4
+                            else:
+                                _urg = max(5, 20 + rit / 5)
+                            
                             if pv <= oggi_dbg:
                                 n_scaduti += 1
-                                clienti_dettaglio.append((nome, f"SCADUTO {rit}gg ({pv.strftime('%d/%m')})", 70, "🔴"))
+                                clienti_dettaglio.append((nome, f"SCADUTO {rit}gg ({pv.strftime('%d/%m')})", _urg, "🔴"))
                             elif pv <= fine_sett_dbg:
                                 n_questa_sett += 1
-                                clienti_dettaglio.append((nome, f"Questa sett ({pv.strftime('%d/%m')})", 50, "🟡"))
+                                clienti_dettaglio.append((nome, f"Questa sett ({pv.strftime('%d/%m')})", _urg, "🟡"))
                             elif pv <= fine_sett_dbg + timedelta(days=7):
                                 n_pross_sett += 1
-                                clienti_dettaglio.append((nome, f"Pross sett ({pv.strftime('%d/%m')})", 35, "🟠"))
+                                clienti_dettaglio.append((nome, f"Pross sett ({pv.strftime('%d/%m')})", _urg, "🟠"))
                             else:
                                 n_lontani += 1
-                                clienti_dettaglio.append((nome, f"Lontano ({pv.strftime('%d/%m')})", 10, "⚪"))
+                                clienti_dettaglio.append((nome, f"Lontano ({pv.strftime('%d/%m')})", _urg, "⚪"))
                     
                     debug_lines.append(f"- 🔴 **Già scaduti:** {n_scaduti}")
                     debug_lines.append(f"- 🟡 **Scadono questa settimana:** {n_questa_sett}")
@@ -6148,7 +6175,7 @@ def main_app():
                         debug_lines.append(f"- Variante: {giro_s.get('variante', 0)}")
                         debug_lines.append(f"- Esclusi: {giro_s.get('esclusi', [])}")
                         debug_lines.append(f"- Timestamp: {giro_s.get('ts', '?')}")
-                        if giro_s.get('v', 0) < 4:
+                        if giro_s.get('v', 0) < 5:
                             debug_lines.append(f"- ⚠️ **VERSIONE VECCHIA** — verrà ricalcolato")
                     else:
                         debug_lines.append("- Nessun giro salvato per oggi → verrà calcolato da zero")
