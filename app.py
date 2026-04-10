@@ -949,7 +949,7 @@ def save_giro_giorno(data_str, client_ids, variante=0, esclusi=[]):
         if not user_id:
             return False
         payload = json.dumps({
-            'v': 8,  # versione algoritmo — incrementare per invalidare giri vecchi
+            'v': 9,  # versione algoritmo — incrementare per invalidare giri vecchi
             'data': data_str,
             'ids': client_ids,
             'variante': variante,
@@ -980,7 +980,7 @@ def load_giro_giorno(data_str):
         resp = supabase.table('clienti').select('note').eq('user_id', user_id).eq('nome_cliente', '__GIRO_SALVATO__').execute()
         if resp.data and resp.data[0].get('note'):
             giro = json.loads(resp.data[0]['note'])
-            if giro.get('data') == data_str and giro.get('v', 0) >= 8:
+            if giro.get('data') == data_str and giro.get('v', 0) >= 9:
                 return giro
     except:
         pass
@@ -2143,48 +2143,47 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             if not day_pool:
                 continue
             
-            # FILTRO OUTLIER ITERATIVO: ricalcola centro e rimuovi outlier finché stabili
-            for _iter in range(5):
-                cx_iter = sum(c['lat'] for c in day_pool) / len(day_pool)
-                cy_iter = sum(c['lon'] for c in day_pool) / len(day_pool)
-                # Rimuovi qualsiasi cliente oltre 25km dal centro corrente
-                nuovo_pool = [c for c in day_pool if haversine(c['lat'], c['lon'], cx_iter, cy_iter) <= 25]
-                if len(nuovo_pool) == len(day_pool):
-                    break  # stabile
-                day_pool = nuovo_pool
-                if not day_pool:
-                    break
+            # === SELEZIONE GREEDY GARANTITA COMPATTA ===
+            # 1. Prendi il cliente più urgente come "seme"
+            # 2. Aggiungi sempre il più vicino al seme (non al gruppo)
+            # 3. Stop quando max_visite raggiunto O nessun cliente entro 30km
             
-            if not day_pool:
-                continue
+            day_pool.sort(key=lambda c: -c['urgenza'])
+            seme = day_pool[0]
+            seme_lat, seme_lon = seme['lat'], seme['lon']
             
-            # Centro finale
-            cx = sum(c['lat'] for c in day_pool) / len(day_pool)
-            cy = sum(c['lon'] for c in day_pool) / len(day_pool)
+            # Tutti i clienti entro 30km dal seme
+            candidati_vicini = [
+                c for c in day_pool 
+                if haversine(c['lat'], c['lon'], seme_lat, seme_lon) <= 30
+            ]
             
-            # VERIFICA FINALE: nessun cliente deve essere a >40km da OGNI altro cliente
-            # Se qualcuno è isolato, rimuovilo
-            puliti = []
-            for c in day_pool:
-                ha_vicini = False
-                for c2 in day_pool:
-                    if c is c2:
-                        continue
-                    if haversine(c['lat'], c['lon'], c2['lat'], c2['lon']) <= 40:
-                        ha_vicini = True
-                        break
-                if ha_vicini or len(day_pool) == 1:
-                    puliti.append(c)
-            day_pool = puliti
+            # Se sono pochi (es. cluster isolato), allarga la ricerca a tutto il pool del giorno
+            if len(candidati_vicini) < max_visite:
+                # Cerca nel pool generale (non solo zona) clienti vicini al seme
+                tutti_vicini = [
+                    c for c in pool 
+                    if c['nome'] not in nomi_usati_da_app
+                    and c['nome'] != seme['nome']
+                    and haversine(c['lat'], c['lon'], seme_lat, seme_lon) <= 30
+                ]
+                # Combina ed elimina duplicati
+                visti = set()
+                tutti_combinati = [seme]
+                visti.add(seme['nome'])
+                for c in candidati_vicini + tutti_vicini:
+                    if c['nome'] not in visti:
+                        tutti_combinati.append(c)
+                        visti.add(c['nome'])
+                candidati_vicini = tutti_combinati
             
-            # Score: 60% urgenza + 40% vicinanza
-            max_dist_zona = max((haversine(c['lat'], c['lon'], cx, cy) for c in day_pool), default=1) or 1
-            day_pool.sort(key=lambda c: -(
+            # Score: urgenza alta + distanza dal seme bassa
+            candidati_vicini.sort(key=lambda c: -(
                 c['urgenza'] / 100 * 60 + 
-                (1 - haversine(c['lat'], c['lon'], cx, cy) / max_dist_zona) * 40
+                (1 - min(haversine(c['lat'], c['lon'], seme_lat, seme_lon) / 30, 1)) * 40
             ))
-            if len(day_pool) > slot:
-                day_pool = day_pool[:slot]
+            
+            day_pool = candidati_vicini[:max_visite]
         
         giro = list(tappe_app) + day_pool
         
@@ -6243,7 +6242,7 @@ def main_app():
                         debug_lines.append(f"- Variante: {giro_s.get('variante', 0)}")
                         debug_lines.append(f"- Esclusi: {giro_s.get('esclusi', [])}")
                         debug_lines.append(f"- Timestamp: {giro_s.get('ts', '?')}")
-                        if giro_s.get('v', 0) < 8:
+                        if giro_s.get('v', 0) < 9:
                             debug_lines.append(f"- ⚠️ **VERSIONE VECCHIA** — verrà ricalcolato")
                     else:
                         debug_lines.append("- Nessun giro salvato per oggi → verrà calcolato da zero")
