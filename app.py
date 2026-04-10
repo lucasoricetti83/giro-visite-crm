@@ -949,7 +949,7 @@ def save_giro_giorno(data_str, client_ids, variante=0, esclusi=[]):
         if not user_id:
             return False
         payload = json.dumps({
-            'v': 11,  # versione algoritmo — incrementare per invalidare giri vecchi
+            'v': 13,  # versione algoritmo — incrementare per invalidare giri vecchi
             'data': data_str,
             'ids': client_ids,
             'variante': variante,
@@ -980,7 +980,7 @@ def load_giro_giorno(data_str):
         resp = supabase.table('clienti').select('note').eq('user_id', user_id).eq('nome_cliente', '__GIRO_SALVATO__').execute()
         if resp.data and resp.data[0].get('note'):
             giro = json.loads(resp.data[0]['note'])
-            if giro.get('data') == data_str and giro.get('v', 0) >= 11:
+            if giro.get('data') == data_str and giro.get('v', 0) >= 13:
                 return giro
     except:
         pass
@@ -1623,7 +1623,8 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     # Capacità giornaliera
     ore = (datetime.combine(oggi, ora_fine) - datetime.combine(oggi, ora_inizio)).seconds / 3600
     pausa_ore = (datetime.combine(oggi, pausa_a) - datetime.combine(oggi, pausa_da)).seconds / 3600
-    max_visite = max(4, min(12, int(ore - pausa_ore)))
+    # Capacità: max 10 visite/giorno (limite operativo realistico)
+    max_visite = 10
     
     # ========================================
     # 1. RACCOGLI CLIENTI + PARSE APPUNTAMENTI
@@ -2207,7 +2208,9 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 (1 - haversine(c['lat'], c['lon'], seme_lat, seme_lon) / 25) * 40
             ))
             
-            day_pool = candidati_finali[:slot]
+            # Primo passaggio: max 8 visite/giorno (lascia 2 slot per orfani vicini)
+            slot_primo_passaggio = min(slot, 8)
+            day_pool = candidati_finali[:slot_primo_passaggio]
             
             # Marca questi clienti come usati per i giorni successivi
             for c in day_pool:
@@ -2227,6 +2230,53 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 giro = list(reversed(giro))
         
         risultati[giorno] = (data_g, giro)
+    
+    # ========================================
+    # 11b. SECONDO PASSAGGIO: assegna clienti ORFANI al giorno geograficamente più vicino
+    # ========================================
+    # Tutti i clienti scartati nel primo passaggio vengono riassegnati
+    # al giorno che ha il giro più vicino a loro
+    orfani = [
+        c for c in pool
+        if c['nome'] not in nomi_usati_da_app
+        and c['nome'] not in nomi_usati_globale
+    ]
+    
+    if orfani:
+        # Per ogni orfano, trova il giorno con baricentro più vicino
+        for orfano in sorted(orfani, key=lambda c: -c['urgenza']):
+            migliore_giorno = None
+            migliore_dist = float('inf')
+            
+            for g_idx, (d_g, giro_g) in risultati.items():
+                if not giro_g:
+                    continue
+                # Baricentro del giro
+                cx_g = sum(c['lat'] for c in giro_g) / len(giro_g)
+                cy_g = sum(c['lon'] for c in giro_g) / len(giro_g)
+                dist = haversine(orfano['lat'], orfano['lon'], cx_g, cy_g)
+                
+                # Preferisci giorni con meno visite (bilanciamento)
+                penalita_pieno = len(giro_g) * 2  # ogni cliente già nel giro = +2km
+                score_dist = dist + penalita_pieno
+                
+                if score_dist < migliore_dist:
+                    migliore_dist = score_dist
+                    migliore_giorno = g_idx
+            
+            # Assegna al giorno trovato (max 10 visite/giorno)
+            if migliore_giorno is not None:
+                d_g, giro_g = risultati[migliore_giorno]
+                # Limite operativo: max 10 visite per giorno
+                if len(giro_g) < 10:
+                    giro_g.append(orfano)
+                    nomi_usati_globale.add(orfano['nome'])
+                    
+                    # Riottimizza l'anello con il nuovo cliente
+                    if len(giro_g) >= 3:
+                        giro_g = costruisci_anello(giro_g, base_lat, base_lon)
+                    
+                    risultati[migliore_giorno] = (d_g, giro_g)
     
     # ========================================
     # 12. CALCOLO ORARI
@@ -6272,7 +6322,7 @@ def main_app():
                         debug_lines.append(f"- Variante: {giro_s.get('variante', 0)}")
                         debug_lines.append(f"- Esclusi: {giro_s.get('esclusi', [])}")
                         debug_lines.append(f"- Timestamp: {giro_s.get('ts', '?')}")
-                        if giro_s.get('v', 0) < 11:
+                        if giro_s.get('v', 0) < 13:
                             debug_lines.append(f"- ⚠️ **VERSIONE VECCHIA** — verrà ricalcolato")
                     else:
                         debug_lines.append("- Nessun giro salvato per oggi → verrà calcolato da zero")
