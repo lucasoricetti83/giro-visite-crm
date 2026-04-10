@@ -949,7 +949,7 @@ def save_giro_giorno(data_str, client_ids, variante=0, esclusi=[]):
         if not user_id:
             return False
         payload = json.dumps({
-            'v': 10,  # versione algoritmo — incrementare per invalidare giri vecchi
+            'v': 11,  # versione algoritmo — incrementare per invalidare giri vecchi
             'data': data_str,
             'ids': client_ids,
             'variante': variante,
@@ -980,7 +980,7 @@ def load_giro_giorno(data_str):
         resp = supabase.table('clienti').select('note').eq('user_id', user_id).eq('nome_cliente', '__GIRO_SALVATO__').execute()
         if resp.data and resp.data[0].get('note'):
             giro = json.loads(resp.data[0]['note'])
-            if giro.get('data') == data_str and giro.get('v', 0) >= 10:
+            if giro.get('data') == data_str and giro.get('v', 0) >= 11:
                 return giro
     except:
         pass
@@ -2123,85 +2123,97 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     # 11. ASSEMBLA GIRO PER OGNI GIORNO
     # ========================================
     risultati = {}
+    nomi_usati_globale = set()  # clienti già pianificati in giorni precedenti
+    
+    # Indice giorno: per dare un seme diverso a ogni giorno
+    idx_giorno_processato = 0
     
     for giorno in giorni_calcolo:
         data_g = lunedi + timedelta(days=giorno)
         tappe_app = app_per_giorno.get(giorno, [])
         
         if giorno in risultati_app:
-            # === GIORNO CON APPUNTAMENTO ===
-            # L'appuntamento è il baricentro — clienti scelti per vicinanza
             day_pool = risultati_app[giorno]
+            for c in day_pool:
+                nomi_usati_globale.add(c['nome'])
         else:
             # === GIORNO SENZA APPUNTAMENTO ===
-            # Usa la zona k-means, escludendo clienti già usati dai giorni con app
-            zi = assegnazione.get(giorno, {'clienti': [], 'center': (base_lat, base_lon)})
             slot = max_visite - len(tappe_app)
             
-            day_pool = [c for c in zi['clienti'] if c['nome'] not in nomi_usati_da_app]
-            
-            if not day_pool:
-                continue
-            
-            # === SELEZIONE SEME INTELLIGENTE ===
-            # Il seme deve essere un cliente urgente CHE HA VICINI nel pool
-            # Altrimenti è un outlier isolato che inquina tutto il giro
-            
-            # Tutti i clienti con visitare=SI e coordinate valide
-            tutti_disponibili = [c for c in pool if c['nome'] not in nomi_usati_da_app]
+            # Tutti i clienti disponibili: non usati da app, non usati in giorni precedenti
+            tutti_disponibili = [
+                c for c in pool 
+                if c['nome'] not in nomi_usati_da_app
+                and c['nome'] not in nomi_usati_globale
+            ]
             
             if not tutti_disponibili:
+                risultati[giorno] = (data_g, [])
                 continue
             
-            # Per ogni candidato seme, conta quanti vicini ha entro 25km
+            # === SELEZIONE SEME DIVERSIFICATA ===
+            # Ogni giorno deve usare un seme diverso (non sempre il più urgente)
+            # Strategia: prendi i top urgenti, ruota in base a giorno+settimana+variante
+            
             candidati_seme = sorted(tutti_disponibili, key=lambda c: -c['urgenza'])
             
-            seme = None
-            for candidato in candidati_seme[:30]:  # prova i 30 più urgenti
+            # Filtra solo candidati che hanno abbastanza vicini
+            candidati_validi = []
+            for cand in candidati_seme[:50]:
                 vicini_count = sum(
                     1 for c in tutti_disponibili 
-                    if c['nome'] != candidato['nome']
-                    and haversine(c['lat'], c['lon'], candidato['lat'], candidato['lon']) <= 25
+                    if c['nome'] != cand['nome']
+                    and haversine(c['lat'], c['lon'], cand['lat'], cand['lon']) <= 25
                 )
-                # Un buon seme deve avere almeno (max_visite - 1) vicini
                 if vicini_count >= max_visite - 1:
-                    seme = candidato
+                    candidati_validi.append(cand)
+                if len(candidati_validi) >= 10:
                     break
             
-            # Se nessun candidato urgente ha abbastanza vicini, prendi quello con più vicini
-            if seme is None:
-                migliore = None
-                migliore_score = -1
-                for candidato in candidati_seme[:50]:
+            # Se non trovo abbastanza candidati validi, allarga
+            if len(candidati_validi) < 3:
+                for cand in candidati_seme[:50]:
+                    if cand in candidati_validi:
+                        continue
                     vicini_count = sum(
                         1 for c in tutti_disponibili 
-                        if c['nome'] != candidato['nome']
-                        and haversine(c['lat'], c['lon'], candidato['lat'], candidato['lon']) <= 25
+                        if c['nome'] != cand['nome']
+                        and haversine(c['lat'], c['lon'], cand['lat'], cand['lon']) <= 35
                     )
-                    score = vicini_count + candidato['urgenza'] / 20
-                    if score > migliore_score:
-                        migliore_score = score
-                        migliore = candidato
-                seme = migliore
+                    if vicini_count >= max_visite - 2:
+                        candidati_validi.append(cand)
+                    if len(candidati_validi) >= 5:
+                        break
             
-            if seme is None:
-                continue
+            if not candidati_validi:
+                # Ultima risorsa: il più urgente disponibile
+                candidati_validi = candidati_seme[:1]
+            
+            # Scegli seme in base all'indice giorno (ruota tra i candidati validi)
+            seme_idx = (idx_giorno_processato + variante + numero_settimana) % len(candidati_validi)
+            seme = candidati_validi[seme_idx]
             
             seme_lat, seme_lon = seme['lat'], seme['lon']
             
-            # Prendi tutti i clienti entro 25km dal seme (incluso il seme)
+            # Prendi tutti i clienti entro 25km dal seme
             candidati_finali = [
                 c for c in tutti_disponibili
                 if haversine(c['lat'], c['lon'], seme_lat, seme_lon) <= 25
             ]
             
-            # Ordina per urgenza, poi vicinanza al seme
+            # Ordina per urgenza + vicinanza
             candidati_finali.sort(key=lambda c: -(
                 c['urgenza'] / 100 * 60 + 
                 (1 - haversine(c['lat'], c['lon'], seme_lat, seme_lon) / 25) * 40
             ))
             
-            day_pool = candidati_finali[:max_visite]
+            day_pool = candidati_finali[:slot]
+            
+            # Marca questi clienti come usati per i giorni successivi
+            for c in day_pool:
+                nomi_usati_globale.add(c['nome'])
+            
+            idx_giorno_processato += 1
         
         giro = list(tappe_app) + day_pool
         
@@ -6260,7 +6272,7 @@ def main_app():
                         debug_lines.append(f"- Variante: {giro_s.get('variante', 0)}")
                         debug_lines.append(f"- Esclusi: {giro_s.get('esclusi', [])}")
                         debug_lines.append(f"- Timestamp: {giro_s.get('ts', '?')}")
-                        if giro_s.get('v', 0) < 10:
+                        if giro_s.get('v', 0) < 11:
                             debug_lines.append(f"- ⚠️ **VERSIONE VECCHIA** — verrà ricalcolato")
                     else:
                         debug_lines.append("- Nessun giro salvato per oggi → verrà calcolato da zero")
