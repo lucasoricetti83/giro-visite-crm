@@ -949,7 +949,7 @@ def save_giro_giorno(data_str, client_ids, variante=0, esclusi=[]):
         if not user_id:
             return False
         payload = json.dumps({
-            'v': 6,  # versione algoritmo — incrementare per invalidare giri vecchi
+            'v': 7,  # versione algoritmo — incrementare per invalidare giri vecchi
             'data': data_str,
             'ids': client_ids,
             'variante': variante,
@@ -980,7 +980,7 @@ def load_giro_giorno(data_str):
         resp = supabase.table('clienti').select('note').eq('user_id', user_id).eq('nome_cliente', '__GIRO_SALVATO__').execute()
         if resp.data and resp.data[0].get('note'):
             giro = json.loads(resp.data[0]['note'])
-            if giro.get('data') == data_str and giro.get('v', 0) >= 6:
+            if giro.get('data') == data_str and giro.get('v', 0) >= 7:
                 return giro
     except:
         pass
@@ -1955,77 +1955,76 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         zone_info = zone_info[shift:] + zone_info[:shift]
     
     # ========================================
-    # 7. ASSEGNA ZONE → GIORNI (smart: scegli zone più dense + bilanciate)
+    # 7. ASSEGNA ZONE → GIORNI (semplice: 1 zona migliore + vicini)
     # ========================================
     assegnazione = {}
     giorni_senza_app = [g for g in giorni if g not in giorni_con_app]
     n_gsa = len(giorni_senza_app)
     
     if n_gsa > 0 and zone_info:
-        # Calcola compattezza di ogni zona (km medi tra clienti) e priorità urgenza
-        zone_metriche = []
-        for z in zone_info:
+        # Filtra zone vuote
+        zone_valide = [z for z in zone_info if z['clienti']]
+        
+        # Calcola score di ogni zona: urgenza media + bonus per dimensione
+        def score_zona(z):
             cls = z['clienti']
-            if not cls:
-                zone_metriche.append({'zona': z, 'urgenza_max': 0, 'compattezza': 999, 'n': 0})
-                continue
-            cx_z, cy_z = z['center']
-            urg_max = max(c['urgenza'] for c in cls)
             urg_media = sum(c['urgenza'] for c in cls) / len(cls)
-            # Compattezza = distanza media dal centro
-            comp = sum(haversine(c['lat'], c['lon'], cx_z, cy_z) for c in cls) / len(cls)
-            # Score zona: priorità a zone urgenti E compatte
-            score = urg_media - comp * 2  # ogni km penalizza 2 punti
-            zone_metriche.append({
-                'zona': z, 'urgenza_max': urg_max, 'urg_media': urg_media,
-                'compattezza': comp, 'n': len(cls), 'score': score
-            })
+            # Bonus dimensione: zone con almeno max_visite clienti hanno priorità
+            bonus_size = min(len(cls) / max_visite, 1.0) * 20
+            return urg_media + bonus_size
         
-        # Ordina zone per score (più alto = migliore)
-        zone_metriche.sort(key=lambda x: -x['score'])
+        zone_valide.sort(key=lambda z: -score_zona(z))
         
-        # Ruota per settimana per dare diversità
-        if len(zone_metriche) > n_gsa:
-            shift = numero_settimana % len(zone_metriche)
-            # Rotazione "soft": tieni le prime metà fisse, ruota la seconda metà
-            top_n = max(n_gsa, len(zone_metriche) // 2)
-            zone_metriche = zone_metriche[:top_n][shift % top_n:] + zone_metriche[:top_n][:shift % top_n] + zone_metriche[top_n:]
+        # Ruota zone per varietà settimanale
+        if len(zone_valide) > n_gsa:
+            shift = numero_settimana % len(zone_valide)
+            zone_valide = zone_valide[shift:] + zone_valide[:shift]
         
-        # Assegna le migliori zone ai giorni
-        # Ogni giorno prende abbastanza zone da riempire max_visite
+        zone_usate = set()
+        
         for idx_g, g in enumerate(giorni_senza_app):
-            # Prendi zone finché non hai max_visite clienti
-            clienti_giorno = []
-            zone_usate_idx = []
-            for zi_idx, zm in enumerate(zone_metriche):
-                if zi_idx in zone_usate_idx:
-                    continue
-                if not zm['zona']['clienti']:
-                    continue
-                # Salta se questa zona è troppo lontana dalle precedenti del giorno
-                if clienti_giorno:
-                    cx_curr = sum(c['lat'] for c in clienti_giorno) / len(clienti_giorno)
-                    cy_curr = sum(c['lon'] for c in clienti_giorno) / len(clienti_giorno)
-                    cx_z, cy_z = zm['zona']['center']
-                    if haversine(cx_curr, cy_curr, cx_z, cy_z) > 25:
-                        continue  # troppo lontana, salta
-                
-                clienti_giorno.extend(zm['zona']['clienti'])
-                zone_usate_idx.append(zi_idx)
-                
-                if len(clienti_giorno) >= max_visite * 2:  # buffer 2x per filtro outlier
+            # Trova prima zona non usata con almeno 1 cliente
+            zona_scelta = None
+            for i, z in enumerate(zone_valide):
+                if i not in zone_usate and z['clienti']:
+                    zona_scelta = z
+                    zone_usate.add(i)
                     break
             
-            # Rimuovi zone usate
-            zone_metriche = [z for i, z in enumerate(zone_metriche) if i not in zone_usate_idx]
+            if zona_scelta is None:
+                assegnazione[g] = {'clienti': [], 'center': (base_lat, base_lon)}
+                continue
             
-            if clienti_giorno:
-                cx = sum(c['lat'] for c in clienti_giorno) / len(clienti_giorno)
-                cy = sum(c['lon'] for c in clienti_giorno) / len(clienti_giorno)
-            else:
-                cx, cy = base_lat, base_lon
+            # Centro della zona
+            cls_zona = zona_scelta['clienti']
+            cx_z = sum(c['lat'] for c in cls_zona) / len(cls_zona)
+            cy_z = sum(c['lon'] for c in cls_zona) / len(cls_zona)
             
-            assegnazione[g] = {'clienti': clienti_giorno, 'center': (cx, cy)}
+            # Se la zona ha meno di max_visite clienti, aggiungi vicini dalle altre zone
+            if len(cls_zona) < max_visite:
+                vicini = []
+                for i, z2 in enumerate(zone_valide):
+                    if i in zone_usate:
+                        continue
+                    for c in z2['clienti']:
+                        d = haversine(c['lat'], c['lon'], cx_z, cy_z)
+                        if d <= 25:  # solo entro 25km dal centro
+                            vicini.append((d, c, i))
+                
+                vicini.sort(key=lambda x: x[0])
+                # Aggiungi vicini fino a riempire max_visite * 1.5
+                target = int(max_visite * 1.5)
+                for d, c, i_zona in vicini:
+                    if len(cls_zona) >= target:
+                        break
+                    cls_zona.append(c)
+                    # Marca solo la zona come parzialmente usata se ne prendiamo molti
+            
+            # Ricalcola centro dopo l'aggiunta
+            cx = sum(c['lat'] for c in cls_zona) / len(cls_zona)
+            cy = sum(c['lon'] for c in cls_zona) / len(cls_zona)
+            
+            assegnazione[g] = {'clienti': cls_zona, 'center': (cx, cy)}
     
     # ========================================
     # 9-10. COSTRUISCI ANELLO PER OGNI GIORNO
@@ -2144,15 +2143,8 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             
             cx, cy = zi.get('center', (base_lat, base_lon))
             
-            # FILTRO OUTLIER STRETTO: niente clienti oltre 50km dal centro zona
-            # E niente clienti oltre 2.5x la mediana (esclude i geograficamente isolati)
-            if len(day_pool) > 3:
-                distanze_dal_centro = [haversine(c['lat'], c['lon'], cx, cy) for c in day_pool]
-                distanze_sorted = sorted(distanze_dal_centro)
-                mediana = distanze_sorted[len(distanze_sorted) // 2]
-                # Soglia: minore tra (50km assoluti) e (2.5x mediana, min 15km)
-                soglia_outlier = min(50, max(15, mediana * 2.5))
-                day_pool = [c for c in day_pool if haversine(c['lat'], c['lon'], cx, cy) <= soglia_outlier]
+            # FILTRO OUTLIER MOLTO STRETTO: max 30km dal centro zona, sempre
+            day_pool = [c for c in day_pool if haversine(c['lat'], c['lon'], cx, cy) <= 30]
             
             # Score: 60% urgenza + 40% vicinanza
             max_dist_zona = max((haversine(c['lat'], c['lon'], cx, cy) for c in day_pool), default=1) or 1
@@ -6220,7 +6212,7 @@ def main_app():
                         debug_lines.append(f"- Variante: {giro_s.get('variante', 0)}")
                         debug_lines.append(f"- Esclusi: {giro_s.get('esclusi', [])}")
                         debug_lines.append(f"- Timestamp: {giro_s.get('ts', '?')}")
-                        if giro_s.get('v', 0) < 6:
+                        if giro_s.get('v', 0) < 7:
                             debug_lines.append(f"- ⚠️ **VERSIONE VECCHIA** — verrà ricalcolato")
                     else:
                         debug_lines.append("- Nessun giro salvato per oggi → verrà calcolato da zero")
