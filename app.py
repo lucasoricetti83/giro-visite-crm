@@ -949,7 +949,7 @@ def save_giro_giorno(data_str, client_ids, variante=0, esclusi=[]):
         if not user_id:
             return False
         payload = json.dumps({
-            'v': 5,  # versione algoritmo — incrementare per invalidare giri vecchi
+            'v': 6,  # versione algoritmo — incrementare per invalidare giri vecchi
             'data': data_str,
             'ids': client_ids,
             'variante': variante,
@@ -980,7 +980,7 @@ def load_giro_giorno(data_str):
         resp = supabase.table('clienti').select('note').eq('user_id', user_id).eq('nome_cliente', '__GIRO_SALVATO__').execute()
         if resp.data and resp.data[0].get('note'):
             giro = json.loads(resp.data[0]['note'])
-            if giro.get('data') == data_str and giro.get('v', 0) >= 5:
+            if giro.get('data') == data_str and giro.get('v', 0) >= 6:
                 return giro
     except:
         pass
@@ -1912,9 +1912,13 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     # 5c. K-MEANS SUL POOL RIMANENTE (giorni senza app)
     # ========================================
     pool_rimanente = [c for c in pool if c['nome'] not in nomi_usati_da_app]
-    # Zone: più granulari per compattezza geografica
-    # Creo PIÙ zone di quanti sono i giorni, poi assegno le zone più vicine a ogni giorno
-    n_zone = max(n_giorni_senza_app, min(n_giorni_senza_app * 4, len(pool_rimanente) // 3)) if pool_rimanente else n_giorni_senza_app
+    # Crea SEMPRE molte zone (1 zona ogni ~6-8 clienti) per granularità geografica
+    # Anche con 1 solo giorno, avere più zone permette di scegliere la più compatta
+    if pool_rimanente:
+        # Almeno 4 zone, max len(pool)/5, target = pool/6
+        n_zone = max(4, min(len(pool_rimanente) // 5, len(pool_rimanente) // 6 + n_giorni_senza_app * 2))
+    else:
+        n_zone = max(1, n_giorni_senza_app)
     n_zone = max(1, n_zone)
     
     if len(pool_rimanente) >= n_zone and n_zone > 0:
@@ -1951,29 +1955,69 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         zone_info = zone_info[shift:] + zone_info[:shift]
     
     # ========================================
-    # 7. RAGGRUPPA ZONE → GIORNI (zone consecutive = geograficamente vicine)
+    # 7. ASSEGNA ZONE → GIORNI (smart: scegli zone più dense + bilanciate)
     # ========================================
-    offset = numero_settimana % max(1, len(zone_info))
-    # Ruota per settimana
-    zone_ruotate = zone_info[offset:] + zone_info[:offset]
-    
     assegnazione = {}
     giorni_senza_app = [g for g in giorni if g not in giorni_con_app]
     n_gsa = len(giorni_senza_app)
     
-    if n_gsa > 0 and zone_ruotate:
-        # Distribuisci zone equamente tra i giorni
-        # Es: 8 zone, 2 giorni → giorno1 = zone[0-3], giorno2 = zone[4-7]
-        zone_per_giorno = max(1, len(zone_ruotate) // n_gsa)
+    if n_gsa > 0 and zone_info:
+        # Calcola compattezza di ogni zona (km medi tra clienti) e priorità urgenza
+        zone_metriche = []
+        for z in zone_info:
+            cls = z['clienti']
+            if not cls:
+                zone_metriche.append({'zona': z, 'urgenza_max': 0, 'compattezza': 999, 'n': 0})
+                continue
+            cx_z, cy_z = z['center']
+            urg_max = max(c['urgenza'] for c in cls)
+            urg_media = sum(c['urgenza'] for c in cls) / len(cls)
+            # Compattezza = distanza media dal centro
+            comp = sum(haversine(c['lat'], c['lon'], cx_z, cy_z) for c in cls) / len(cls)
+            # Score zona: priorità a zone urgenti E compatte
+            score = urg_media - comp * 2  # ogni km penalizza 2 punti
+            zone_metriche.append({
+                'zona': z, 'urgenza_max': urg_max, 'urg_media': urg_media,
+                'compattezza': comp, 'n': len(cls), 'score': score
+            })
         
-        for idx, g in enumerate(giorni_senza_app):
-            start_z = idx * zone_per_giorno
-            end_z = start_z + zone_per_giorno if idx < n_gsa - 1 else len(zone_ruotate)
-            
-            # Unisci clienti delle zone assegnate a questo giorno
+        # Ordina zone per score (più alto = migliore)
+        zone_metriche.sort(key=lambda x: -x['score'])
+        
+        # Ruota per settimana per dare diversità
+        if len(zone_metriche) > n_gsa:
+            shift = numero_settimana % len(zone_metriche)
+            # Rotazione "soft": tieni le prime metà fisse, ruota la seconda metà
+            top_n = max(n_gsa, len(zone_metriche) // 2)
+            zone_metriche = zone_metriche[:top_n][shift % top_n:] + zone_metriche[:top_n][:shift % top_n] + zone_metriche[top_n:]
+        
+        # Assegna le migliori zone ai giorni
+        # Ogni giorno prende abbastanza zone da riempire max_visite
+        for idx_g, g in enumerate(giorni_senza_app):
+            # Prendi zone finché non hai max_visite clienti
             clienti_giorno = []
-            for z in zone_ruotate[start_z:end_z]:
-                clienti_giorno.extend(z['clienti'])
+            zone_usate_idx = []
+            for zi_idx, zm in enumerate(zone_metriche):
+                if zi_idx in zone_usate_idx:
+                    continue
+                if not zm['zona']['clienti']:
+                    continue
+                # Salta se questa zona è troppo lontana dalle precedenti del giorno
+                if clienti_giorno:
+                    cx_curr = sum(c['lat'] for c in clienti_giorno) / len(clienti_giorno)
+                    cy_curr = sum(c['lon'] for c in clienti_giorno) / len(clienti_giorno)
+                    cx_z, cy_z = zm['zona']['center']
+                    if haversine(cx_curr, cy_curr, cx_z, cy_z) > 25:
+                        continue  # troppo lontana, salta
+                
+                clienti_giorno.extend(zm['zona']['clienti'])
+                zone_usate_idx.append(zi_idx)
+                
+                if len(clienti_giorno) >= max_visite * 2:  # buffer 2x per filtro outlier
+                    break
+            
+            # Rimuovi zone usate
+            zone_metriche = [z for i, z in enumerate(zone_metriche) if i not in zone_usate_idx]
             
             if clienti_giorno:
                 cx = sum(c['lat'] for c in clienti_giorno) / len(clienti_giorno)
@@ -2100,16 +2144,17 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             
             cx, cy = zi.get('center', (base_lat, base_lon))
             
-            # FILTRO OUTLIER: rimuovi clienti troppo lontani dal centro zona
-            # Calcola distanza mediana per stabilire una soglia
+            # FILTRO OUTLIER STRETTO: niente clienti oltre 50km dal centro zona
+            # E niente clienti oltre 2.5x la mediana (esclude i geograficamente isolati)
             if len(day_pool) > 3:
-                distanze = sorted(haversine(c['lat'], c['lon'], cx, cy) for c in day_pool)
-                mediana = distanze[len(distanze) // 2]
-                # Soglia: max(20km, 3x mediana) — gli outlier vengono esclusi
-                soglia_outlier = max(20, mediana * 3)
+                distanze_dal_centro = [haversine(c['lat'], c['lon'], cx, cy) for c in day_pool]
+                distanze_sorted = sorted(distanze_dal_centro)
+                mediana = distanze_sorted[len(distanze_sorted) // 2]
+                # Soglia: minore tra (50km assoluti) e (2.5x mediana, min 15km)
+                soglia_outlier = min(50, max(15, mediana * 2.5))
                 day_pool = [c for c in day_pool if haversine(c['lat'], c['lon'], cx, cy) <= soglia_outlier]
             
-            # Score bilanciato: 60% urgenza + 40% vicinanza al centro zona
+            # Score: 60% urgenza + 40% vicinanza
             max_dist_zona = max((haversine(c['lat'], c['lon'], cx, cy) for c in day_pool), default=1) or 1
             day_pool.sort(key=lambda c: -(
                 c['urgenza'] / 100 * 60 + 
@@ -6175,7 +6220,7 @@ def main_app():
                         debug_lines.append(f"- Variante: {giro_s.get('variante', 0)}")
                         debug_lines.append(f"- Esclusi: {giro_s.get('esclusi', [])}")
                         debug_lines.append(f"- Timestamp: {giro_s.get('ts', '?')}")
-                        if giro_s.get('v', 0) < 5:
+                        if giro_s.get('v', 0) < 6:
                             debug_lines.append(f"- ⚠️ **VERSIONE VECCHIA** — verrà ricalcolato")
                     else:
                         debug_lines.append("- Nessun giro salvato per oggi → verrà calcolato da zero")
