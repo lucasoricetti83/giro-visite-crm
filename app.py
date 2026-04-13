@@ -949,7 +949,7 @@ def save_giro_giorno(data_str, client_ids, variante=0, esclusi=[]):
         if not user_id:
             return False
         payload = json.dumps({
-            'v': 15,  # versione algoritmo — incrementare per invalidare giri vecchi
+            'v': 16,  # versione algoritmo — incrementare per invalidare giri vecchi
             'data': data_str,
             'ids': client_ids,
             'variante': variante,
@@ -980,7 +980,7 @@ def load_giro_giorno(data_str):
         resp = supabase.table('clienti').select('note').eq('user_id', user_id).eq('nome_cliente', '__GIRO_SALVATO__').execute()
         if resp.data and resp.data[0].get('note'):
             giro = json.loads(resp.data[0]['note'])
-            if giro.get('data') == data_str and giro.get('v', 0) >= 15:
+            if giro.get('data') == data_str and giro.get('v', 0) >= 16:
                 return giro
     except:
         pass
@@ -1620,11 +1620,14 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     
     agenda = {g: [] for g in range(7)}
     
-    # Capacità giornaliera
-    ore = (datetime.combine(oggi, ora_fine) - datetime.combine(oggi, ora_inizio)).seconds / 3600
-    pausa_ore = (datetime.combine(oggi, pausa_a) - datetime.combine(oggi, pausa_da)).seconds / 3600
-    # Capacità: max 10 visite/giorno (limite operativo realistico)
-    max_visite = 10
+    # Parametri temporali per simulazione giro
+    ore_disponibili = (datetime.combine(oggi, ora_fine) - datetime.combine(oggi, ora_inizio)).seconds / 60  # in minuti
+    pausa_min = (datetime.combine(oggi, pausa_a) - datetime.combine(oggi, pausa_da)).seconds / 60
+    minuti_lavoro = ore_disponibili - pausa_min  # minuti netti
+    velocita_media = 50  # km/h media stradale
+    
+    # Stima visite/giorno per calcoli intermedi (il vero limite è il tempo simulato)
+    max_visite = max(4, int(minuti_lavoro / (durata_visita + 15)))  # 15min spostamento medio
     
     # ========================================
     # 1. RACCOGLI CLIENTI + PARSE APPUNTAMENTI
@@ -2121,13 +2124,11 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         return migliore
     
     # ========================================
-    # 11. ASSEGNA TUTTI I CLIENTI AI GIORNI (cluster geografico diretto)
+    # 11. ASSEGNA CLIENTI AI GIORNI
     # ========================================
-    # Approccio semplice e robusto:
-    # 1. Prendi TUTTI i clienti del pool (non solo zona)
-    # 2. K-means in N cluster (N = giorni disponibili)
-    # 3. Ogni cluster = 1 giorno
-    # 4. Se cluster troppo grande, tieni i più urgenti
+    # Criterio primario: DISTANZA (clienti vicini nello stesso giorno)
+    # Criterio secondario: FREQUENZA/URGENZA (chi scade prima ha priorità)
+    # Vincolo: tempo reale (orari lavoro, spostamenti, durata visita)
     
     risultati = {}
     
@@ -2143,7 +2144,6 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             if len(giro_app) >= 3:
                 giro_app = costruisci_anello(giro_app, base_lat, base_lon)
             risultati[giorno] = (data_g, giro_app)
-            # Rimuovi dal pool
             for c in giro_app:
                 pool_per_giorni = [p for p in pool_per_giorni if p['nome'] != c['nome']]
     
@@ -2152,13 +2152,13 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     n_giorni_liberi = len(giorni_liberi)
     
     if n_giorni_liberi > 0 and pool_per_giorni:
-        # K-means diretto: N cluster = N giorni
+        # K-means: raggruppa TUTTI i clienti in N cluster geografici
         if len(pool_per_giorni) >= n_giorni_liberi:
             cluster_giorni, _ = kmeans_geo(pool_per_giorni, n_giorni_liberi)
         else:
             cluster_giorni = [pool_per_giorni] + [[] for _ in range(n_giorni_liberi - 1)]
         
-        # Ordina cluster per angolo dalla base (giri ordinati geograficamente nella settimana)
+        # Ordina cluster per angolo dalla base
         cluster_con_angolo = []
         for cl in cluster_giorni:
             if cl:
@@ -2170,30 +2170,100 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             cluster_con_angolo.append((angle, cl))
         cluster_con_angolo.sort(key=lambda x: x[0])
         
-        # Ruota per settimana + variante (diversità)
+        # Ruota per settimana + variante
         shift = (numero_settimana + variante) % max(1, len(cluster_con_angolo))
         cluster_con_angolo = cluster_con_angolo[shift:] + cluster_con_angolo[:shift]
         
-        # Assegna cluster ai giorni
+        # === SIMULAZIONE TEMPO REALE per ogni giorno ===
+        def simula_giornata(clienti_candidati, data_g):
+            """Simula una giornata di lavoro e ritorna i clienti che ci stanno nel tempo."""
+            if not clienti_candidati:
+                return []
+            
+            # Ordina candidati per urgenza (i più urgenti prima nella selezione)
+            candidati = sorted(clienti_candidati, key=lambda c: -c['urgenza'])
+            
+            # Costruisci il giro con nearest-neighbor rispettando il tempo
+            selezionati = []
+            usati = set()
+            
+            pos_lat, pos_lon = base_lat, base_lon
+            ora_corrente = datetime.combine(data_g, ora_inizio)
+            ora_limite = datetime.combine(data_g, ora_fine)
+            
+            while candidati:
+                # Trova il miglior candidato: urgenza alta + vicino alla posizione corrente
+                migliore = None
+                migliore_score = -999
+                migliore_idx = -1
+                
+                for idx, c in enumerate(candidati):
+                    if c['nome'] in usati:
+                        continue
+                    
+                    dist = haversine(pos_lat, pos_lon, c['lat'], c['lon'])
+                    tempo_viaggio_min = (dist / velocita_media) * 60
+                    
+                    # Score: urgenza normalizzata - penalità distanza
+                    # 1km = ~1.2 minuti = penalità proporzionale
+                    score = c['urgenza'] - tempo_viaggio_min * 1.5
+                    
+                    if score > migliore_score:
+                        migliore_score = score
+                        migliore = c
+                        migliore_idx = idx
+                
+                if migliore is None:
+                    break
+                
+                # Calcola tempo necessario per questa visita
+                dist_al_cliente = haversine(pos_lat, pos_lon, migliore['lat'], migliore['lon'])
+                tempo_viaggio = (dist_al_cliente / velocita_media) * 60  # minuti
+                
+                arrivo = ora_corrente + timedelta(minutes=tempo_viaggio)
+                
+                # Gestisci pausa pranzo
+                if arrivo.time() >= pausa_da and arrivo.time() < pausa_a:
+                    arrivo = datetime.combine(data_g, pausa_a) + timedelta(minutes=tempo_viaggio)
+                
+                fine_visita = arrivo + timedelta(minutes=durata_visita)
+                
+                # Calcola tempo di ritorno alla base dopo questa visita
+                dist_ritorno = haversine(migliore['lat'], migliore['lon'], base_lat, base_lon)
+                tempo_ritorno = (dist_ritorno / velocita_media) * 60
+                ora_rientro = fine_visita + timedelta(minutes=tempo_ritorno)
+                
+                # Se non c'è tempo per visitare + tornare, fermati
+                if ora_rientro > ora_limite + timedelta(minutes=15):  # 15min tolleranza
+                    break
+                
+                # Accetta questa visita
+                selezionati.append(migliore)
+                usati.add(migliore['nome'])
+                candidati = [c for c in candidati if c['nome'] != migliore['nome']]
+                
+                pos_lat, pos_lon = migliore['lat'], migliore['lon']
+                ora_corrente = fine_visita
+            
+            return selezionati
+        
+        # Assegna cluster ai giorni con simulazione tempo
         for idx_g, giorno in enumerate(giorni_liberi):
             data_g = lunedi + timedelta(days=giorno)
             
             if idx_g < len(cluster_con_angolo):
-                clienti_giorno = cluster_con_angolo[idx_g][1]
+                clienti_cluster = cluster_con_angolo[idx_g][1]
             else:
-                clienti_giorno = []
+                clienti_cluster = []
             
-            if not clienti_giorno:
+            if not clienti_cluster:
                 risultati[giorno] = (data_g, [])
                 continue
             
-            # Ordina per urgenza (i più urgenti hanno priorità)
-            clienti_giorno.sort(key=lambda c: -c['urgenza'])
+            # Simula la giornata: il tempo decide quanti clienti ci stanno
+            giro = simula_giornata(clienti_cluster, data_g)
             
-            # Max 12 visite/giorno (target 10, buffer 2)
-            giro = clienti_giorno[:12]
-            
-            # Costruisci ANELLO ottimale
+            # Ottimizza il percorso finale con 2-OPT
             if len(giro) >= 3:
                 giro = costruisci_anello(giro, base_lat, base_lon)
             elif len(giro) == 2:
@@ -2205,7 +2275,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             risultati[giorno] = (data_g, giro)
     
     # ========================================
-    # 12. CALCOLO ORARI
+    # 12. CALCOLO ORARI FINALI (con tempi reali)
     # ========================================
     for giorno in giorni_calcolo:
         data_g, giro = risultati.get(giorno, (lunedi + timedelta(days=giorno), []))
@@ -2216,7 +2286,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         
         for c in giro:
             dist = haversine(pos_lat, pos_lon, c['lat'], c['lon'])
-            tempo = (dist / 40) * 60
+            tempo = (dist / velocita_media) * 60
             
             if c.get('is_app'):
                 ora_arr = c.get('ora_app', '09:00')
@@ -6248,7 +6318,7 @@ def main_app():
                         debug_lines.append(f"- Variante: {giro_s.get('variante', 0)}")
                         debug_lines.append(f"- Esclusi: {giro_s.get('esclusi', [])}")
                         debug_lines.append(f"- Timestamp: {giro_s.get('ts', '?')}")
-                        if giro_s.get('v', 0) < 15:
+                        if giro_s.get('v', 0) < 16:
                             debug_lines.append(f"- ⚠️ **VERSIONE VECCHIA** — verrà ricalcolato")
                     else:
                         debug_lines.append("- Nessun giro salvato per oggi → verrà calcolato da zero")
@@ -6256,7 +6326,11 @@ def main_app():
                     # 4. CONFIGURAZIONE
                     debug_lines.append(f"\n## ⚙️ Configurazione")
                     debug_lines.append(f"- Giorni lavorativi: {giorni_lav_dbg}")
-                    debug_lines.append(f"- Max visite calc: {max(4, min(12, 8))}")
+                    durata_v = int(config.get('durata_visita', 45))
+                    h_ini = config.get('h_inizio', '09:00')
+                    h_fin = config.get('h_fine', '18:00')
+                    debug_lines.append(f"- Orari: {h_ini} - {h_fin}, visita: {durata_v}min, velocità: 50km/h")
+                    debug_lines.append(f"- Visite stimate/giorno: ~{max(4, int(420 / (durata_v + 15)))} (calcolate dal tempo reale)")
                     debug_lines.append(f"- Variante: {st.session_state.get('variante_giro', 0)}")
                     debug_lines.append(f"- Esclusi oggi: {st.session_state.get('esclusi_oggi', [])}")
                     debug_lines.append(f"- Giorno settimana: {oggi_dbg.weekday()} ({['Lun','Mar','Mer','Gio','Ven','Sab','Dom'][oggi_dbg.weekday()]})")
