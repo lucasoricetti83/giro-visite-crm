@@ -894,14 +894,48 @@ def save_config(config_data):
         st.error(f"❌ Errore salvataggio config: {str(e)}")
         return False
 
-def save_scambi_giorni(scambi_dict):
-    """Salva scambi giorni su Supabase usando record speciale nella tabella clienti"""
+def _migra_scambi_vecchio_formato(vecchio_dict):
+    """Converte il vecchio formato {week_iso: [(idx1, idx2), ...]} nel nuovo [(date1_iso, date2_iso), ...]"""
+    nuova_lista = []
+    if not isinstance(vecchio_dict, dict):
+        return nuova_lista
+    for week_key, swaps in vecchio_dict.items():
+        try:
+            lunedi = datetime.fromisoformat(week_key).date()
+        except Exception:
+            continue
+        if not isinstance(swaps, list):
+            continue
+        for swap in swaps:
+            if isinstance(swap, (list, tuple)) and len(swap) == 2:
+                try:
+                    idx1, idx2 = int(swap[0]), int(swap[1])
+                    d1 = lunedi + timedelta(days=idx1)
+                    d2 = lunedi + timedelta(days=idx2)
+                    nuova_lista.append((d1.isoformat(), d2.isoformat()))
+                except Exception:
+                    continue
+    return nuova_lista
+
+
+def save_scambi_giorni(scambi_list):
+    """
+    Salva scambi giorni su Supabase.
+    Formato NUOVO: lista di coppie date ISO [(date1_iso, date2_iso), ...]
+    """
     import json
     try:
         user_id = get_user_id()
         if not user_id:
             return False
-        scambi_str = json.dumps(scambi_dict)
+        
+        # Se per errore viene passato il vecchio formato (dict), lo migro al volo
+        if isinstance(scambi_list, dict):
+            scambi_list = _migra_scambi_vecchio_formato(scambi_list)
+        
+        # Normalizzo le coppie come liste (JSON-friendly)
+        scambi_normalizzati = [[a, b] for (a, b) in scambi_list]
+        scambi_str = json.dumps(scambi_normalizzati)
         
         # Cerca se esiste già il record speciale
         resp = supabase.table('clienti').select('id').eq('user_id', user_id).eq('nome_cliente', '__SCAMBI_GIORNI__').execute()
@@ -922,19 +956,61 @@ def save_scambi_giorni(scambi_dict):
         return False
 
 def load_scambi_giorni():
-    """Carica scambi giorni da Supabase"""
+    """
+    Carica scambi giorni da Supabase.
+    Restituisce sempre una LISTA di tuple (date1_iso, date2_iso).
+    Se trova il vecchio formato (dict), lo migra automaticamente e lo ri-salva.
+    """
     import json
     try:
         user_id = get_user_id()
         if not user_id:
-            return {}
+            return []
         resp = supabase.table('clienti').select('note').eq('user_id', user_id).eq('nome_cliente', '__SCAMBI_GIORNI__').execute()
         if resp.data and resp.data[0].get('note'):
             data = json.loads(resp.data[0]['note'])
-            return {k: [(a, b) for a, b in v] for k, v in data.items()}
-    except:
+            
+            # VECCHIO FORMATO: dict {week_iso: [(idx1, idx2), ...]}
+            if isinstance(data, dict):
+                migrato = _migra_scambi_vecchio_formato(data)
+                # Ri-salva nel nuovo formato così la migrazione avviene solo una volta
+                try:
+                    save_scambi_giorni(migrato)
+                except Exception:
+                    pass
+                return migrato
+            
+            # NUOVO FORMATO: lista di [date1_iso, date2_iso]
+            if isinstance(data, list):
+                out = []
+                for item in data:
+                    if isinstance(item, (list, tuple)) and len(item) == 2:
+                        out.append((str(item[0]), str(item[1])))
+                return out
+    except Exception:
         pass
-    return {}
+    return []
+
+
+def trova_data_scambiata(data_obj, scambi_list):
+    """
+    Dato una data (date), cerca negli scambi la data con cui è stata scambiata.
+    Se la stessa data appare in più scambi, vince l'ULTIMO inserito (catena di scambi).
+    Restituisce la data effettiva da mostrare (date), o data_obj stessa se nessuno scambio.
+    """
+    if not scambi_list:
+        return data_obj
+    data_iso = data_obj.isoformat() if hasattr(data_obj, 'isoformat') else str(data_obj)
+    effettiva_iso = data_iso
+    for (d1, d2) in scambi_list:
+        if d1 == effettiva_iso:
+            effettiva_iso = d2
+        elif d2 == effettiva_iso:
+            effettiva_iso = d1
+    try:
+        return datetime.fromisoformat(effettiva_iso).date()
+    except Exception:
+        return data_obj
 
 def check_scambi_column_exists():
     """Verifica sempre True — usiamo la tabella clienti"""
@@ -2729,6 +2805,10 @@ def main_app():
     # Inizializza scambi giorni (carica da Supabase se primo accesso)
     if 'scambi_giorni' not in st.session_state:
         st.session_state.scambi_giorni = load_scambi_giorni()
+    # Safety: se per qualsiasi motivo in session_state c'è ancora il vecchio formato (dict), lo migro al volo
+    if isinstance(st.session_state.scambi_giorni, dict):
+        st.session_state.scambi_giorni = _migra_scambi_vecchio_formato(st.session_state.scambi_giorni)
+        save_scambi_giorni(st.session_state.scambi_giorni)
     
     # --- TAB: GIRO OGGI ---
     if st.session_state.active_tab == "🚀 Giro Oggi":
@@ -2864,22 +2944,18 @@ def main_app():
             variante = st.session_state.get('variante_giro', 0)
             forza_ricalcolo = st.session_state.pop('_forza_ricalcolo', False)
             
-            # APPLICA SCAMBI: se oggi è stato scambiato con un altro giorno, mostra quel giorno
+            # APPLICA SCAMBI: se oggi è stato scambiato con un'altra DATA, mostra il giro di quella data
             oggi_date = ora_italiana.date()
-            lunedi_oggi = oggi_date - timedelta(days=oggi_date.weekday())
-            chiave_sett_oggi = lunedi_oggi.isoformat()
-            idx_effettivo = idx_g  # giorno effettivo da mostrare
+            scambi_list_oggi = st.session_state.get('scambi_giorni', [])
+            if not isinstance(scambi_list_oggi, list):
+                scambi_list_oggi = []
             
-            if chiave_sett_oggi in st.session_state.get('scambi_giorni', {}):
-                for s_idx1, s_idx2 in st.session_state.scambi_giorni[chiave_sett_oggi]:
-                    if s_idx1 == idx_g:
-                        idx_effettivo = s_idx2
-                    elif s_idx2 == idx_g:
-                        idx_effettivo = s_idx1
+            data_effettiva_oggi = trova_data_scambiata(oggi_date, scambi_list_oggi)
+            idx_effettivo = data_effettiva_oggi.weekday()
             
-            if idx_effettivo != idx_g:
+            if data_effettiva_oggi != oggi_date:
                 giorni_nomi_swap = ["Lun","Mar","Mer","Gio","Ven","Sab","Dom"]
-                st.info(f"🔄 Scambio attivo: oggi mostro il giro di **{giorni_nomi_swap[idx_effettivo]}** (scambiato con {giorni_nomi_swap[idx_g]})")
+                st.info(f"🔄 Scambio attivo: oggi mostro il giro di **{giorni_nomi_swap[idx_effettivo]} {data_effettiva_oggi.strftime('%d/%m/%Y')}** (scambiato con oggi)")
             
             # === LOGICA SALVATAGGIO GIRO ===
             # 1. Se c'è un giro salvato per oggi E non è stato forzato il ricalcolo → usa quello
@@ -3433,9 +3509,13 @@ def main_app():
         if 'giorno_da_scambiare' not in st.session_state:
             st.session_state.giorno_da_scambiare = None
         
-        # Inizializza scambi salvati (dizionario: chiave=settimana, valore=lista di scambi)
+        # Inizializza scambi salvati (lista di coppie date ISO: [(date1, date2), ...])
         if 'scambi_giorni' not in st.session_state:
             st.session_state.scambi_giorni = load_scambi_giorni()
+        # Safety: migrazione al volo se presente vecchio formato (dict)
+        if isinstance(st.session_state.scambi_giorni, dict):
+            st.session_state.scambi_giorni = _migra_scambi_vecchio_formato(st.session_state.scambi_giorni)
+            save_scambi_giorni(st.session_state.scambi_giorni)
         
         col_nav1, col_nav2, col_nav3, col_nav4, col_nav5 = st.columns([1, 1, 2, 1, 1])
         
@@ -3482,55 +3562,53 @@ def main_app():
         
         st.divider()
         
-        # Mostra banner scambio in corso (se attivo) — con CALENDARIO per selezionare il giorno di destinazione
+        # Mostra banner scambio in corso (se attivo) — con CALENDARIO per selezionare QUALSIASI data di destinazione
         if st.session_state.giorno_da_scambiare:
             with st.container(border=True):
-                st.info(f"🔄 Stai scambiando: **{['Lun','Mar','Mer','Gio','Ven','Sab','Dom'][st.session_state.giorno_da_scambiare.weekday()]} {st.session_state.giorno_da_scambiare.strftime('%d/%m/%Y')}**")
+                giorno_src = st.session_state.giorno_da_scambiare
+                st.info(f"🔄 Stai scambiando: **{['Lun','Mar','Mer','Gio','Ven','Sab','Dom'][giorno_src.weekday()]} {giorno_src.strftime('%d/%m/%Y')}**")
                 
-                # Calcola default: primo giorno lavorativo diverso nella settimana corrente
-                default_target = None
-                for _g_idx in giorni_attivi:
-                    _cand = lunedi_selezionato + timedelta(days=_g_idx)
-                    if _cand != st.session_state.giorno_da_scambiare:
-                        default_target = _cand
-                        break
-                if default_target is None:
-                    default_target = st.session_state.giorno_da_scambiare + timedelta(days=1)
-                    if default_target > domenica_selezionata:
-                        default_target = lunedi_selezionato
+                # Default: giorno successivo al sorgente (evita stesso giorno)
+                default_target = giorno_src + timedelta(days=1)
+                
+                # Range permesso: molto ampio (un anno indietro, un anno avanti)
+                min_target = oggi - timedelta(days=365)
+                max_target = oggi + timedelta(days=365)
                 
                 col_cal, col_conf, col_ann = st.columns([2, 1, 1])
                 
                 with col_cal:
                     giorno_target = st.date_input(
-                        "📅 Seleziona dal calendario il giorno con cui scambiare:",
+                        "📅 Seleziona dal calendario la data con cui scambiare:",
                         value=default_target,
-                        min_value=lunedi_selezionato,
-                        max_value=domenica_selezionata,
-                        key=f"calendario_scambio_{st.session_state.giorno_da_scambiare.isoformat()}",
+                        min_value=min_target,
+                        max_value=max_target,
+                        key=f"calendario_scambio_{giorno_src.isoformat()}",
                         format="DD/MM/YYYY",
-                        help="Puoi scegliere qualsiasi giorno della settimana corrente"
+                        help="Puoi scegliere QUALSIASI data utile, anche in settimane diverse"
                     )
                 
                 with col_conf:
                     st.write("")  # spacer per allineare verticalmente
                     st.write("")
                     if st.button("✅ Conferma scambio", type="primary", use_container_width=True, key="btn_conferma_scambio_cal"):
-                        if giorno_target == st.session_state.giorno_da_scambiare:
-                            st.warning("⚠️ Devi selezionare un giorno diverso da quello selezionato!")
+                        if giorno_target == giorno_src:
+                            st.warning("⚠️ Devi selezionare una data diversa da quella selezionata!")
+                        elif giorno_target.weekday() not in giorni_attivi:
+                            st.warning(f"⚠️ **{giorni_nomi_full[giorno_target.weekday()]}** non è un giorno lavorativo. Seleziona uno tra: {', '.join([giorni_nomi_full[g] for g in giorni_attivi])}.")
                         else:
-                            idx1 = st.session_state.giorno_da_scambiare.weekday()
-                            idx2 = giorno_target.weekday()
-                            chiave_settimana_swap = lunedi_selezionato.isoformat()
-                            if chiave_settimana_swap not in st.session_state.scambi_giorni:
-                                st.session_state.scambi_giorni[chiave_settimana_swap] = []
-                            st.session_state.scambi_giorni[chiave_settimana_swap].append((idx1, idx2))
+                            # Salva lo scambio come coppia di DATE complete
+                            if not isinstance(st.session_state.scambi_giorni, list):
+                                st.session_state.scambi_giorni = []
+                            st.session_state.scambi_giorni.append(
+                                (giorno_src.isoformat(), giorno_target.isoformat())
+                            )
                             saved = save_scambi_giorni(st.session_state.scambi_giorni)
                             st.session_state.giorno_da_scambiare = None
                             if saved:
-                                st.toast(f"✅ {giorni_nomi_full[idx1][:3]} ↔️ {giorni_nomi_full[idx2][:3]} — Scambio salvato!", icon="✅")
+                                st.toast(f"✅ {giorno_src.strftime('%d/%m')} ↔️ {giorno_target.strftime('%d/%m')} — Scambio salvato!", icon="✅")
                             else:
-                                st.toast(f"🔄 {giorni_nomi_full[idx1][:3]} ↔️ {giorni_nomi_full[idx2][:3]} — ⚠️ Non salvato (aggiungi colonna scambi_json in Supabase)", icon="⚠️")
+                                st.toast(f"🔄 {giorno_src.strftime('%d/%m')} ↔️ {giorno_target.strftime('%d/%m')} — ⚠️ Non salvato (controlla la connessione)", icon="⚠️")
                             time_module.sleep(0.4)
                             st.rerun()
                 
@@ -3549,17 +3627,66 @@ def main_app():
             st.session_state.current_week_index
         )
         
-        # APPLICA SCAMBI SALVATI per questa settimana
-        chiave_settimana = lunedi_selezionato.isoformat()
-        if chiave_settimana in st.session_state.scambi_giorni:
-            agenda_originale = {k: list(v) for k, v in agenda_settimana.items()}
-            for idx1, idx2 in st.session_state.scambi_giorni[chiave_settimana]:
-                tappe1 = agenda_originale.get(idx1, [])
-                tappe2 = agenda_originale.get(idx2, [])
-                agenda_settimana[idx1] = tappe2
-                agenda_settimana[idx2] = tappe1
-                agenda_originale[idx1] = tappe2
-                agenda_originale[idx2] = tappe1
+        # APPLICA SCAMBI SALVATI — ora supporta scambi TRA SETTIMANE DIVERSE
+        # Gli scambi sono salvati come lista di coppie (date1_iso, date2_iso)
+        scambi_list = st.session_state.get('scambi_giorni', [])
+        if not isinstance(scambi_list, list):
+            scambi_list = []
+        
+        if scambi_list:
+            # Cache delle agende di altre settimane (calcolate on-demand)
+            cache_agende_settimane = {lunedi_selezionato: {k: list(v) for k, v in agenda_settimana.items()}}
+            lunedi_oggi_ref = oggi - timedelta(days=oggi.weekday())
+            
+            def _get_agenda_settimana_per_lunedi(lun_date):
+                """Ritorna l'agenda grezza (pre-scambi) di una settimana, calcolandola se non in cache."""
+                if lun_date in cache_agende_settimane:
+                    return cache_agende_settimane[lun_date]
+                offset_w = (lun_date - lunedi_oggi_ref).days // 7
+                try:
+                    ag_other = calcola_agenda_settimanale(
+                        df,
+                        config,
+                        st.session_state.esclusi_oggi if offset_w == 0 else [],
+                        settimana_offset=offset_w
+                    )
+                except Exception:
+                    ag_other = {}
+                cache_agende_settimane[lun_date] = ag_other
+                return ag_other
+            
+            nuova_agenda = {k: list(v) for k, v in agenda_settimana.items()}
+            
+            for (d1_iso, d2_iso) in scambi_list:
+                try:
+                    d1 = datetime.fromisoformat(d1_iso).date()
+                    d2 = datetime.fromisoformat(d2_iso).date()
+                except Exception:
+                    continue
+                
+                d1_in_sett = lunedi_selezionato <= d1 <= domenica_selezionata
+                d2_in_sett = lunedi_selezionato <= d2 <= domenica_selezionata
+                
+                if d1_in_sett and d2_in_sett:
+                    # Scambio interno alla settimana visualizzata
+                    idx1, idx2 = d1.weekday(), d2.weekday()
+                    t1 = nuova_agenda.get(idx1, [])
+                    t2 = nuova_agenda.get(idx2, [])
+                    nuova_agenda[idx1] = t2
+                    nuova_agenda[idx2] = t1
+                elif d1_in_sett:
+                    # d1 nella sett corrente, d2 in altra settimana → prendi tappe di d2
+                    lun_d2 = d2 - timedelta(days=d2.weekday())
+                    ag_altra = _get_agenda_settimana_per_lunedi(lun_d2)
+                    nuova_agenda[d1.weekday()] = list(ag_altra.get(d2.weekday(), []))
+                elif d2_in_sett:
+                    # d2 nella sett corrente, d1 in altra settimana → prendi tappe di d1
+                    lun_d1 = d1 - timedelta(days=d1.weekday())
+                    ag_altra = _get_agenda_settimana_per_lunedi(lun_d1)
+                    nuova_agenda[d2.weekday()] = list(ag_altra.get(d1.weekday(), []))
+                # else: scambio non coinvolge la settimana visualizzata → ignora
+            
+            agenda_settimana = nuova_agenda
         
         # Se settimana corrente: sovrascrive OGGI con il giro SALVATO (coerente con Giro Oggi)
         # Questo va DOPO gli scambi, così il giorno di oggi mostra sempre il giro persistito
@@ -3735,13 +3862,34 @@ def main_app():
             media = totale_visite_settimana / len(giorni_attivi) if giorni_attivi else 0
             col_stat4.metric("📈 Media/Giorno", f"{media:.1f}")
             
-            # Reset scambi se presenti
-            chiave_sett = lunedi_selezionato.isoformat()
-            if chiave_sett in st.session_state.scambi_giorni and st.session_state.scambi_giorni[chiave_sett]:
-                if st.button("🗑️ Annulla tutti gli scambi di questa settimana"):
-                    st.session_state.scambi_giorni[chiave_sett] = []
-                    save_scambi_giorni(st.session_state.scambi_giorni)
-                    st.rerun()
+            # === GESTIONE SCAMBI ATTIVI (qualsiasi data) ===
+            scambi_attivi = st.session_state.get('scambi_giorni', [])
+            if not isinstance(scambi_attivi, list):
+                scambi_attivi = []
+            
+            if scambi_attivi:
+                with st.expander(f"🔄 Scambi attivi ({len(scambi_attivi)})", expanded=False):
+                    giorni_nomi_brevi = ["Lun","Mar","Mer","Gio","Ven","Sab","Dom"]
+                    for i_sc, (d1_iso, d2_iso) in enumerate(scambi_attivi):
+                        try:
+                            d1_obj = datetime.fromisoformat(d1_iso).date()
+                            d2_obj = datetime.fromisoformat(d2_iso).date()
+                        except Exception:
+                            continue
+                        col_sc1, col_sc2 = st.columns([5, 1])
+                        with col_sc1:
+                            st.write(f"**{giorni_nomi_brevi[d1_obj.weekday()]} {d1_obj.strftime('%d/%m/%Y')}** ↔️ **{giorni_nomi_brevi[d2_obj.weekday()]} {d2_obj.strftime('%d/%m/%Y')}**")
+                        with col_sc2:
+                            if st.button("🗑️", key=f"del_scambio_{i_sc}_{d1_iso}_{d2_iso}", help="Rimuovi questo scambio"):
+                                st.session_state.scambi_giorni.pop(i_sc)
+                                save_scambi_giorni(st.session_state.scambi_giorni)
+                                st.rerun()
+                    
+                    st.divider()
+                    if st.button("🗑️ Rimuovi TUTTI gli scambi", key="btn_rimuovi_tutti_scambi"):
+                        st.session_state.scambi_giorni = []
+                        save_scambi_giorni([])
+                        st.rerun()
             
             # Info algoritmo
             with st.expander("ℹ️ Come funziona l'ottimizzazione"):
