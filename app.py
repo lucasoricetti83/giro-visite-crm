@@ -1975,8 +1975,9 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         if len(punti) <= k:
             return [[p] for p in punti] + [[] for _ in range(k - len(punti))]
         
-        # Init: farthest-first, punto di partenza ruota con settimana + variante
-        start_idx = (variante + numero_settimana) % len(punti)
+        # Init: farthest-first. Il punto di partenza dipende SOLO dalla variante
+        # (bottone "Rigenera giro"), NON dal numero di settimana → cluster stabili tra settimane
+        start_idx = variante % len(punti)
         centers = [(punti[start_idx]['lat'], punti[start_idx]['lon'])]
         for _ in range(k - 1):
             max_min_d, best = 0, 0
@@ -2116,10 +2117,9 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         
         zone_valide.sort(key=lambda z: -score_zona(z))
         
-        # Ruota zone per varietà settimanale
-        if len(zone_valide) > n_gsa:
-            shift = numero_settimana % len(zone_valide)
-            zone_valide = zone_valide[shift:] + zone_valide[:shift]
+        # NESSUNA rotazione settimanale sui cluster — così le zone geografiche
+        # rimangono stabili tra settimane diverse. La varietà viene data solo
+        # dall'ordine interno di selezione (bias su urgenza < 60, vedi simula_giornata).
         
         zone_usate = set()
         
@@ -2307,8 +2307,9 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             cluster_con_angolo.append((angle, cl))
         cluster_con_angolo.sort(key=lambda x: x[0])
         
-        # Ruota per settimana + variante
-        shift = (numero_settimana + variante) % max(1, len(cluster_con_angolo))
+        # Shift cluster->giorni: SOLO variante (bottone "Rigenera"), NO numero_settimana
+        # → l'assegnazione zone-giorni è stabile tra settimane
+        shift = variante % max(1, len(cluster_con_angolo))
         cluster_con_angolo = cluster_con_angolo[shift:] + cluster_con_angolo[:shift]
         
         # === SIMULAZIONE TEMPO REALE per ogni giorno ===
@@ -2317,17 +2318,24 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             if not clienti_candidati:
                 return []
             
-            # Ordinamento con "bias di rotazione settimanale" per VARIETÀ:
-            # Tra clienti con urgenza simile, ruotiamo chi viene servito per settimana.
-            # Questo evita che settimana dopo settimana compaiano SEMPRE gli stessi clienti.
+            # Ordinamento con "bias di rotazione settimanale" per VARIETÀ nell'ordine di selezione,
+            # applicato SOLO ai clienti con urgenza < 60 (i veri urgenti NON vengono mai ruotati,
+            # così non rischiamo di saltare uno scaduto a favore di un "fortunato").
+            # Scarto ridotto a ±3 punti (minore invasività sul punteggio di urgenza).
             import hashlib as _h
             seed_rot = (numero_settimana + variante) % 7
+            SOGLIA_URGENZA_STABILE = 60  # >=60 → ordine deterministico per urgenza
+            RANGE_ROT = 3  # scarto massimo ±3 (era ±5)
+            
             def _sort_key(c):
-                # Hash stabile per-cliente, modulato per settimana
+                urg = c['urgenza']
+                if urg >= SOGLIA_URGENZA_STABILE:
+                    # Urgenza alta → NIENTE rotazione, solo ordine per urgenza stretta
+                    return (-urg, 0)
+                # Urgenza bassa → applichiamo il bias di rotazione settimanale
                 h = int(_h.md5(f"{c.get('id','')}_{c['nome']}_{seed_rot}".encode()).hexdigest()[:8], 16) % 10000
-                # Bonus rotazione: max ±5 punti di urgenza (piccolo, non sostituisce urgenza)
-                rot_bonus = (h / 1000) - 5  # range: -5 … +5
-                return -(c['urgenza'] + rot_bonus)
+                rot_bonus = (h / (10000 / (2 * RANGE_ROT))) - RANGE_ROT  # range: -3 … +3
+                return (-(urg + rot_bonus), 0)
             candidati = sorted(clienti_candidati, key=_sort_key)
             
             # Costruisci il giro con nearest-neighbor rispettando il tempo E il max_visite
