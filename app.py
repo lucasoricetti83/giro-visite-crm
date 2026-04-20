@@ -1638,16 +1638,18 @@ def clear_gps_from_url():
             del st.query_params[key]
 
 # --- 5. CALCOLO GIRO OTTIMIZZATO (v8 — CLUSTER CITTÀ + ANELLI) ---
-def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, variante=0):
+def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, variante=0, override_ultima_visita=None):
     """
-    ALGORITMO v10 — K-Means geografico + appuntamento come baricentro.
+    ALGORITMO v11 — K-Means geografico + appuntamento come baricentro + proiezione progressiva.
     
-    1. Pool: clienti scaduti o in scadenza entro 10 giorni + mai visitati
+    1. Pool: TUTTI i clienti con visitare=SI (no filtering by due date)
     2. APPUNTAMENTO = BARICENTRO: se c'è un appuntamento, quel giorno prende
        i clienti del pool PIÙ VICINI all'appuntamento (ignora le zone)
     3. GIORNI SENZA APP: K-Means su pool rimanente → zone compatte
     4. Google Maps ottimizza l'ORDINE dentro ogni giorno (TSP + polyline)
     5. Rotazione settimanale zone ↔ giorni
+    6. override_ultima_visita (opzionale): dict {client_id: date} — proietta le visite
+       delle settimane precedenti per evitare di ripetere gli stessi clienti
     """
     if df.empty:
         return {}
@@ -1655,6 +1657,19 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     from collections import defaultdict
     from math import atan2, degrees as math_degrees
     import random as _rnd
+    
+    # --- PROIEZIONE PROGRESSIVA ---
+    # Se ci sono visite "simulate" (settimane precedenti nella vista Agenda),
+    # aggiorno ultima_visita di quei clienti prima di procedere.
+    if override_ultima_visita:
+        df = df.copy()
+        for cid, udata in override_ultima_visita.items():
+            mask = df['id'] == cid
+            if mask.any():
+                try:
+                    df.loc[mask, 'ultima_visita'] = pd.Timestamp(udata)
+                except Exception:
+                    pass
     
     base_lat = float(config.get('lat_base', 41.9028))
     base_lon = float(config.get('lon_base', 12.4964))
@@ -1702,8 +1717,12 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     minuti_lavoro = ore_disponibili - pausa_min  # minuti netti
     velocita_media = 50  # km/h media stradale
     
-    # Stima visite/giorno per calcoli intermedi (il vero limite è il tempo simulato)
-    max_visite = max(4, int(minuti_lavoro / (durata_visita + 15)))  # 15min spostamento medio
+    # Max visite giornaliere: usa valore dal config (default 8), clamp tra 5 e 12
+    # Se il tempo disponibile ne permetterebbe meno, prevale il tempo (safety)
+    max_visite_config = int(config.get('max_visite_giornaliere', 8))
+    max_visite_config = max(5, min(12, max_visite_config))
+    max_visite_tempo = max(4, int(minuti_lavoro / (durata_visita + 15)))  # 15min spostamento medio
+    max_visite = min(max_visite_config, max_visite_tempo)
     
     # ========================================
     # 1. RACCOGLI CLIENTI + PARSE APPUNTAMENTI
@@ -1859,7 +1878,11 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 nomi_app.add(c['nome'])
     
     # ========================================
-    # 4. COSTRUISCI POOL — TUTTI i clienti da visitare
+    # 4. COSTRUISCI POOL — TUTTI i clienti con visitare=SI
+    # 
+    # POLICY v11: includi TUTTI i clienti (no filtering per data prossima visita).
+    # L'ordinamento per urgenza + proiezione progressiva delle settimane 
+    # farà sì che su più settimane TUTTI vengano schedulati.
     # ========================================
     scaduti = []
     mai_visitati = []
@@ -1880,7 +1903,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             # Scade entro 2 settimane → nel pool con priorità minore
             scaduti.append(c)
         else:
-            # Scade oltre 2 settimane → tenere come riserva
+            # Scade oltre 2 settimane → nel pool come riserva
             non_ancora.append(c)
     
     # Ordina scaduti per urgenza (i più urgenti prima)
@@ -1889,17 +1912,15 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     # Mai visitati: includi TUTTI
     mai_visitati.sort(key=lambda c: c['dist_base'])
     
-    # Pool: TUTTI gli scaduti + TUTTI i mai visitati (nessun taglio)
-    # Il max_visite per giorno farà da filtro naturale
-    pool = scaduti + mai_visitati
+    # Non ancora scaduti: ordina per urgenza
+    non_ancora.sort(key=lambda c: -c['urgenza'])
     
-    # Se restano pochi slot, aggiungi anche i "non ancora" come riserva
-    cap_settimana = max_visite * n_giorni
-    if len(pool) < cap_settimana and non_ancora:
-        non_ancora.sort(key=lambda c: -c['urgenza'])
-        pool += non_ancora
+    # POOL TOTALE = TUTTI i clienti visitare=SI (inclusi non_ancora)
+    # Così anche nelle settimane future, se ci sono "slot liberi" dopo aver 
+    # servito gli scaduti, si serviranno i non_ancora nell'ordine di urgenza.
+    pool = scaduti + mai_visitati + non_ancora
     
-    # Ordine: urgenza decrescente, poi distanza dalla base crescente
+    # Ordine finale: urgenza decrescente, poi distanza dalla base crescente
     # Questo garantisce che k-means trovi zone compatte
     pool.sort(key=lambda c: (-c['urgenza'], c['dist_base']))
     
@@ -2252,14 +2273,24 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         
         # === SIMULAZIONE TEMPO REALE per ogni giorno ===
         def simula_giornata(clienti_candidati, data_g):
-            """Simula una giornata di lavoro e ritorna i clienti che ci stanno nel tempo."""
+            """Simula una giornata di lavoro e ritorna i clienti che ci stanno nel tempo e nel max_visite."""
             if not clienti_candidati:
                 return []
             
-            # Ordina candidati per urgenza (i più urgenti prima nella selezione)
-            candidati = sorted(clienti_candidati, key=lambda c: -c['urgenza'])
+            # Ordinamento con "bias di rotazione settimanale" per VARIETÀ:
+            # Tra clienti con urgenza simile, ruotiamo chi viene servito per settimana.
+            # Questo evita che settimana dopo settimana compaiano SEMPRE gli stessi clienti.
+            import hashlib as _h
+            seed_rot = (numero_settimana + variante) % 7
+            def _sort_key(c):
+                # Hash stabile per-cliente, modulato per settimana
+                h = int(_h.md5(f"{c.get('id','')}_{c['nome']}_{seed_rot}".encode()).hexdigest()[:8], 16) % 10000
+                # Bonus rotazione: max ±5 punti di urgenza (piccolo, non sostituisce urgenza)
+                rot_bonus = (h / 1000) - 5  # range: -5 … +5
+                return -(c['urgenza'] + rot_bonus)
+            candidati = sorted(clienti_candidati, key=_sort_key)
             
-            # Costruisci il giro con nearest-neighbor rispettando il tempo
+            # Costruisci il giro con nearest-neighbor rispettando il tempo E il max_visite
             selezionati = []
             usati = set()
             
@@ -2268,6 +2299,10 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             ora_limite = datetime.combine(data_g, ora_fine)
             
             while candidati:
+                # SAFETY CAP: rispetta il limite max_visite giornaliere
+                if len(selezionati) >= max_visite:
+                    break
+                
                 # Trova il miglior candidato: urgenza alta + vicino alla posizione corrente
                 migliore = None
                 migliore_score = -999
@@ -2350,6 +2385,86 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             
             risultati[giorno] = (data_g, giro)
     
+    # ============================================================
+    # 11b. RECUPERO URGENTI NON ASSEGNATI (prima data utile in zona)
+    # 
+    # Richiesta utente: "clienti con prossima visita passata o visite saltate
+    # devono essere riprogrammati alla PRIMA DATA UTILE in quella zona, 
+    # SENZA stravolgere i giri esistenti".
+    #
+    # Logica:
+    # - Trova tutti i clienti scaduti/mai_visitati che NON sono finiti in nessun giro
+    # - Per ciascuno, trova il giorno della settimana il cui baricentro è più vicino
+    #   ("prima data utile in zona")
+    # - Lo inserisco solo se quel giorno ha ancora spazio (< max_visite)
+    # - Priorità per urgenza: gli scaduti da più tempo vengono recuperati per primi
+    # ============================================================
+    nomi_schedulati = set()
+    for _g, (_dt, _giro) in risultati.items():
+        for _c in _giro:
+            nomi_schedulati.add(_c['nome'])
+    
+    # Urgenti = scaduti (giorni_ritardo >= 0) + mai_visitati, non ancora schedulati
+    urgenti_non_assegnati = [
+        c for c in (scaduti + mai_visitati)
+        if c['nome'] not in nomi_schedulati and c['nome'] not in nomi_usati_da_app
+    ]
+    # Priorità: urgenza più alta prima (scaduti da più tempo, poi mai visitati)
+    urgenti_non_assegnati.sort(key=lambda c: -c['urgenza'])
+    
+    n_recuperati = 0
+    for c in urgenti_non_assegnati:
+        # Trova il giorno con il baricentro più vicino al cliente
+        # (= "prima data utile nella sua zona"), che abbia ancora spazio
+        miglior_giorno = None
+        miglior_dist = float('inf')
+        
+        for g, (data_g, giro) in risultati.items():
+            # Rispetta max_visite — non stravolgere i giri
+            if len(giro) >= max_visite:
+                continue
+            # Se il giorno è vuoto, considerato ma con penalità (preferibile uno NON vuoto
+            # perché il cliente dev'essere "in zona" con altri; comunque è meglio di niente)
+            if not giro:
+                dist_giorno = c['dist_base']  # distanza dalla base
+                dist_effettiva = dist_giorno + 15  # piccola penalità per giorni vuoti
+            else:
+                # Distanza dal baricentro del giro del giorno
+                cx = sum(cl['lat'] for cl in giro) / len(giro)
+                cy = sum(cl['lon'] for cl in giro) / len(giro)
+                dist_effettiva = haversine(c['lat'], c['lon'], cx, cy)
+            
+            if dist_effettiva < miglior_dist:
+                miglior_dist = dist_effettiva
+                miglior_giorno = g
+        
+        # Se ho trovato un giorno candidato entro 30km, inserisci
+        # Oltre 30km sarebbe "stravolgere il giro" → lascio che vada nella sett. successiva
+        if miglior_giorno is not None and miglior_dist <= 30:
+            data_g_rec, giro_rec = risultati[miglior_giorno]
+            giro_rec.append(c)
+            # Ri-ottimizza l'ordine del giro (TSP 2-opt) per mantenere il giro compatto
+            if len(giro_rec) >= 3:
+                giro_rec = costruisci_anello(giro_rec, base_lat, base_lon)
+            risultati[miglior_giorno] = (data_g_rec, giro_rec)
+            nomi_schedulati.add(c['nome'])
+            n_recuperati += 1
+    
+    # Salvo metadati per eventuale debug / dashboard
+    try:
+        import streamlit as _st
+        if settimana_offset == 0:
+            _st.session_state['_ultimo_calcolo_metadati'] = {
+                'n_pool': len(pool),
+                'n_schedulati': len(nomi_schedulati),
+                'n_recuperati': n_recuperati,
+                'n_non_schedulati': len(pool) - len(nomi_schedulati) - len(nomi_usati_da_app),
+                'max_visite': max_visite,
+                'timestamp': datetime.now().isoformat(),
+            }
+    except Exception:
+        pass
+    
     # ========================================
     # 12. CALCOLO ORARI FINALI (con tempi reali)
     # ========================================
@@ -2393,6 +2508,70 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         agenda[giorno] = tappe_finali
     
     return agenda
+
+
+def calcola_agenda_settimana_con_proiezione(df, config, esclusi=[], settimana_offset=0, variante=0):
+    """
+    Calcola l'agenda per una settimana specifica, PROIETTANDO che le settimane 
+    precedenti (da 0 fino a settimana_offset-1) siano già state visitate.
+    Questo evita che gli stessi clienti urgenti appaiano ripetutamente ogni settimana.
+    
+    Usa cache in session_state per evitare ricalcoli.
+    """
+    # Per settimane passate o correnti: no proiezione, usa i dati reali
+    if settimana_offset <= 0:
+        return calcola_agenda_settimanale(df, config, esclusi,
+                                          settimana_offset=settimana_offset,
+                                          variante=variante)
+    
+    # Cache in session_state
+    try:
+        import streamlit as _st
+        cache_key = f"_proj_ag_{settimana_offset}_{variante}_{len(df)}"
+        agende_cache = _st.session_state.setdefault('_agende_cache', {})
+        if cache_key in agende_cache:
+            return agende_cache[cache_key]
+    except Exception:
+        agende_cache = None
+        cache_key = None
+    
+    oggi_proj = ora_italiana.date()
+    lunedi_oggi_proj = oggi_proj - timedelta(days=oggi_proj.weekday())
+    overrides = {}  # {client_id: data_visita}
+    
+    # Calcola progressivamente da settimana 0 a settimana_offset-1,
+    # accumulando le visite simulate
+    for w in range(settimana_offset):
+        ag_w = calcola_agenda_settimanale(
+            df, config,
+            esclusi if w == 0 else [],
+            settimana_offset=w,
+            variante=variante,
+            override_ultima_visita=dict(overrides)
+        )
+        lunedi_w = lunedi_oggi_proj + timedelta(weeks=w)
+        for giorno_idx, tappe in ag_w.items():
+            for t in tappe:
+                if isinstance(t, dict) and 'id' in t:
+                    data_visita = lunedi_w + timedelta(days=giorno_idx)
+                    # Mantiene la più recente
+                    prev = overrides.get(t['id'])
+                    if prev is None or prev < data_visita:
+                        overrides[t['id']] = data_visita
+    
+    # Calcola la settimana richiesta con tutti gli overrides accumulati
+    risultato = calcola_agenda_settimanale(
+        df, config, [],
+        settimana_offset=settimana_offset,
+        variante=variante,
+        override_ultima_visita=dict(overrides)
+    )
+    
+    # Salva in cache
+    if cache_key and agende_cache is not None:
+        agende_cache[cache_key] = risultato
+    
+    return risultato
 
 
 def calcola_piano_giornaliero(df, giorno_settimana, config, esclusi=[], variante=0):
@@ -2747,6 +2926,8 @@ def main_app():
     if 'df_clienti' not in st.session_state or st.session_state.get('reload_data', False):
         st.session_state.df_clienti = fetch_clienti()
         st.session_state.reload_data = False
+        # Invalida cache proiezione agenda (i dati sono cambiati)
+        st.session_state.pop('_agende_cache', None)
     
     if 'config' not in st.session_state:
         config = fetch_config()
@@ -3343,6 +3524,35 @@ def main_app():
         c3.metric("🔴 Critici", len(critici))
         c4.metric("🟠 Warning", len(warning))
         
+        # === PANNELLO STATO PIANIFICAZIONE ===
+        # Mostra quanti clienti sono stati effettivamente schedulati nella settimana corrente
+        # e quanti sono rimasti fuori (verranno recuperati le settimane successive)
+        metadati_calcolo = st.session_state.get('_ultimo_calcolo_metadati')
+        if metadati_calcolo:
+            n_pool = metadati_calcolo.get('n_pool', 0)
+            n_sched = metadati_calcolo.get('n_schedulati', 0)
+            n_rec = metadati_calcolo.get('n_recuperati', 0)
+            n_non_sched = metadati_calcolo.get('n_non_schedulati', 0)
+            max_v = metadati_calcolo.get('max_visite', 8)
+            
+            with st.container(border=True):
+                st.markdown("### 📅 Stato Pianificazione Settimana")
+                cm1, cm2, cm3, cm4 = st.columns(4)
+                cm1.metric("📋 In coda (visitare=SI)", n_pool)
+                cm2.metric("✅ Pianificati questa sett.", n_sched)
+                cm3.metric("🔄 Recuperati automaticamente", n_rec, help="Clienti scaduti re-inseriti nei giorni meno pieni della loro zona (senza stravolgere i giri)")
+                cm4.metric("⏳ Rimandati", n_non_sched, help=f"Clienti che non entrano nella settimana corrente (max {max_v} visite/giorno). Verranno pianificati automaticamente nelle settimane successive.")
+                
+                if n_non_sched > 0:
+                    st.info(
+                        f"ℹ️ **{n_non_sched} clienti** non entrano nella settimana corrente per via del "
+                        f"limite di **{max_v} visite/giorno**. Verranno pianificati progressivamente "
+                        f"nelle prossime settimane (vai in **📅 Agenda** e naviga con **Sett. Succ. ➡️**). "
+                        f"Quando marchi una visita come completata, l'algoritmo si adatta automaticamente."
+                    )
+                
+                st.caption(f"🕒 Ultimo calcolo: {metadati_calcolo.get('timestamp', '?')[:19].replace('T', ' ')}")
+        
         # === STATO VISITE CLIENTI (sempre visibile) ===
         if not df.empty and 'visitare' in df.columns:
             df_attivi = df[df['visitare'] == 'SI'].copy()
@@ -3620,7 +3830,9 @@ def main_app():
                         st.rerun()
         
         # CALCOLA AGENDA OTTIMIZZATA (escludendo giorni in ferie singoli)
-        agenda_settimana = calcola_agenda_settimanale(
+        # Uso la versione CON PROIEZIONE: se si sta vedendo una settimana futura,
+        # proietta che le settimane precedenti siano già state visitate (no ripetizioni)
+        agenda_settimana = calcola_agenda_settimana_con_proiezione(
             df, 
             config, 
             st.session_state.esclusi_oggi if st.session_state.current_week_index == 0 else [],
@@ -3644,7 +3856,7 @@ def main_app():
                     return cache_agende_settimane[lun_date]
                 offset_w = (lun_date - lunedi_oggi_ref).days // 7
                 try:
-                    ag_other = calcola_agenda_settimanale(
+                    ag_other = calcola_agenda_settimana_con_proiezione(
                         df,
                         config,
                         st.session_state.esclusi_oggi if offset_w == 0 else [],
@@ -5782,6 +5994,27 @@ def main_app():
             config['durata_visita'] = durata
             save_config(config)
             st.session_state.config = config
+            # Invalida cache agenda: il max_visite dipende anche dalla durata
+            st.session_state.pop('_agende_cache', None)
+        
+        st.divider()
+        st.subheader("🎯 Massimo Visite al Giorno")
+        st.caption("Numero massimo di clienti da visitare in una singola giornata (anche se il tempo permetterebbe di più).")
+        
+        max_visite_val = int(config.get('max_visite_giornaliere', 8))
+        max_visite_val = max(5, min(12, max_visite_val))  # clamp iniziale
+        max_vis_nuovo = st.slider(
+            "Numero massimo visite/giorno",
+            min_value=5, max_value=12, value=max_visite_val,
+            help="Consigliato: 8-9. Limita il numero di clienti per evitare giornate troppo pesanti."
+        )
+        if max_vis_nuovo != config.get('max_visite_giornaliere'):
+            config['max_visite_giornaliere'] = max_vis_nuovo
+            save_config(config)
+            st.session_state.config = config
+            # Invalida cache agenda (il max cambia → i giri cambiano)
+            st.session_state.pop('_agende_cache', None)
+            st.toast(f"✅ Max visite/giorno: {max_vis_nuovo}", icon="✅")
         
         st.divider()
         st.subheader("🏖️ Ferie / Giorni di Chiusura")
