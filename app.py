@@ -878,18 +878,58 @@ def fetch_config():
         return None
 
 def save_config(config_data):
-    """Salva o aggiorna la configurazione utente"""
+    """
+    Salva o aggiorna la configurazione utente.
+    È resiliente a colonne mancanti nello schema Supabase: se una colonna non esiste
+    (errore PGRST204), la rimuove dal payload e ritenta, avvisando l'utente una sola volta.
+    """
     try:
         user_id = get_user_id()
+        config_data = dict(config_data)  # non modificare l'originale
         config_data['user_id'] = user_id
         
-        # Prova a fare upsert
-        existing = fetch_config()
-        if existing:
-            response = supabase.table('config_utente').update(config_data).eq('user_id', user_id).execute()
-        else:
-            response = supabase.table('config_utente').insert(config_data).execute()
-        return True
+        # Tentativi multipli: se una colonna non esiste, la rimuoviamo e ritentiamo
+        max_tentativi = 8
+        colonne_rimosse = []
+        
+        for tentativo in range(max_tentativi):
+            try:
+                existing = fetch_config()
+                if existing:
+                    supabase.table('config_utente').update(config_data).eq('user_id', user_id).execute()
+                else:
+                    supabase.table('config_utente').insert(config_data).execute()
+                
+                # Successo: se abbiamo dovuto rimuovere colonne, avvisa una sola volta per sessione
+                if colonne_rimosse:
+                    cols_str = ", ".join(f"`{c}`" for c in colonne_rimosse)
+                    if not st.session_state.get('_avviso_colonne_mancanti_mostrato'):
+                        st.warning(
+                            f"ℹ️ Alcune opzioni di configurazione ({cols_str}) non sono ancora "
+                            f"persistite sul database perché la colonna non esiste in Supabase. "
+                            f"I valori funzionano in questa sessione, ma verranno resettati al prossimo accesso. "
+                            f"Per renderli permanenti, aggiungi le colonne alla tabella `config_utente` in Supabase."
+                        )
+                        st.session_state['_avviso_colonne_mancanti_mostrato'] = True
+                return True
+            
+            except Exception as e:
+                err_str = str(e)
+                # Cerchiamo pattern del tipo: "Could not find the 'NOME' column of 'config_utente'"
+                match = re.search(r"find the '([^']+)' column", err_str)
+                if match and match.group(1) in config_data:
+                    col_mancante = match.group(1)
+                    colonne_rimosse.append(col_mancante)
+                    del config_data[col_mancante]
+                    continue  # ritenta senza quella colonna
+                else:
+                    # Errore diverso (o non risolvibile rimuovendo colonne)
+                    raise
+        
+        # Se siamo qui, abbiamo esaurito i tentativi
+        st.warning(f"⚠️ Impossibile salvare configurazione dopo {max_tentativi} tentativi. Colonne problematiche: {colonne_rimosse}")
+        return False
+        
     except Exception as e:
         st.error(f"❌ Errore salvataggio config: {str(e)}")
         return False
