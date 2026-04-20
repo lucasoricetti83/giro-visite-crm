@@ -56,47 +56,46 @@ h4, h5, h6 { font-weight: 500 !important; }
 p, span, div, li { font-weight: 400; }
 strong, b { font-weight: 500 !important; }
 
-/* ===== BOTTONI STREAMLIT ===== */
+/* ===== BOTTONI STREAMLIT (adattivi light/dark) ===== */
 .stButton > button, .stDownloadButton > button, .stLinkButton > a {
     min-height: 44px !important;
     border-radius: 10px !important;
-    border: 0.5px solid rgba(0,0,0,0.18) !important;
+    border: 0.5px solid rgba(128,128,128,0.35) !important;
     font-size: 14px !important;
     font-weight: 500 !important;
-    background: #ffffff !important;
-    color: #1d1d1f !important;
+    background: transparent !important;
+    color: var(--text-color) !important;
     box-shadow: none !important;
     transition: all 0.15s ease !important;
     padding: 0 16px !important;
 }
 .stButton > button:hover, .stDownloadButton > button:hover, .stLinkButton > a:hover {
-    background: #f5f5f7 !important;
-    border-color: rgba(0,0,0,0.28) !important;
+    background: rgba(128,128,128,0.12) !important;
+    border-color: rgba(128,128,128,0.5) !important;
     transform: none !important;
 }
 .stButton > button:active, .stDownloadButton > button:active, .stLinkButton > a:active {
     transform: scale(0.98) !important;
 }
 
-/* Bottone PRIMARY — più marcato ma sempre minimal */
+/* Bottone PRIMARY — tono invertito rispetto al tema */
 .stButton > button[kind="primary"] {
-    background: #1d1d1f !important;
-    color: #ffffff !important;
-    border-color: #1d1d1f !important;
+    background: var(--text-color) !important;
+    color: var(--background-color) !important;
+    border-color: var(--text-color) !important;
 }
 .stButton > button[kind="primary"]:hover {
-    background: #2d2d2f !important;
-    border-color: #2d2d2f !important;
+    opacity: 0.85 !important;
 }
 
-/* ===== INPUT ===== */
+/* ===== INPUT (adattivi) ===== */
 .stTextInput > div > div > input,
 .stNumberInput > div > div > input,
 .stTextArea textarea,
 .stDateInput input,
 .stTimeInput input {
     border-radius: 10px !important;
-    border: 0.5px solid rgba(0,0,0,0.18) !important;
+    border: 0.5px solid rgba(128,128,128,0.35) !important;
     font-size: 15px !important;
     min-height: 44px !important;
     padding: 0 14px !important;
@@ -105,7 +104,7 @@ strong, b { font-weight: 500 !important; }
 
 .stSelectbox > div > div {
     border-radius: 10px !important;
-    border: 0.5px solid rgba(0,0,0,0.18) !important;
+    border: 0.5px solid rgba(128,128,128,0.35) !important;
     min-height: 44px !important;
 }
 
@@ -117,7 +116,7 @@ strong, b { font-weight: 500 !important; }
 }
 [data-testid="stMetricLabel"] {
     font-size: 12px !important;
-    color: #6e6e73 !important;
+    color: rgba(128,128,128,0.95) !important;
     text-transform: none !important;
     letter-spacing: 0 !important;
 }
@@ -126,14 +125,13 @@ strong, b { font-weight: 500 !important; }
 hr {
     margin: 1.2rem 0 !important;
     border: none !important;
-    border-top: 0.5px solid rgba(0,0,0,0.1) !important;
+    border-top: 0.5px solid rgba(128,128,128,0.22) !important;
 }
 
 /* ===== CONTAINER BORDER (st.container(border=True)) ===== */
 [data-testid="stVerticalBlockBorderWrapper"] {
     border-radius: 12px !important;
-    border: 0.5px solid rgba(0,0,0,0.12) !important;
-    background: #ffffff !important;
+    border: 0.5px solid rgba(128,128,128,0.25) !important;
 }
 
 /* ===== EXPANDER ===== */
@@ -172,21 +170,23 @@ hr {
 /* ===== ALERT/INFO ===== */
 .stAlert {
     border-radius: 12px !important;
-    border: 0.5px solid rgba(0,0,0,0.08) !important;
+    border: 0.5px solid rgba(128,128,128,0.2) !important;
     padding: 12px 14px !important;
 }
 
 /* ===== SLIDER ===== */
-.stSlider > div > div > div > div { background-color: #1d1d1f !important; }
+.stSlider > div > div > div > div { background-color: var(--primary-color, #2196f3) !important; }
 
 /* ===== CHECKBOX / TOGGLE ===== */
 .stCheckbox, .stToggle { font-size: 14px; }
 
-/* ===== HTML CUSTOM CARDS (per componenti in unsafe_allow_html) ===== */
+/* ===== HTML CUSTOM CARDS (adattivi light/dark mode) ===== */
+/* Usiamo le variabili di Streamlit quando disponibili, con fallback safe */
+
 .gv-card {
-    background: #ffffff;
+    background: var(--background-color, #ffffff);
     border-radius: 14px;
-    border: 0.5px solid rgba(0,0,0,0.12);
+    border: 0.5px solid rgba(128,128,128,0.25);
     padding: 16px 14px 8px;
     margin-bottom: 10px;
 }
@@ -196,15 +196,15 @@ hr {
     justify-content: space-between;
     margin-bottom: 14px;
 }
-.gv-date-big { font-size: 18px; font-weight: 500; color: #1d1d1f; line-height: 1.2; }
-.gv-date-sub { font-size: 12px; color: #6e6e73; margin-top: 2px; }
+.gv-date-big { font-size: 18px; font-weight: 500; color: var(--text-color, #1d1d1f); line-height: 1.2; }
+.gv-date-sub { font-size: 12px; color: rgba(128,128,128,0.9); margin-top: 2px; }
 
 .gv-row {
     display: flex;
     align-items: center;
     gap: 10px;
     padding: 11px 0;
-    border-top: 0.5px solid rgba(0,0,0,0.08);
+    border-top: 0.5px solid rgba(128,128,128,0.2);
 }
 .gv-row:first-child { border-top: none; }
 
@@ -215,56 +215,109 @@ hr {
     font-size: 12px; font-weight: 500;
     flex-shrink: 0;
 }
-.gv-num-red { background: #ffe5e5; color: #c62828; }
-.gv-num-orange { background: #fff3e0; color: #e65100; }
-.gv-num-gray { background: #f2f2f7; color: #6e6e73; }
-.gv-num-blue { background: #e3f2fd; color: #1565c0; }
-.gv-num-green { background: #e8f5e9; color: #2e7d32; }
+/* Numeri colorati — sfondo tenue + testo carico, leggibile in entrambi i temi */
+.gv-num-red { background: rgba(244,67,54,0.18); color: #f44336; }
+.gv-num-orange { background: rgba(255,152,0,0.18); color: #ff9800; }
+.gv-num-gray { background: rgba(128,128,128,0.18); color: inherit; opacity: 0.85; }
+.gv-num-blue { background: rgba(33,150,243,0.18); color: #2196f3; }
+.gv-num-green { background: rgba(76,175,80,0.22); color: #4caf50; }
 
 .gv-info { flex: 1; min-width: 0; }
 .gv-line1 {
     display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
 }
+/* NOME CLIENTE: usa il colore testo primario del tema corrente → bianco in dark, nero in light */
 .gv-name {
-    font-size: 14px; font-weight: 500; color: #1d1d1f;
+    font-size: 15px; font-weight: 500;
+    color: var(--text-color, #1d1d1f);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.gv-time { font-size: 12px; color: #6e6e73; flex-shrink: 0; }
+.gv-time { font-size: 12px; color: rgba(128,128,128,0.95); flex-shrink: 0; }
 .gv-line2 {
-    font-size: 12px; color: #6e6e73;
+    font-size: 12px; color: rgba(128,128,128,0.95);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     margin-top: 1px;
 }
-.gv-badge-red { color: #c62828; font-weight: 500; }
-.gv-badge-orange { color: #e65100; font-weight: 500; }
+.gv-badge-red { color: #f44336; font-weight: 500; }
+.gv-badge-orange { color: #ff9800; font-weight: 500; }
 
 .gv-actions { display: flex; gap: 4px; flex-shrink: 0; }
 .gv-iconbtn {
     width: 38px; height: 38px;
     border-radius: 10px;
-    border: 0.5px solid rgba(0,0,0,0.18);
-    background: #ffffff;
+    border: 0.5px solid rgba(128,128,128,0.35);
+    background: transparent;
     display: flex; align-items: center; justify-content: center;
-    color: #1d1d1f;
+    color: var(--text-color, #1d1d1f);
     text-decoration: none !important;
     transition: background 0.15s ease;
 }
-.gv-iconbtn:hover, .gv-iconbtn:active { background: #f5f5f7; }
+.gv-iconbtn:hover, .gv-iconbtn:active { background: rgba(128,128,128,0.15); }
 .gv-iconbtn-disabled { opacity: 0.3; pointer-events: none; }
 
-.gv-row-click {
-    flex: 1; min-width: 0;
-    display: flex; align-items: center; gap: 10px;
+/* Nome cliente cliccabile (link Streamlit nascosto che copre la zona nome) */
+.gv-row-clickable {
     cursor: pointer;
-    text-decoration: none !important;
-    color: inherit !important;
+}
+.gv-row-clickable:hover .gv-name {
+    color: #2196f3;
+}
+
+/* === RIGA CLIENTE VISITATO (spunta) === */
+.gv-row-done {
+    opacity: 0.75;
+}
+.gv-row-done .gv-name {
+    text-decoration: line-through;
+    color: rgba(128,128,128,0.9);
+}
+.gv-check {
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    background: #4caf50;
+    color: white;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    flex-shrink: 0;
+    margin-left: 4px;
 }
 
 .gv-empty {
     text-align: center;
-    color: #86868b;
+    color: rgba(128,128,128,0.9);
     font-size: 13px;
     padding: 24px 8px;
+}
+
+/* === BOTTONE NOME CLIENTE (Giro Oggi) ===
+   Il marker .gv-namebtn precede immediatamente il bottone Streamlit del nome cliente.
+   Lo stilizziamo per sembrare testo/link, non un bottone classico. */
+.gv-namebtn + div .stButton > button,
+.gv-namebtn ~ div .stButton > button {
+    min-height: 34px !important;
+    border: none !important;
+    background: transparent !important;
+    padding: 4px 6px !important;
+    font-size: 15px !important;
+    font-weight: 500 !important;
+    text-align: left !important;
+    justify-content: flex-start !important;
+    color: var(--text-color) !important;
+    box-shadow: none !important;
+}
+.gv-namebtn + div .stButton > button:hover,
+.gv-namebtn ~ div .stButton > button:hover {
+    background: rgba(33,150,243,0.12) !important;
+    color: #2196f3 !important;
+    border: none !important;
+}
+.gv-namebtn + div .stButton > button p,
+.gv-namebtn ~ div .stButton > button p {
+    text-align: left !important;
+    font-weight: 500 !important;
+    margin: 0 !important;
 }
 
 /* Nascondi il "Made with Streamlit" footer */
@@ -3540,194 +3593,158 @@ def main_app():
                 
                 st.divider()
                 
-                # === LISTA TAPPE — STILE MINIMAL (Alternativa A) ===
-                # Ogni riga: numero colorato · nome/ora · indirizzo/km/ritardo · [Naviga] [Chiama]
-                # Il tap sul nome apre il form di registrazione visita
+                # === LISTA TAPPE — STILE MINIMAL ===
+                # - Tap sul NOME CLIENTE → apre la scheda (registrazione visita si fa da lì)
+                # - Naviga/Chiama come icone inline a destra (HTML, tap istantaneo)
+                # - Cliente visitato → spunta verde + testo barrato (no bottoni)
                 for i, t in enumerate(tappe_oggi, 1):
                     visitato = t['nome_cliente'] in st.session_state.visitati_oggi
                     
                     # Dati completi del cliente
                     cliente_row = df[df['nome_cliente'] == t['nome_cliente']].iloc[0] if not df[df['nome_cliente'] == t['nome_cliente']].empty else None
                     
-                    if 'cliente_report_aperto' not in st.session_state:
-                        st.session_state.cliente_report_aperto = None
+                    ritardo = t.get('ritardo', 0)
+                    urgenza_score = t.get('urgenza', 0)
                     
+                    # Classe numero colorato per urgenza
                     if visitato:
-                        # --- VISITATO (riga compatta verde) ---
-                        st.markdown(f"""
-<div style="display:flex;align-items:center;gap:10px;padding:11px 12px;margin:6px 0;
-            background:#f0f9f3;border:0.5px solid #c8e6c9;border-radius:10px;">
-  <div style="width:26px;height:26px;border-radius:50%;background:#2e7d32;color:#fff;
-              display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:500;flex-shrink:0;">✓</div>
-  <div style="flex:1;min-width:0;font-size:14px;color:#1b5e20;
-              white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-    {i}. {t['nome_cliente']}
-  </div>
-  <div style="font-size:11px;color:#2e7d32;font-weight:500;flex-shrink:0;">VISITATO</div>
-</div>
-""", unsafe_allow_html=True)
+                        num_class = "gv-num-green"
+                    elif ritardo == 999 or urgenza_score >= 80:
+                        num_class = "gv-num-red"
+                        badge_class = "gv-badge-red"
+                    elif ritardo >= 7 or urgenza_score >= 50:
+                        num_class = "gv-num-orange"
+                        badge_class = "gv-badge-orange"
+                    elif ritardo >= 0 or urgenza_score >= 30:
+                        num_class = "gv-num-orange"
+                        badge_class = "gv-badge-orange"
                     else:
-                        form_aperto = st.session_state.cliente_report_aperto == t['id']
-                        
-                        if not form_aperto:
-                            # --- DA VISITARE — RIGA MINIMAL ---
-                            ritardo = t.get('ritardo', 0)
-                            urgenza_score = t.get('urgenza', 0)
-                            
-                            # Classe numero colorato per urgenza
-                            if ritardo == 999 or urgenza_score >= 80:
-                                num_class = "gv-num-red"
-                                badge_class = "gv-badge-red"
-                            elif ritardo >= 7 or urgenza_score >= 50:
-                                num_class = "gv-num-orange"
-                                badge_class = "gv-badge-orange"
-                            elif ritardo >= 0 or urgenza_score >= 30:
-                                num_class = "gv-num-orange"
-                                badge_class = "gv-badge-orange"
-                            else:
-                                num_class = "gv-num-gray"
-                                badge_class = ""
-                            
-                            # Tipo tappa: appuntamento fisso?
-                            is_appuntamento = "APPUNTAMENTO" in t.get('tipo_tappa', '').upper()
-                            if is_appuntamento:
-                                num_class = "gv-num-blue"
-                            
-                            # Link azioni (sempre HTML, rendering istantaneo)
-                            nav_url = f"https://www.google.com/maps/dir/?api=1&destination={t['latitude']},{t['longitude']}"
-                            cell_val = str(t.get('cellulare', '')).strip()
-                            
-                            # Ritardo testuale
-                            if ritardo == 999:
-                                ritardo_html = '<span class="gv-badge-red"> · mai visitato</span>'
-                            elif ritardo > 0:
-                                ritardo_html = f'<span class="{badge_class}"> · +{ritardo}gg</span>'
-                            elif ritardo == 0:
-                                ritardo_html = f'<span class="{badge_class}"> · oggi</span>'
-                            else:
-                                ritardo_html = ''
-                            
-                            # Indirizzo + km (compatto)
-                            info_parts = []
-                            if t.get('indirizzo'):
-                                ind_short = t['indirizzo'][:28] + '..' if len(t['indirizzo']) > 28 else t['indirizzo']
-                                info_parts.append(ind_short)
-                            if t.get('distanza_km', 0) > 0:
-                                info_parts.append(f"{t['distanza_km']:.1f} km")
-                            info_text = ' · '.join(info_parts)
-                            
-                            # Bottone Chiama (o disabilitato se non c'è numero)
-                            if cell_val and cell_val.lower() not in ('nan', 'none', ''):
-                                chiama_html = f'<a href="tel:{cell_val}" class="gv-iconbtn" title="Chiama"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></a>'
-                            else:
-                                chiama_html = '<span class="gv-iconbtn gv-iconbtn-disabled" title="Nessun numero"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></span>'
-                            
-                            # Riga HTML completa (nome escapato per sicurezza)
-                            nome_safe = t['nome_cliente'].replace('<', '&lt;').replace('>', '&gt;')
-                            info_safe = info_text.replace('<', '&lt;').replace('>', '&gt;')
-                            
-                            st.markdown(f"""
-<div class="gv-row">
+                        num_class = "gv-num-gray"
+                        badge_class = ""
+                    
+                    # Tipo tappa: appuntamento fisso?
+                    is_appuntamento = "APPUNTAMENTO" in t.get('tipo_tappa', '').upper()
+                    if is_appuntamento and not visitato:
+                        num_class = "gv-num-blue"
+                    
+                    # Link azioni
+                    nav_url = f"https://www.google.com/maps/dir/?api=1&destination={t['latitude']},{t['longitude']}"
+                    cell_val = str(t.get('cellulare', '')).strip()
+                    
+                    # Indirizzo + km + ritardo (tutto nella riga sotto il nome)
+                    info_parts = []
+                    if t.get('indirizzo'):
+                        ind_short = t['indirizzo'][:32] + '..' if len(t['indirizzo']) > 32 else t['indirizzo']
+                        info_parts.append(ind_short)
+                    if t.get('distanza_km', 0) > 0:
+                        info_parts.append(f"{t['distanza_km']:.1f} km")
+                    info_text = ' · '.join(info_parts)
+                    
+                    # Ritardo inline
+                    if visitato:
+                        ritardo_html = ''
+                    elif ritardo == 999:
+                        ritardo_html = ' · <span class="gv-badge-red">mai visitato</span>'
+                    elif ritardo > 0:
+                        ritardo_html = f' · <span class="{badge_class}">+{ritardo}gg</span>'
+                    elif ritardo == 0:
+                        ritardo_html = f' · <span class="{badge_class}">oggi</span>'
+                    else:
+                        ritardo_html = ''
+                    
+                    # Azioni a destra (Naviga + Chiama, oppure spunta se visitato)
+                    if visitato:
+                        # Mostra data visita se disponibile (da visitati_oggi non abbiamo la data precisa)
+                        actions_html = '<div class="gv-check">✓</div>'
+                    else:
+                        # Naviga
+                        nav_btn = f'<a href="{nav_url}" target="_blank" class="gv-iconbtn" title="Naviga"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg></a>'
+                        # Chiama (se numero disponibile)
+                        if cell_val and cell_val.lower() not in ('nan', 'none', ''):
+                            chiama_btn = f'<a href="tel:{cell_val}" class="gv-iconbtn" title="Chiama"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></a>'
+                        else:
+                            chiama_btn = '<span class="gv-iconbtn gv-iconbtn-disabled" title="Nessun numero"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></span>'
+                        actions_html = f'<div class="gv-actions">{nav_btn}{chiama_btn}</div>'
+                    
+                    row_class = "gv-row gv-row-done" if visitato else "gv-row"
+                    info_safe = info_text.replace('<', '&lt;').replace('>', '&gt;')
+                    
+                    # Layout: numero + info (senza nome, il nome è un bottone Streamlit sopra) + azioni
+                    # Il nome è un bottone Streamlit (serve rerun per cambiare tab) — lo stilizziamo per sembrare testo
+                    
+                    # Stile per il bottone nome: nessun bordo, allineato a sinistra, testo medium
+                    nome_display = t['nome_cliente'] + (' ✓' if visitato else '')
+                    
+                    # Struttura: colonna stretta con numero | colonna larga con [nome-button + riga info html] | colonna stretta con azioni html
+                    # Invece uso un container HTML + sovrappongo il bottone con z-index: troppo complicato in Streamlit
+                    # Strategia semplice: bottone nome + riga HTML sottostante con info e azioni allineate
+                    
+                    # Rendering compatto a 3 colonne Streamlit
+                    col_num, col_mid, col_act = st.columns([0.08, 0.72, 0.20])
+                    
+                    with col_num:
+                        st.markdown(f"""
+<div style="display:flex;align-items:center;justify-content:center;height:56px;">
   <div class="gv-num {num_class}">{i}</div>
-  <div class="gv-info">
-    <div class="gv-line1">
-      <div class="gv-name">{nome_safe}</div>
-      <div class="gv-time">{t.get('ora_arrivo', '--:--')}</div>
-    </div>
-    <div class="gv-line2">{info_safe}{ritardo_html}</div>
-  </div>
-  <div class="gv-actions">
-    <a href="{nav_url}" target="_blank" class="gv-iconbtn" title="Naviga">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>
-    </a>
-    {chiama_html}
-  </div>
 </div>
 """, unsafe_allow_html=True)
-                            
-                            # Promemoria (se presente)
-                            if cliente_row is not None and pd.notnull(cliente_row.get('promemoria')) and str(cliente_row.get('promemoria')).strip():
-                                st.markdown(f"""
-<div style="margin:-2px 0 8px 46px;padding:8px 12px;background:#fff8e1;border-radius:8px;
-            font-size:12px;color:#6d4c00;border-left:2px solid #ffb300;">
+                    
+                    with col_mid:
+                        # Marker per CSS "bottone nome cliente" (stile link-testo)
+                        st.markdown('<div class="gv-namebtn"></div>', unsafe_allow_html=True)
+                        # Nome cliente = bottone Streamlit (tap = apre scheda)
+                        btn_key = f"open_scheda_{t['id']}"
+                        if st.button(
+                            nome_display,
+                            key=btn_key,
+                            use_container_width=True,
+                            help="Apri scheda cliente"
+                        ):
+                            st.session_state.cliente_selezionato = t['nome_cliente']
+                            st.session_state.active_tab = "👤 Anagrafica"
+                            st.rerun()
+                        
+                        # Riga sotto il nome: ora + indirizzo + km + ritardo
+                        time_str = t.get('ora_arrivo', '--:--')
+                        st.markdown(f"""
+<div style="margin-top:-8px;padding:0 4px 4px 4px;font-size:12px;color:rgba(128,128,128,0.95);
+            white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+  ⏰ {time_str} · {info_safe}{ritardo_html}
+</div>
+""", unsafe_allow_html=True)
+                    
+                    with col_act:
+                        if visitato:
+                            st.markdown(f"""
+<div style="display:flex;align-items:center;justify-content:flex-end;height:56px;">
+  <div class="gv-check" style="width:32px;height:32px;font-size:18px;">✓</div>
+</div>
+""", unsafe_allow_html=True)
+                        else:
+                            st.markdown(f"""
+<div style="display:flex;align-items:center;justify-content:flex-end;height:56px;gap:4px;">
+  {nav_btn}
+  {chiama_btn}
+</div>
+""", unsafe_allow_html=True)
+                    
+                    # Promemoria (sotto la riga, se presente)
+                    if not visitato and cliente_row is not None and pd.notnull(cliente_row.get('promemoria')) and str(cliente_row.get('promemoria')).strip():
+                        st.markdown(f"""
+<div style="margin:-4px 0 8px 40px;padding:8px 12px;background:rgba(255,179,0,0.12);border-radius:8px;
+            font-size:12px;color:inherit;border-left:2px solid #ffb300;">
   📝 {str(cliente_row['promemoria']).replace('<','&lt;').replace('>','&gt;')}
 </div>
 """, unsafe_allow_html=True)
-                            
-                            # Bottoni azione in Streamlit (serve rerun per aprire form/scheda)
-                            btn_c1, btn_c2 = st.columns(2)
-                            with btn_c1:
-                                if st.button("✓ Registra visita", key=f"visita_{t['id']}", type="primary", use_container_width=True):
-                                    st.session_state.cliente_report_aperto = t['id']
-                                    st.rerun()
-                            with btn_c2:
-                                if st.button("👤 Scheda", key=f"scheda_{t['id']}", use_container_width=True):
-                                    st.session_state.cliente_selezionato = t['nome_cliente']
-                                    st.session_state.active_tab = "👤 Anagrafica"
-                                    st.rerun()
-                        
-                        else:
-                            # FORM REPORT APERTO — lascio invariato il flusso esistente
-                            with st.container(border=True):
-                                st.markdown(f"### 📝 Report Visita: {t['nome_cliente']}")
-                                st.caption(f"📍 {t.get('indirizzo', '')}")
-                                
-                                # Mostra storico precedente se presente
-                                storico_attuale = ""
-                                if cliente_row is not None and pd.notnull(cliente_row.get('storico_report')):
-                                    storico_attuale = str(cliente_row.get('storico_report', ''))
-                                    if storico_attuale.strip():
-                                        with st.expander("📜 Storico report precedenti"):
-                                            st.text(storico_attuale)
-                                
-                                # Form per nuovo report
-                                nuovo_report = st.text_area(
-                                    "✍️ Scrivi il report della visita:",
-                                    placeholder="Es: Incontrato Mario Rossi, discusso nuovo ordine, richiesta preventivo per...",
-                                    height=120,
-                                    key=f"report_text_{t['id']}"
-                                )
-                                
-                                col_save, col_skip, col_cancel = st.columns(3)
-                                
-                                with col_save:
-                                    if st.button("💾 Salva e Completa", key=f"save_report_{t['id']}", type="primary", use_container_width=True):
-                                        # Prepara nuovo storico con data
-                                        data_oggi = ora_italiana.strftime('%d/%m/%Y')
-                                        if nuovo_report.strip():
-                                            nuovo_storico = f"[{data_oggi}] {nuovo_report.strip()}"
-                                            if storico_attuale.strip():
-                                                nuovo_storico = f"{nuovo_storico}\n\n{storico_attuale}"
-                                        else:
-                                            nuovo_storico = storico_attuale
-                                        
-                                        # Aggiorna database
-                                        update_cliente(t['id'], {
-                                            'ultima_visita': ora_italiana.date().isoformat(),
-                                            'storico_report': nuovo_storico
-                                        })
-                                        st.session_state.visitati_oggi.append(t['nome_cliente'])
-                                        st.session_state.cliente_report_aperto = None
-                                        st.session_state.reload_data = True
-                                        st.success("✅ Visita registrata con report!")
-                                        time_module.sleep(0.5)
-                                        st.rerun()
-                                
-                                with col_skip:
-                                    if st.button("⏭️ Salta Report", key=f"skip_report_{t['id']}", use_container_width=True):
-                                        # Salva senza report
-                                        update_cliente(t['id'], {
-                                            'ultima_visita': ora_italiana.date().isoformat()
-                                        })
-                                        st.session_state.visitati_oggi.append(t['nome_cliente'])
-                                        st.session_state.cliente_report_aperto = None
-                                        st.session_state.reload_data = True
-                                        st.rerun()
-                                
-                                with col_cancel:
-                                    if st.button("❌ Annulla", key=f"cancel_report_{t['id']}", use_container_width=True):
-                                        st.session_state.cliente_report_aperto = None
-                                        st.rerun()
+                    
+                    # Separatore sottile
+                    st.markdown('<div style="height:1px;background:rgba(128,128,128,0.15);margin:4px 0;"></div>', unsafe_allow_html=True)
+                
+                # Rimuovo completamente il blocco vecchio (form aperto ora gestito in Anagrafica)
+                # Se il session_state ha cliente_report_aperto impostato, lo resetto (non serve più qui)
+                if st.session_state.get('cliente_report_aperto'):
+                    st.session_state.cliente_report_aperto = None
+                
                 
                 # Navigazione completa
                 if tappe_oggi:
