@@ -15,6 +15,263 @@ from supabase import create_client, Client
 # --- 1. CONFIGURAZIONE ---
 st.set_page_config(page_title="Giro Visite CRM Pro", layout="wide", page_icon="🚀")
 
+# ============================================
+# 🎨 CSS GLOBALE — STILE MINIMAL MOBILE-FIRST
+# ============================================
+# Stile ispirato ad Apple / Linear: pulito, bianco, tipografia sobria.
+# Tutti i bottoni Streamlit vengono ridisegnati per avere:
+# - target tocco ≥ 44px (linea guida Apple)
+# - bordi 0.5px, radius 10px
+# - font-weight max 500, no grassetti aggressivi
+# - colori semantici soft (non aggressivi)
+st.markdown("""
+<style>
+/* ===== RESET BASE ===== */
+html, body, [class*="css"], .stApp, [data-testid="stAppViewContainer"] {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif !important;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+/* Riduce padding top della pagina su mobile */
+.main .block-container {
+    padding-top: 1rem !important;
+    padding-bottom: 5rem !important;
+    max-width: 920px !important;
+}
+
+@media (max-width: 640px) {
+    .main .block-container {
+        padding-left: 0.75rem !important;
+        padding-right: 0.75rem !important;
+        padding-top: 0.5rem !important;
+    }
+}
+
+/* ===== TIPOGRAFIA ===== */
+h1 { font-size: 22px !important; font-weight: 500 !important; letter-spacing: -0.3px; }
+h2 { font-size: 19px !important; font-weight: 500 !important; letter-spacing: -0.2px; margin-top: 1.2rem !important; }
+h3 { font-size: 16px !important; font-weight: 500 !important; }
+h4, h5, h6 { font-weight: 500 !important; }
+p, span, div, li { font-weight: 400; }
+strong, b { font-weight: 500 !important; }
+
+/* ===== BOTTONI STREAMLIT ===== */
+.stButton > button, .stDownloadButton > button, .stLinkButton > a {
+    min-height: 44px !important;
+    border-radius: 10px !important;
+    border: 0.5px solid rgba(0,0,0,0.18) !important;
+    font-size: 14px !important;
+    font-weight: 500 !important;
+    background: #ffffff !important;
+    color: #1d1d1f !important;
+    box-shadow: none !important;
+    transition: all 0.15s ease !important;
+    padding: 0 16px !important;
+}
+.stButton > button:hover, .stDownloadButton > button:hover, .stLinkButton > a:hover {
+    background: #f5f5f7 !important;
+    border-color: rgba(0,0,0,0.28) !important;
+    transform: none !important;
+}
+.stButton > button:active, .stDownloadButton > button:active, .stLinkButton > a:active {
+    transform: scale(0.98) !important;
+}
+
+/* Bottone PRIMARY — più marcato ma sempre minimal */
+.stButton > button[kind="primary"] {
+    background: #1d1d1f !important;
+    color: #ffffff !important;
+    border-color: #1d1d1f !important;
+}
+.stButton > button[kind="primary"]:hover {
+    background: #2d2d2f !important;
+    border-color: #2d2d2f !important;
+}
+
+/* ===== INPUT ===== */
+.stTextInput > div > div > input,
+.stNumberInput > div > div > input,
+.stTextArea textarea,
+.stDateInput input,
+.stTimeInput input {
+    border-radius: 10px !important;
+    border: 0.5px solid rgba(0,0,0,0.18) !important;
+    font-size: 15px !important;
+    min-height: 44px !important;
+    padding: 0 14px !important;
+}
+.stTextArea textarea { padding: 10px 14px !important; min-height: 80px !important; }
+
+.stSelectbox > div > div {
+    border-radius: 10px !important;
+    border: 0.5px solid rgba(0,0,0,0.18) !important;
+    min-height: 44px !important;
+}
+
+/* ===== METRICHE ===== */
+[data-testid="stMetricValue"] {
+    font-size: 24px !important;
+    font-weight: 500 !important;
+    letter-spacing: -0.4px;
+}
+[data-testid="stMetricLabel"] {
+    font-size: 12px !important;
+    color: #6e6e73 !important;
+    text-transform: none !important;
+    letter-spacing: 0 !important;
+}
+
+/* ===== DIVIDERS ===== */
+hr {
+    margin: 1.2rem 0 !important;
+    border: none !important;
+    border-top: 0.5px solid rgba(0,0,0,0.1) !important;
+}
+
+/* ===== CONTAINER BORDER (st.container(border=True)) ===== */
+[data-testid="stVerticalBlockBorderWrapper"] {
+    border-radius: 12px !important;
+    border: 0.5px solid rgba(0,0,0,0.12) !important;
+    background: #ffffff !important;
+}
+
+/* ===== EXPANDER ===== */
+.streamlit-expanderHeader, [data-testid="stExpander"] summary {
+    border-radius: 10px !important;
+    font-weight: 500 !important;
+    font-size: 14px !important;
+}
+
+/* ===== TABS NATIVE ===== */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 4px;
+    background: transparent;
+}
+.stTabs [data-baseweb="tab"] {
+    border-radius: 8px;
+    padding: 8px 14px !important;
+    font-weight: 500;
+    font-size: 14px;
+}
+
+/* ===== SIDEBAR: bottoni di navigazione ===== */
+[data-testid="stSidebar"] .stButton > button {
+    text-align: left !important;
+    justify-content: flex-start !important;
+    min-height: 42px !important;
+    font-size: 14px !important;
+}
+
+/* ===== TOAST ===== */
+[data-testid="stToast"] {
+    border-radius: 12px !important;
+    font-size: 14px !important;
+}
+
+/* ===== ALERT/INFO ===== */
+.stAlert {
+    border-radius: 12px !important;
+    border: 0.5px solid rgba(0,0,0,0.08) !important;
+    padding: 12px 14px !important;
+}
+
+/* ===== SLIDER ===== */
+.stSlider > div > div > div > div { background-color: #1d1d1f !important; }
+
+/* ===== CHECKBOX / TOGGLE ===== */
+.stCheckbox, .stToggle { font-size: 14px; }
+
+/* ===== HTML CUSTOM CARDS (per componenti in unsafe_allow_html) ===== */
+.gv-card {
+    background: #ffffff;
+    border-radius: 14px;
+    border: 0.5px solid rgba(0,0,0,0.12);
+    padding: 16px 14px 8px;
+    margin-bottom: 10px;
+}
+.gv-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+}
+.gv-date-big { font-size: 18px; font-weight: 500; color: #1d1d1f; line-height: 1.2; }
+.gv-date-sub { font-size: 12px; color: #6e6e73; margin-top: 2px; }
+
+.gv-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 11px 0;
+    border-top: 0.5px solid rgba(0,0,0,0.08);
+}
+.gv-row:first-child { border-top: none; }
+
+.gv-num {
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 500;
+    flex-shrink: 0;
+}
+.gv-num-red { background: #ffe5e5; color: #c62828; }
+.gv-num-orange { background: #fff3e0; color: #e65100; }
+.gv-num-gray { background: #f2f2f7; color: #6e6e73; }
+.gv-num-blue { background: #e3f2fd; color: #1565c0; }
+.gv-num-green { background: #e8f5e9; color: #2e7d32; }
+
+.gv-info { flex: 1; min-width: 0; }
+.gv-line1 {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+}
+.gv-name {
+    font-size: 14px; font-weight: 500; color: #1d1d1f;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.gv-time { font-size: 12px; color: #6e6e73; flex-shrink: 0; }
+.gv-line2 {
+    font-size: 12px; color: #6e6e73;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    margin-top: 1px;
+}
+.gv-badge-red { color: #c62828; font-weight: 500; }
+.gv-badge-orange { color: #e65100; font-weight: 500; }
+
+.gv-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.gv-iconbtn {
+    width: 38px; height: 38px;
+    border-radius: 10px;
+    border: 0.5px solid rgba(0,0,0,0.18);
+    background: #ffffff;
+    display: flex; align-items: center; justify-content: center;
+    color: #1d1d1f;
+    text-decoration: none !important;
+    transition: background 0.15s ease;
+}
+.gv-iconbtn:hover, .gv-iconbtn:active { background: #f5f5f7; }
+.gv-iconbtn-disabled { opacity: 0.3; pointer-events: none; }
+
+.gv-row-click {
+    flex: 1; min-width: 0;
+    display: flex; align-items: center; gap: 10px;
+    cursor: pointer;
+    text-decoration: none !important;
+    color: inherit !important;
+}
+
+.gv-empty {
+    text-align: center;
+    color: #86868b;
+    font-size: 13px;
+    padding: 24px 8px;
+}
+
+/* Nascondi il "Made with Streamlit" footer */
+footer, #MainMenu, [data-testid="stDecoration"] { visibility: hidden !important; }
+</style>
+""", unsafe_allow_html=True)
+
 # --- FUNZIONI PER PERSISTENZA SESSIONE ---
 def generate_session_token(user_id, email):
     """Genera un token di sessione sicuro"""
@@ -3283,7 +3540,9 @@ def main_app():
                 
                 st.divider()
                 
-                # === LISTA TAPPE ===
+                # === LISTA TAPPE — STILE MINIMAL (Alternativa A) ===
+                # Ogni riga: numero colorato · nome/ora · indirizzo/km/ritardo · [Naviga] [Chiama]
+                # Il tap sul nome apre il form di registrazione visita
                 for i, t in enumerate(tappe_oggi, 1):
                     visitato = t['nome_cliente'] in st.session_state.visitati_oggi
                     
@@ -3294,90 +3553,122 @@ def main_app():
                         st.session_state.cliente_report_aperto = None
                     
                     if visitato:
-                        # --- VISITATO (compatto) ---
-                        with st.container(border=True):
-                            st.markdown(f"""
-                            <div style="background: linear-gradient(90deg, #d4edda 0%, #c3e6cb 100%); 
-                                        padding: 8px 12px; border-radius: 8px; border-left: 4px solid #28a745;
-                                        display:flex; align-items:center; justify-content:space-between;">
-                                <span style="font-size: 14px; text-decoration: line-through; color: #155724;">
-                                    ✅ {i}. {t['nome_cliente']}
-                                </span>
-                                <span style="color: #155724; font-weight: bold; font-size:12px;">VISITATO</span>
-                            </div>
-                            """, unsafe_allow_html=True)
+                        # --- VISITATO (riga compatta verde) ---
+                        st.markdown(f"""
+<div style="display:flex;align-items:center;gap:10px;padding:11px 12px;margin:6px 0;
+            background:#f0f9f3;border:0.5px solid #c8e6c9;border-radius:10px;">
+  <div style="width:26px;height:26px;border-radius:50%;background:#2e7d32;color:#fff;
+              display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:500;flex-shrink:0;">✓</div>
+  <div style="flex:1;min-width:0;font-size:14px;color:#1b5e20;
+              white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+    {i}. {t['nome_cliente']}
+  </div>
+  <div style="font-size:11px;color:#2e7d32;font-weight:500;flex-shrink:0;">VISITATO</div>
+</div>
+""", unsafe_allow_html=True)
                     else:
-                        # --- DA VISITARE ---
-                        with st.container(border=True):
-                            form_aperto = st.session_state.cliente_report_aperto == t['id']
+                        form_aperto = st.session_state.cliente_report_aperto == t['id']
+                        
+                        if not form_aperto:
+                            # --- DA VISITARE — RIGA MINIMAL ---
+                            ritardo = t.get('ritardo', 0)
+                            urgenza_score = t.get('urgenza', 0)
                             
-                            if not form_aperto:
-                                # Badge urgenza
-                                ritardo = t.get('ritardo', 0)
-                                urgenza_score = t.get('urgenza', 0)
-                                
-                                if ritardo == 999 or urgenza_score >= 80:
-                                    urgenza_badge = "🔴"
-                                elif ritardo >= 7 or urgenza_score >= 50:
-                                    urgenza_badge = "🟠"
-                                elif ritardo >= 0 or urgenza_score >= 30:
-                                    urgenza_badge = "🟡"
-                                else:
-                                    urgenza_badge = "🟢"
-                                
-                                # Info cliente — riga unica compatta
-                                st.markdown(f"**{t['tipo_tappa'].split()[0]} {i}. {t['nome_cliente']}** — ⏰ {t['ora_arrivo']} · {urgenza_badge} {ritardo:+d}gg · {t.get('distanza_km', 0)}km")
-                                
-                                if t.get('indirizzo'):
-                                    st.caption(f"📍 {t['indirizzo']}")
-                                
-                                # Promemoria
-                                if cliente_row is not None and pd.notnull(cliente_row.get('promemoria')) and str(cliente_row.get('promemoria')).strip():
-                                    st.warning(f"📝 **Promemoria:** {cliente_row['promemoria']}")
-                                
-                                # === PULSANTE VISITA ===
-                                if st.button("✅ Registra Visita", key=f"visita_{t['id']}", type="primary", use_container_width=True):
+                            # Classe numero colorato per urgenza
+                            if ritardo == 999 or urgenza_score >= 80:
+                                num_class = "gv-num-red"
+                                badge_class = "gv-badge-red"
+                            elif ritardo >= 7 or urgenza_score >= 50:
+                                num_class = "gv-num-orange"
+                                badge_class = "gv-badge-orange"
+                            elif ritardo >= 0 or urgenza_score >= 30:
+                                num_class = "gv-num-orange"
+                                badge_class = "gv-badge-orange"
+                            else:
+                                num_class = "gv-num-gray"
+                                badge_class = ""
+                            
+                            # Tipo tappa: appuntamento fisso?
+                            is_appuntamento = "APPUNTAMENTO" in t.get('tipo_tappa', '').upper()
+                            if is_appuntamento:
+                                num_class = "gv-num-blue"
+                            
+                            # Link azioni (sempre HTML, rendering istantaneo)
+                            nav_url = f"https://www.google.com/maps/dir/?api=1&destination={t['latitude']},{t['longitude']}"
+                            cell_val = str(t.get('cellulare', '')).strip()
+                            
+                            # Ritardo testuale
+                            if ritardo == 999:
+                                ritardo_html = '<span class="gv-badge-red"> · mai visitato</span>'
+                            elif ritardo > 0:
+                                ritardo_html = f'<span class="{badge_class}"> · +{ritardo}gg</span>'
+                            elif ritardo == 0:
+                                ritardo_html = f'<span class="{badge_class}"> · oggi</span>'
+                            else:
+                                ritardo_html = ''
+                            
+                            # Indirizzo + km (compatto)
+                            info_parts = []
+                            if t.get('indirizzo'):
+                                ind_short = t['indirizzo'][:28] + '..' if len(t['indirizzo']) > 28 else t['indirizzo']
+                                info_parts.append(ind_short)
+                            if t.get('distanza_km', 0) > 0:
+                                info_parts.append(f"{t['distanza_km']:.1f} km")
+                            info_text = ' · '.join(info_parts)
+                            
+                            # Bottone Chiama (o disabilitato se non c'è numero)
+                            if cell_val and cell_val.lower() not in ('nan', 'none', ''):
+                                chiama_html = f'<a href="tel:{cell_val}" class="gv-iconbtn" title="Chiama"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></a>'
+                            else:
+                                chiama_html = '<span class="gv-iconbtn gv-iconbtn-disabled" title="Nessun numero"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></span>'
+                            
+                            # Riga HTML completa (nome escapato per sicurezza)
+                            nome_safe = t['nome_cliente'].replace('<', '&lt;').replace('>', '&gt;')
+                            info_safe = info_text.replace('<', '&lt;').replace('>', '&gt;')
+                            
+                            st.markdown(f"""
+<div class="gv-row">
+  <div class="gv-num {num_class}">{i}</div>
+  <div class="gv-info">
+    <div class="gv-line1">
+      <div class="gv-name">{nome_safe}</div>
+      <div class="gv-time">{t.get('ora_arrivo', '--:--')}</div>
+    </div>
+    <div class="gv-line2">{info_safe}{ritardo_html}</div>
+  </div>
+  <div class="gv-actions">
+    <a href="{nav_url}" target="_blank" class="gv-iconbtn" title="Naviga">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>
+    </a>
+    {chiama_html}
+  </div>
+</div>
+""", unsafe_allow_html=True)
+                            
+                            # Promemoria (se presente)
+                            if cliente_row is not None and pd.notnull(cliente_row.get('promemoria')) and str(cliente_row.get('promemoria')).strip():
+                                st.markdown(f"""
+<div style="margin:-2px 0 8px 46px;padding:8px 12px;background:#fff8e1;border-radius:8px;
+            font-size:12px;color:#6d4c00;border-left:2px solid #ffb300;">
+  📝 {str(cliente_row['promemoria']).replace('<','&lt;').replace('>','&gt;')}
+</div>
+""", unsafe_allow_html=True)
+                            
+                            # Bottoni azione in Streamlit (serve rerun per aprire form/scheda)
+                            btn_c1, btn_c2 = st.columns(2)
+                            with btn_c1:
+                                if st.button("✓ Registra visita", key=f"visita_{t['id']}", type="primary", use_container_width=True):
                                     st.session_state.cliente_report_aperto = t['id']
                                     st.rerun()
-                                
-                                # === 4 PULSANTI AZIONE IN LINEA (HTML flex = sempre orizzontali su iPhone) ===
-                                nav_url = f"https://www.google.com/maps/dir/?api=1&destination={t['latitude']},{t['longitude']}"
-                                cell_val = str(t.get('cellulare', '')).strip()
-                                tel_url = f"tel:{cell_val}" if cell_val else ""
-                                mail_val = ""
-                                if cliente_row is not None and pd.notnull(cliente_row.get('mail')):
-                                    mail_val = str(cliente_row.get('mail', '')).strip()
-                                mail_url = f"mailto:{mail_val}" if mail_val else ""
-                                
-                                btn_style = (
-                                    "display:inline-flex;align-items:center;justify-content:center;"
-                                    "padding:8px 4px;border-radius:8px;text-decoration:none;"
-                                    "font-size:14px;font-weight:500;flex:1;text-align:center;"
-                                    "min-height:38px;border:1px solid #ddd;color:#333;background:#f8f9fa;"
-                                )
-                                btn_disabled = btn_style + "opacity:0.35;pointer-events:none;color:#999;"
-                                
-                                html_btns = f'<div style="display:flex;gap:6px;margin:4px 0 2px 0;">'
-                                html_btns += f'<a href="{nav_url}" target="_blank" style="{btn_style}">🚗 Vai</a>'
-                                if tel_url:
-                                    html_btns += f'<a href="{tel_url}" style="{btn_style}">📱 Chiama</a>'
-                                else:
-                                    html_btns += f'<span style="{btn_disabled}">📱 Chiama</span>'
-                                if mail_url:
-                                    html_btns += f'<a href="{mail_url}" style="{btn_style}">📧 Mail</a>'
-                                else:
-                                    html_btns += f'<span style="{btn_disabled}">📧 Mail</span>'
-                                html_btns += '</div>'
-                                st.markdown(html_btns, unsafe_allow_html=True)
-                                
-                                # Scheda cliente (richiede Streamlit per navigazione)
-                                if st.button("👤 Scheda cliente", key=f"scheda_{t['id']}", use_container_width=True):
+                            with btn_c2:
+                                if st.button("👤 Scheda", key=f"scheda_{t['id']}", use_container_width=True):
                                     st.session_state.cliente_selezionato = t['nome_cliente']
                                     st.session_state.active_tab = "👤 Anagrafica"
                                     st.rerun()
-                            
-                            else:
-                                # FORM REPORT APERTO
+                        
+                        else:
+                            # FORM REPORT APERTO — lascio invariato il flusso esistente
+                            with st.container(border=True):
                                 st.markdown(f"### 📝 Report Visita: {t['nome_cliente']}")
                                 st.caption(f"📍 {t.get('indirizzo', '')}")
                                 
