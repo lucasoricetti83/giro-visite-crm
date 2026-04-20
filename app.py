@@ -3769,20 +3769,27 @@ def main_app():
                         actions_html = f'{nav_btn}{chiama_btn}'
                     
                     # Nome cliente: link che preserva i query params esistenti (sessione)
-                    # Invece di sovrascrivere l'URL con "?open_cliente=...", usiamo onclick JS
-                    # che costruisce la URL mantenendo uid/email/token della sessione.
+                    # Usiamo onclick JS che aggiunge solo open_cliente agli altri params.
                     import urllib.parse as _urlp
                     nome_js_safe = t['nome_cliente'].replace('\\', '\\\\').replace("'", "\\'").replace('"', '\\"')
                     nome_safe = t['nome_cliente'].replace('<', '&lt;').replace('>', '&gt;')
                     time_str = t.get('ora_arrivo', '--:--')
                     
-                    # JS: aggiunge/sostituisce solo il param open_cliente nella URL corrente,
-                    # preservando tutti gli altri (uid, email, token, ecc.), poi ricarica.
+                    # JS robusto: usa window.top per salire al di fuori di qualsiasi iframe,
+                    # fallback a window.location se necessario. Aggiunge/sostituisce solo
+                    # 'open_cliente' preservando tutti gli altri params (uid, email, token...).
                     onclick_js = (
-                        "event.preventDefault();"
-                        "var u=new URL(window.parent.location.href);"
+                        "event.preventDefault();event.stopPropagation();"
+                        "try{"
+                        "var w=window.top||window.parent||window;"
+                        "var u=new URL(w.location.href);"
                         f"u.searchParams.set('open_cliente','{nome_js_safe}');"
-                        "window.parent.location.href=u.toString();"
+                        "w.location.href=u.toString();"
+                        "}catch(e){"
+                        "var u2=new URL(window.location.href);"
+                        f"u2.searchParams.set('open_cliente','{nome_js_safe}');"
+                        "window.location.href=u2.toString();"
+                        "}"
                         "return false;"
                     )
                     
