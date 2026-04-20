@@ -3768,19 +3768,30 @@ def main_app():
                             )
                         actions_html = f'{nav_btn}{chiama_btn}'
                     
-                    # Nome cliente: LINK HTML che punta a ?open_cliente=NOME
-                    # L'handler in main_app() legge il param e reindirizza all'Anagrafica
+                    # Nome cliente: link che preserva i query params esistenti (sessione)
+                    # Invece di sovrascrivere l'URL con "?open_cliente=...", usiamo onclick JS
+                    # che costruisce la URL mantenendo uid/email/token della sessione.
                     import urllib.parse as _urlp
-                    nome_url_param = _urlp.quote_plus(t['nome_cliente'])
+                    nome_js_safe = t['nome_cliente'].replace('\\', '\\\\').replace("'", "\\'").replace('"', '\\"')
                     nome_safe = t['nome_cliente'].replace('<', '&lt;').replace('>', '&gt;')
                     time_str = t.get('ora_arrivo', '--:--')
+                    
+                    # JS: aggiunge/sostituisce solo il param open_cliente nella URL corrente,
+                    # preservando tutti gli altri (uid, email, token, ecc.), poi ricarica.
+                    onclick_js = (
+                        "event.preventDefault();"
+                        "var u=new URL(window.parent.location.href);"
+                        f"u.searchParams.set('open_cliente','{nome_js_safe}');"
+                        "window.parent.location.href=u.toString();"
+                        "return false;"
+                    )
                     
                     row_class = "gv-taprow gv-taprow-done" if visitato else "gv-taprow"
                     
                     # UNICA RIGA HTML (tutto insieme, compatto, tutto a sinistra tranne le azioni)
                     row_html = (
                         f'<div class="{row_class}">'
-                        f'  <a href="?open_cliente={nome_url_param}" class="gv-taprow-main" target="_self">'
+                        f'  <a href="#" onclick="{onclick_js}" class="gv-taprow-main">'
                         f'    <div class="gv-num-small {num_class}">{i}</div>'
                         f'    <div class="gv-taprow-text">'
                         f'      <div class="gv-taprow-name">{nome_safe}</div>'
