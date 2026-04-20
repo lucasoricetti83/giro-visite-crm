@@ -3768,37 +3768,30 @@ def main_app():
                             )
                         actions_html = f'{nav_btn}{chiama_btn}'
                     
-                    # Nome cliente: link che preserva i query params esistenti (sessione)
-                    # Usiamo onclick JS che aggiunge solo open_cliente agli altri params.
+                    # Nome cliente: link HTML diretto (niente JS) che preserva la sessione.
+                    # Costruiamo la URL server-side includendo TUTTI i query params attuali
+                    # (uid, email, token, ecc.) più il nuovo open_cliente. Il browser naviga
+                    # nativamente → stesso pattern che funziona per la freccia "Naviga".
                     import urllib.parse as _urlp
-                    nome_js_safe = t['nome_cliente'].replace('\\', '\\\\').replace("'", "\\'").replace('"', '\\"')
                     nome_safe = t['nome_cliente'].replace('<', '&lt;').replace('>', '&gt;')
                     time_str = t.get('ora_arrivo', '--:--')
                     
-                    # JS robusto: usa window.top per salire al di fuori di qualsiasi iframe,
-                    # fallback a window.location se necessario. Aggiunge/sostituisce solo
-                    # 'open_cliente' preservando tutti gli altri params (uid, email, token...).
-                    onclick_js = (
-                        "event.preventDefault();event.stopPropagation();"
-                        "try{"
-                        "var w=window.top||window.parent||window;"
-                        "var u=new URL(w.location.href);"
-                        f"u.searchParams.set('open_cliente','{nome_js_safe}');"
-                        "w.location.href=u.toString();"
-                        "}catch(e){"
-                        "var u2=new URL(window.location.href);"
-                        f"u2.searchParams.set('open_cliente','{nome_js_safe}');"
-                        "window.location.href=u2.toString();"
-                        "}"
-                        "return false;"
-                    )
+                    # Leggi i query params attuali e costruisci la query string
+                    try:
+                        _qp = dict(st.query_params)
+                    except Exception:
+                        _qp = {}
+                    _qp['open_cliente'] = t['nome_cliente']
+                    # Serializza in query string (gestisce spazi, accenti, ecc.)
+                    _query_string = _urlp.urlencode(_qp, doseq=True)
+                    scheda_url = f"?{_query_string}"
                     
                     row_class = "gv-taprow gv-taprow-done" if visitato else "gv-taprow"
                     
-                    # UNICA RIGA HTML (tutto insieme, compatto, tutto a sinistra tranne le azioni)
+                    # UNICA RIGA HTML (link diretto per il nome, target _self = stessa tab)
                     row_html = (
                         f'<div class="{row_class}">'
-                        f'  <a href="#" onclick="{onclick_js}" class="gv-taprow-main">'
+                        f'  <a href="{scheda_url}" class="gv-taprow-main" target="_self">'
                         f'    <div class="gv-num-small {num_class}">{i}</div>'
                         f'    <div class="gv-taprow-text">'
                         f'      <div class="gv-taprow-name">{nome_safe}</div>'
