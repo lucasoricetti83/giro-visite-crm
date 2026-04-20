@@ -3482,13 +3482,64 @@ def main_app():
         
         st.divider()
         
-        # Mostra banner scambio in corso (se attivo)
+        # Mostra banner scambio in corso (se attivo) — con CALENDARIO per selezionare il giorno di destinazione
         if st.session_state.giorno_da_scambiare:
-            c1, c2 = st.columns([4, 1])
-            c1.info(f"🔄 Seleziona un altro giorno per scambiare con **{st.session_state.giorno_da_scambiare.strftime('%a %d/%m')}**")
-            if c2.button("❌ Annulla"):
-                st.session_state.giorno_da_scambiare = None
-                st.rerun()
+            with st.container(border=True):
+                st.info(f"🔄 Stai scambiando: **{['Lun','Mar','Mer','Gio','Ven','Sab','Dom'][st.session_state.giorno_da_scambiare.weekday()]} {st.session_state.giorno_da_scambiare.strftime('%d/%m/%Y')}**")
+                
+                # Calcola default: primo giorno lavorativo diverso nella settimana corrente
+                default_target = None
+                for _g_idx in giorni_attivi:
+                    _cand = lunedi_selezionato + timedelta(days=_g_idx)
+                    if _cand != st.session_state.giorno_da_scambiare:
+                        default_target = _cand
+                        break
+                if default_target is None:
+                    default_target = st.session_state.giorno_da_scambiare + timedelta(days=1)
+                    if default_target > domenica_selezionata:
+                        default_target = lunedi_selezionato
+                
+                col_cal, col_conf, col_ann = st.columns([2, 1, 1])
+                
+                with col_cal:
+                    giorno_target = st.date_input(
+                        "📅 Seleziona dal calendario il giorno con cui scambiare:",
+                        value=default_target,
+                        min_value=lunedi_selezionato,
+                        max_value=domenica_selezionata,
+                        key=f"calendario_scambio_{st.session_state.giorno_da_scambiare.isoformat()}",
+                        format="DD/MM/YYYY",
+                        help="Puoi scegliere qualsiasi giorno della settimana corrente"
+                    )
+                
+                with col_conf:
+                    st.write("")  # spacer per allineare verticalmente
+                    st.write("")
+                    if st.button("✅ Conferma scambio", type="primary", use_container_width=True, key="btn_conferma_scambio_cal"):
+                        if giorno_target == st.session_state.giorno_da_scambiare:
+                            st.warning("⚠️ Devi selezionare un giorno diverso da quello selezionato!")
+                        else:
+                            idx1 = st.session_state.giorno_da_scambiare.weekday()
+                            idx2 = giorno_target.weekday()
+                            chiave_settimana_swap = lunedi_selezionato.isoformat()
+                            if chiave_settimana_swap not in st.session_state.scambi_giorni:
+                                st.session_state.scambi_giorni[chiave_settimana_swap] = []
+                            st.session_state.scambi_giorni[chiave_settimana_swap].append((idx1, idx2))
+                            saved = save_scambi_giorni(st.session_state.scambi_giorni)
+                            st.session_state.giorno_da_scambiare = None
+                            if saved:
+                                st.toast(f"✅ {giorni_nomi_full[idx1][:3]} ↔️ {giorni_nomi_full[idx2][:3]} — Scambio salvato!", icon="✅")
+                            else:
+                                st.toast(f"🔄 {giorni_nomi_full[idx1][:3]} ↔️ {giorni_nomi_full[idx2][:3]} — ⚠️ Non salvato (aggiungi colonna scambi_json in Supabase)", icon="⚠️")
+                            time_module.sleep(0.4)
+                            st.rerun()
+                
+                with col_ann:
+                    st.write("")  # spacer
+                    st.write("")
+                    if st.button("❌ Annulla", use_container_width=True, key="btn_annulla_scambio_cal"):
+                        st.session_state.giorno_da_scambiare = None
+                        st.rerun()
         
         # CALCOLA AGENDA OTTIMIZZATA (escludendo giorni in ferie singoli)
         agenda_settimana = calcola_agenda_settimanale(
@@ -3595,27 +3646,19 @@ def main_app():
                     c1, c2 = st.columns(2)
                     with c1:
                         if st.session_state.giorno_da_scambiare is None:
-                            if st.button("🔄", key=f"swap_{data_giorno}", help="Scambia", use_container_width=True):
+                            # Nessuno scambio in corso: click per avviare lo scambio
+                            if st.button("🔄", key=f"swap_{data_giorno}", help="Scambia questo giorno", use_container_width=True):
                                 st.session_state.giorno_da_scambiare = data_giorno
                                 st.rerun()
                         elif st.session_state.giorno_da_scambiare == data_giorno:
-                            st.button("✅", key=f"swap_{data_giorno}", disabled=True, use_container_width=True)
+                            # Questo è il giorno selezionato: mostra stato
+                            st.button("✅", key=f"swap_{data_giorno}", disabled=True, use_container_width=True,
+                                     help="Giorno selezionato per lo scambio — usa il calendario sopra per scegliere con quale giorno scambiare")
                         else:
-                            if st.button("↔️", key=f"swap_{data_giorno}", type="primary", use_container_width=True,
-                                        help=f"Scambia con {st.session_state.giorno_da_scambiare.strftime('%d/%m')}"):
-                                idx1 = st.session_state.giorno_da_scambiare.weekday()
-                                idx2 = data_giorno.weekday()
-                                chiave_settimana = lunedi_selezionato.isoformat()
-                                if chiave_settimana not in st.session_state.scambi_giorni:
-                                    st.session_state.scambi_giorni[chiave_settimana] = []
-                                st.session_state.scambi_giorni[chiave_settimana].append((idx1, idx2))
-                                saved = save_scambi_giorni(st.session_state.scambi_giorni)
-                                st.session_state.giorno_da_scambiare = None
-                                if saved:
-                                    st.toast(f"✅ {giorni_nomi_full[idx1][:3]} ↔️ {giorni_nomi_full[idx2][:3]} — Salvato!", icon="✅")
-                                else:
-                                    st.toast(f"🔄 {giorni_nomi_full[idx1][:3]} ↔️ {giorni_nomi_full[idx2][:3]} — ⚠️ Non salvato (aggiungi colonna scambi_json in Supabase)", icon="⚠️")
-                                time_module.sleep(0.3)
+                            # Un altro giorno è già in scambio: permetti di cambiare il giorno sorgente
+                            if st.button("🔁", key=f"swap_{data_giorno}", use_container_width=True,
+                                        help=f"Cambia giorno sorgente (sostituisce {st.session_state.giorno_da_scambiare.strftime('%d/%m')})"):
+                                st.session_state.giorno_da_scambiare = data_giorno
                                 st.rerun()
                     with c2:
                         if tappe_giorno and not is_ferie:
@@ -3973,6 +4016,14 @@ def main_app():
             if not geo_lat:
                 render_gps_button("mappa_gps_btn")
             
+            # --- BARRA DI RICERCA CLIENTE ---
+            search_cliente = st.text_input(
+                "🔍 Cerca cliente sulla mappa:",
+                value=st.session_state.get("search_mappa", ""),
+                key="search_mappa",
+                placeholder="Digita nome cliente, città o indirizzo..."
+            )
+            
             # --- FILTRI ---
             col_f1, col_f2, col_f3, col_f4 = st.columns(4)
             with col_f1:
@@ -3985,9 +4036,20 @@ def main_app():
                 citta_list = [c for c in citta_list if c.strip()]
                 filtro_citta = st.selectbox("🏙️ Città", ["Tutte"] + citta_list, key="filtro_citta_mappa")
             with col_f4:
-                usa_raggio = st.checkbox("🎯 Filtra per raggio", value=False, key="usa_raggio_mappa")
-                if usa_raggio:
-                    raggio_km = st.slider("Km", 5, 200, 50, key="raggio_mappa")
+                # FILTRO "VICINO A ME" — preset con distanze predefinite
+                opzioni_raggio = ["Tutti", "5 km", "10 km", "25 km", "50 km", "100 km"]
+                filtro_vicinanza = st.selectbox(
+                    "📍 Vicino a me",
+                    opzioni_raggio,
+                    key="filtro_vicinanza_mappa",
+                    help="Mostra solo i clienti entro questa distanza dalla tua posizione attuale (GPS)"
+                )
+                usa_raggio = filtro_vicinanza != "Tutti"
+                raggio_km = int(filtro_vicinanza.split()[0]) if usa_raggio else 0
+            
+            # Avvisa se il filtro vicinanza è attivo ma non c'è GPS
+            if usa_raggio and not geo_lat:
+                st.warning("⚠️ **GPS non attivo**: il filtro userà la tua sede come riferimento. Per usare la posizione reale, premi 📍 **Rileva Posizione GPS** sopra.")
             
             # --- Filtra clienti ---
             df_filtered = df.copy()
@@ -4032,6 +4094,16 @@ def main_app():
             if filtro_citta != "Tutte":
                 df_filtered = df_filtered[df_filtered['citta'] == filtro_citta]
             
+            # FILTRO RICERCA TESTUALE (nome cliente, città, indirizzo)
+            if search_cliente and search_cliente.strip():
+                q = search_cliente.strip().lower()
+                mask = (
+                    df_filtered['nome_cliente'].astype(str).str.lower().str.contains(q, na=False) |
+                    df_filtered.get('citta', pd.Series(dtype=str)).astype(str).str.lower().str.contains(q, na=False) |
+                    df_filtered.get('indirizzo', pd.Series(dtype=str)).astype(str).str.lower().str.contains(q, na=False)
+                )
+                df_filtered = df_filtered[mask]
+            
             # Calcola distanze dalla posizione
             pos_lat = geo_lat or float(config.get('lat_base', 39.22))
             pos_lon = geo_lon or float(config.get('lon_base', 9.12))
@@ -4047,10 +4119,17 @@ def main_app():
             df_filtered = df_filtered.sort_values('distanza_km')
             
             # Info posizione
+            info_parts_header = []
             if geo_lat:
-                st.caption(f"📍 Posizione GPS rilevata · **{len(df_filtered)} clienti**")
+                info_parts_header.append("📍 Posizione GPS rilevata")
             else:
-                st.caption(f"🏠 Posizione base · **{len(df_filtered)} clienti** · Premi 📍 per usare il GPS")
+                info_parts_header.append("🏠 Posizione base (GPS non attivo)")
+            info_parts_header.append(f"**{len(df_filtered)} clienti**")
+            if search_cliente and search_cliente.strip():
+                info_parts_header.append(f"🔍 ricerca: «{search_cliente.strip()}»")
+            if usa_raggio:
+                info_parts_header.append(f"📍 entro {raggio_km} km")
+            st.caption(" · ".join(info_parts_header))
             
             if not df_filtered.empty:
                 # Costruisci mappa
@@ -4083,14 +4162,28 @@ def main_app():
                         color='blue', fill=True, fillOpacity=0.05, weight=1
                     ).add_to(m)
                 
+                # Prepara termine di ricerca per evidenziare match
+                search_q = (search_cliente.strip().lower() if search_cliente else "")
+                search_matches_points = []  # raccoglie i punti dei match per centrare la mappa
+                
                 # Marker clienti con colore per urgenza
                 for _, row in df_filtered.iterrows():
                     lat_c = row['latitude']
                     lon_c = row['longitude']
                     nome_c = row['nome_cliente']
                     ind_c = row.get('indirizzo', '') or ''
+                    citta_c = row.get('citta', '') or ''
                     dist_c = row.get('distanza_km', 0)
                     visitare = str(row.get('visitare', 'SI')).upper()
+                    
+                    # Verifica se questo cliente è un match della ricerca
+                    is_search_match = False
+                    if search_q:
+                        if (search_q in str(nome_c).lower() or
+                            search_q in str(citta_c).lower() or
+                            search_q in str(ind_c).lower()):
+                            is_search_match = True
+                            search_matches_points.append([lat_c, lon_c])
                     
                     # Ritardo e colore marker
                     ultima = row.get('ultima_visita')
@@ -4121,22 +4214,38 @@ def main_app():
                             color = 'green'
                     
                     popup_html = f"""<div style="min-width:180px;font-size:13px;">
-                    <b>{nome_c}</b><br>
+                    <b>{'⭐ ' if is_search_match else ''}{nome_c}</b><br>
                     📍 {ind_c}<br>
                     🚗 {dist_c:.1f} km da te<br>
                     {badge} {ritardo_str}
                     </div>"""
                     
-                    folium.Marker(
-                        [lat_c, lon_c],
-                        popup=folium.Popup(popup_html, max_width=250),
-                        tooltip=f"{nome_c} ({dist_c:.1f}km)",
-                        icon=folium.Icon(color=color, icon='briefcase', prefix='fa')
-                    ).add_to(m)
+                    # Se è un match della ricerca: icona "stella" dorata per evidenziarlo
+                    if is_search_match:
+                        folium.Marker(
+                            [lat_c, lon_c],
+                            popup=folium.Popup(popup_html, max_width=250),
+                            tooltip=f"⭐ {nome_c} ({dist_c:.1f}km)",
+                            icon=folium.Icon(color='purple', icon='star', prefix='fa')
+                        ).add_to(m)
+                    else:
+                        folium.Marker(
+                            [lat_c, lon_c],
+                            popup=folium.Popup(popup_html, max_width=250),
+                            tooltip=f"{nome_c} ({dist_c:.1f}km)",
+                            icon=folium.Icon(color=color, icon='briefcase', prefix='fa')
+                        ).add_to(m)
                     all_client_points.append([lat_c, lon_c])
                 
-                # Fit bounds per mostrare tutti i clienti
-                if len(all_client_points) >= 2:
+                # Fit bounds: se c'è una ricerca attiva, centra sui match; altrimenti su tutti i clienti
+                if search_matches_points:
+                    if len(search_matches_points) == 1:
+                        # Un solo match: centra e zooma
+                        m.location = search_matches_points[0]
+                        m.zoom_start = 15
+                    else:
+                        m.fit_bounds(search_matches_points, padding=[50, 50])
+                elif len(all_client_points) >= 2:
                     m.fit_bounds(all_client_points, padding=[30, 30])
                 
                 # Mostra mappa e cattura click
