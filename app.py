@@ -291,33 +291,111 @@ hr {
     padding: 24px 8px;
 }
 
-/* === BOTTONE NOME CLIENTE (Giro Oggi) ===
-   Il marker .gv-namebtn precede immediatamente il bottone Streamlit del nome cliente.
-   Lo stilizziamo per sembrare testo/link, non un bottone classico. */
-.gv-namebtn + div .stButton > button,
-.gv-namebtn ~ div .stButton > button {
-    min-height: 34px !important;
-    border: none !important;
-    background: transparent !important;
-    padding: 4px 6px !important;
-    font-size: 15px !important;
-    font-weight: 500 !important;
-    text-align: left !important;
-    justify-content: flex-start !important;
-    color: var(--text-color) !important;
-    box-shadow: none !important;
+/* === RIGA CLIENTE COMPATTA (Giro Oggi) — layout flex HTML puro ===
+   Ogni riga:
+   [num piccolo] [nome + info] ───────── [Naviga] [Chiama]
+   - Tutto il blocco sinistra (numero + nome + info) è un link che apre la scheda
+   - I bottoni a destra sono link separati (naviga/chiama) che non propagano il tap
+*/
+.gv-taprow {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 8px;
+    border-bottom: 0.5px solid rgba(128,128,128,0.18);
+    min-height: 52px;
 }
-.gv-namebtn + div .stButton > button:hover,
-.gv-namebtn ~ div .stButton > button:hover {
-    background: rgba(33,150,243,0.12) !important;
-    color: #2196f3 !important;
-    border: none !important;
+.gv-taprow:last-of-type { border-bottom: none; }
+
+.gv-taprow-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    text-decoration: none !important;
+    color: inherit !important;
+    padding: 4px 2px;
+    border-radius: 8px;
+    transition: background 0.12s ease;
 }
-.gv-namebtn + div .stButton > button p,
-.gv-namebtn ~ div .stButton > button p {
-    text-align: left !important;
-    font-weight: 500 !important;
-    margin: 0 !important;
+.gv-taprow-main:hover, .gv-taprow-main:active {
+    background: rgba(128,128,128,0.08);
+}
+
+/* Numero PICCOLO accanto al nome */
+.gv-num-small {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 500;
+    flex-shrink: 0;
+}
+/* Stesse palette del .gv-num ma applicate a .gv-num-small */
+.gv-num-small.gv-num-red { background: rgba(244,67,54,0.18); color: #f44336; }
+.gv-num-small.gv-num-orange { background: rgba(255,152,0,0.18); color: #ff9800; }
+.gv-num-small.gv-num-gray { background: rgba(128,128,128,0.18); color: inherit; opacity: 0.85; }
+.gv-num-small.gv-num-blue { background: rgba(33,150,243,0.18); color: #2196f3; }
+.gv-num-small.gv-num-green { background: rgba(76,175,80,0.22); color: #4caf50; }
+
+.gv-taprow-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+.gv-taprow-name {
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--text-color);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: 1.2;
+}
+.gv-taprow-info {
+    font-size: 12px;
+    color: rgba(128,128,128,0.95);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: 1.2;
+}
+
+/* Riga visitata: nome barrato + opacità */
+.gv-taprow-done .gv-taprow-name {
+    text-decoration: line-through;
+    color: rgba(128,128,128,0.9);
+}
+.gv-taprow-done {
+    opacity: 0.75;
+}
+
+/* Azioni a destra: Naviga + Chiama */
+.gv-taprow-actions {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+    align-items: center;
+}
+
+/* Spunta grande (sostituisce Naviga+Chiama per cliente visitato) */
+.gv-check-big {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: #4caf50;
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    font-weight: 500;
 }
 
 /* Nascondi il "Made with Streamlit" footer */
@@ -3179,6 +3257,19 @@ def main_app():
         st.rerun()
         return
     
+    # === HANDLER: link HTML "apri scheda cliente" (usato dalla lista Giro Oggi) ===
+    # Un link <a href="?open_cliente=NOME"> dalla lista apre direttamente la scheda cliente.
+    # Evita bottoni Streamlit grossi per ogni cliente nella lista.
+    try:
+        open_cliente_param = st.query_params.get("open_cliente")
+        if open_cliente_param:
+            st.session_state.cliente_selezionato = open_cliente_param
+            st.session_state.active_tab = "👤 Anagrafica"
+            del st.query_params["open_cliente"]
+            st.rerun()
+    except Exception:
+        pass
+    
     # Refresh periodico della sessione (ogni 10 minuti circa)
     if 'last_session_check' not in st.session_state:
         st.session_state.last_session_check = datetime.now()
@@ -3593,20 +3684,23 @@ def main_app():
                 
                 st.divider()
                 
-                # === LISTA TAPPE — STILE MINIMAL ===
-                # - Tap sul NOME CLIENTE → apre la scheda (registrazione visita si fa da lì)
-                # - Naviga/Chiama come icone inline a destra (HTML, tap istantaneo)
-                # - Cliente visitato → spunta verde + testo barrato (no bottoni)
+                # === LISTA TAPPE — STILE MINIMAL (100% HTML, zero bottoni Streamlit) ===
+                # Layout di ogni riga:
+                # [numero piccolo] [nome cliente + riga info]  ────────  [Naviga] [Chiama]
+                # - Numero: piccolo pallino colorato a SINISTRA accanto al nome
+                # - Nome cliente: link testuale con underline leggero (tap → apre scheda via query_param)
+                # - Naviga/Chiama: icone 38x38 fissate a DESTRA
+                # - Cliente visitato: nome barrato + spunta verde a destra al posto dei bottoni
                 for i, t in enumerate(tappe_oggi, 1):
                     visitato = t['nome_cliente'] in st.session_state.visitati_oggi
                     
-                    # Dati completi del cliente
                     cliente_row = df[df['nome_cliente'] == t['nome_cliente']].iloc[0] if not df[df['nome_cliente'] == t['nome_cliente']].empty else None
                     
                     ritardo = t.get('ritardo', 0)
                     urgenza_score = t.get('urgenza', 0)
                     
                     # Classe numero colorato per urgenza
+                    badge_class = ""
                     if visitato:
                         num_class = "gv-num-green"
                     elif ritardo == 999 or urgenza_score >= 80:
@@ -3620,18 +3714,12 @@ def main_app():
                         badge_class = "gv-badge-orange"
                     else:
                         num_class = "gv-num-gray"
-                        badge_class = ""
                     
-                    # Tipo tappa: appuntamento fisso?
                     is_appuntamento = "APPUNTAMENTO" in t.get('tipo_tappa', '').upper()
                     if is_appuntamento and not visitato:
                         num_class = "gv-num-blue"
                     
-                    # Link azioni
-                    nav_url = f"https://www.google.com/maps/dir/?api=1&destination={t['latitude']},{t['longitude']}"
-                    cell_val = str(t.get('cellulare', '')).strip()
-                    
-                    # Indirizzo + km + ritardo (tutto nella riga sotto il nome)
+                    # Indirizzo + km
                     info_parts = []
                     if t.get('indirizzo'):
                         ind_short = t['indirizzo'][:32] + '..' if len(t['indirizzo']) > 32 else t['indirizzo']
@@ -3639,6 +3727,7 @@ def main_app():
                     if t.get('distanza_km', 0) > 0:
                         info_parts.append(f"{t['distanza_km']:.1f} km")
                     info_text = ' · '.join(info_parts)
+                    info_safe = info_text.replace('<', '&lt;').replace('>', '&gt;')
                     
                     # Ritardo inline
                     if visitato:
@@ -3652,96 +3741,67 @@ def main_app():
                     else:
                         ritardo_html = ''
                     
-                    # Azioni a destra (Naviga + Chiama, oppure spunta se visitato)
+                    # Link azioni
+                    nav_url = f"https://www.google.com/maps/dir/?api=1&destination={t['latitude']},{t['longitude']}"
+                    cell_val = str(t.get('cellulare', '')).strip()
+                    
+                    # Azioni a destra: Naviga+Chiama, oppure spunta se visitato
                     if visitato:
-                        # Mostra data visita se disponibile (da visitati_oggi non abbiamo la data precisa)
-                        actions_html = '<div class="gv-check">✓</div>'
+                        actions_html = '<div class="gv-check-big">✓</div>'
                     else:
-                        # Naviga
-                        nav_btn = f'<a href="{nav_url}" target="_blank" class="gv-iconbtn" title="Naviga"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg></a>'
-                        # Chiama (se numero disponibile)
+                        nav_btn = (
+                            f'<a href="{nav_url}" target="_blank" class="gv-iconbtn" title="Naviga" onclick="event.stopPropagation()">'
+                            f'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>'
+                            f'</a>'
+                        )
                         if cell_val and cell_val.lower() not in ('nan', 'none', ''):
-                            chiama_btn = f'<a href="tel:{cell_val}" class="gv-iconbtn" title="Chiama"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></a>'
+                            chiama_btn = (
+                                f'<a href="tel:{cell_val}" class="gv-iconbtn" title="Chiama" onclick="event.stopPropagation()">'
+                                f'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>'
+                                f'</a>'
+                            )
                         else:
-                            chiama_btn = '<span class="gv-iconbtn gv-iconbtn-disabled" title="Nessun numero"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></span>'
-                        actions_html = f'<div class="gv-actions">{nav_btn}{chiama_btn}</div>'
+                            chiama_btn = (
+                                '<span class="gv-iconbtn gv-iconbtn-disabled" title="Nessun numero">'
+                                '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>'
+                                '</span>'
+                            )
+                        actions_html = f'{nav_btn}{chiama_btn}'
                     
-                    row_class = "gv-row gv-row-done" if visitato else "gv-row"
-                    info_safe = info_text.replace('<', '&lt;').replace('>', '&gt;')
+                    # Nome cliente: LINK HTML che punta a ?open_cliente=NOME
+                    # L'handler in main_app() legge il param e reindirizza all'Anagrafica
+                    import urllib.parse as _urlp
+                    nome_url_param = _urlp.quote_plus(t['nome_cliente'])
+                    nome_safe = t['nome_cliente'].replace('<', '&lt;').replace('>', '&gt;')
+                    time_str = t.get('ora_arrivo', '--:--')
                     
-                    # Layout: numero + info (senza nome, il nome è un bottone Streamlit sopra) + azioni
-                    # Il nome è un bottone Streamlit (serve rerun per cambiare tab) — lo stilizziamo per sembrare testo
+                    row_class = "gv-taprow gv-taprow-done" if visitato else "gv-taprow"
                     
-                    # Stile per il bottone nome: nessun bordo, allineato a sinistra, testo medium
-                    nome_display = t['nome_cliente'] + (' ✓' if visitato else '')
+                    # UNICA RIGA HTML (tutto insieme, compatto, tutto a sinistra tranne le azioni)
+                    row_html = (
+                        f'<div class="{row_class}">'
+                        f'  <a href="?open_cliente={nome_url_param}" class="gv-taprow-main" target="_self">'
+                        f'    <div class="gv-num-small {num_class}">{i}</div>'
+                        f'    <div class="gv-taprow-text">'
+                        f'      <div class="gv-taprow-name">{nome_safe}</div>'
+                        f'      <div class="gv-taprow-info">⏰ {time_str} · {info_safe}{ritardo_html}</div>'
+                        f'    </div>'
+                        f'  </a>'
+                        f'  <div class="gv-taprow-actions">{actions_html}</div>'
+                        f'</div>'
+                    )
+                    st.markdown(row_html, unsafe_allow_html=True)
                     
-                    # Struttura: colonna stretta con numero | colonna larga con [nome-button + riga info html] | colonna stretta con azioni html
-                    # Invece uso un container HTML + sovrappongo il bottone con z-index: troppo complicato in Streamlit
-                    # Strategia semplice: bottone nome + riga HTML sottostante con info e azioni allineate
-                    
-                    # Rendering compatto a 3 colonne Streamlit
-                    col_num, col_mid, col_act = st.columns([0.08, 0.72, 0.20])
-                    
-                    with col_num:
-                        st.markdown(f"""
-<div style="display:flex;align-items:center;justify-content:center;height:56px;">
-  <div class="gv-num {num_class}">{i}</div>
-</div>
-""", unsafe_allow_html=True)
-                    
-                    with col_mid:
-                        # Marker per CSS "bottone nome cliente" (stile link-testo)
-                        st.markdown('<div class="gv-namebtn"></div>', unsafe_allow_html=True)
-                        # Nome cliente = bottone Streamlit (tap = apre scheda)
-                        btn_key = f"open_scheda_{t['id']}"
-                        if st.button(
-                            nome_display,
-                            key=btn_key,
-                            use_container_width=True,
-                            help="Apri scheda cliente"
-                        ):
-                            st.session_state.cliente_selezionato = t['nome_cliente']
-                            st.session_state.active_tab = "👤 Anagrafica"
-                            st.rerun()
-                        
-                        # Riga sotto il nome: ora + indirizzo + km + ritardo
-                        time_str = t.get('ora_arrivo', '--:--')
-                        st.markdown(f"""
-<div style="margin-top:-8px;padding:0 4px 4px 4px;font-size:12px;color:rgba(128,128,128,0.95);
-            white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-  ⏰ {time_str} · {info_safe}{ritardo_html}
-</div>
-""", unsafe_allow_html=True)
-                    
-                    with col_act:
-                        if visitato:
-                            st.markdown(f"""
-<div style="display:flex;align-items:center;justify-content:flex-end;height:56px;">
-  <div class="gv-check" style="width:32px;height:32px;font-size:18px;">✓</div>
-</div>
-""", unsafe_allow_html=True)
-                        else:
-                            st.markdown(f"""
-<div style="display:flex;align-items:center;justify-content:flex-end;height:56px;gap:4px;">
-  {nav_btn}
-  {chiama_btn}
-</div>
-""", unsafe_allow_html=True)
-                    
-                    # Promemoria (sotto la riga, se presente)
+                    # Promemoria (sotto la riga, se presente e non visitato)
                     if not visitato and cliente_row is not None and pd.notnull(cliente_row.get('promemoria')) and str(cliente_row.get('promemoria')).strip():
                         st.markdown(f"""
-<div style="margin:-4px 0 8px 40px;padding:8px 12px;background:rgba(255,179,0,0.12);border-radius:8px;
+<div style="margin:-4px 0 4px 40px;padding:8px 12px;background:rgba(255,179,0,0.12);border-radius:8px;
             font-size:12px;color:inherit;border-left:2px solid #ffb300;">
   📝 {str(cliente_row['promemoria']).replace('<','&lt;').replace('>','&gt;')}
 </div>
 """, unsafe_allow_html=True)
-                    
-                    # Separatore sottile
-                    st.markdown('<div style="height:1px;background:rgba(128,128,128,0.15);margin:4px 0;"></div>', unsafe_allow_html=True)
                 
-                # Rimuovo completamente il blocco vecchio (form aperto ora gestito in Anagrafica)
-                # Se il session_state ha cliente_report_aperto impostato, lo resetto (non serve più qui)
+                # Reset flag legacy se presente (il form report è stato rimosso)
                 if st.session_state.get('cliente_report_aperto'):
                     st.session_state.cliente_report_aperto = None
                 
