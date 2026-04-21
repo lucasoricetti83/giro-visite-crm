@@ -1381,6 +1381,11 @@ def save_scambi_giorni(scambi_list):
             }).execute()
         return True
     except Exception as e:
+        # Non nascondere l'errore: mostralo all'utente per diagnosticare
+        try:
+            st.warning(f"⚠️ Errore salvataggio scambi su Supabase: {e}")
+        except Exception:
+            pass
         return False
 
 def load_scambi_giorni():
@@ -4391,6 +4396,54 @@ def main_app():
                     if tappe_salvate:
                         idx_oggi = ora_italiana.weekday()
                         agenda_settimana[idx_oggi] = tappe_salvate
+        
+        # === 🔍 PANNELLO DIAGNOSTICO (apri per vedere stato scambi + duplicati) ===
+        with st.expander("🔍 Diagnostica scambi & duplicati", expanded=False):
+            st.markdown("**Stato `st.session_state.scambi_giorni`:**")
+            _sc_ss = st.session_state.get('scambi_giorni', [])
+            st.code(repr(_sc_ss), language='python')
+            
+            st.markdown("**Stato salvato su Supabase (da load_scambi_giorni):**")
+            try:
+                _sc_db = load_scambi_giorni()
+                st.code(repr(_sc_db), language='python')
+                if _sc_ss != _sc_db:
+                    st.warning("⚠️ La sessione e il database sono DIVERSI — possibile problema di save")
+                else:
+                    st.success("✅ Sessione e database sono allineati")
+            except Exception as e_diag:
+                st.error(f"Errore load: {e_diag}")
+            
+            st.markdown("**Agenda per ogni giorno della settimana visualizzata:**")
+            _giorni_nomi_diag = ["Lun","Mar","Mer","Gio","Ven","Sab","Dom"]
+            for g_idx in range(7):
+                data_diag = lunedi_selezionato + timedelta(days=g_idx)
+                tappe_diag = agenda_settimana.get(g_idx, [])
+                nomi_diag = [t.get('nome_cliente', t.get('nome', '?'))[:20] for t in tappe_diag]
+                st.text(f"{_giorni_nomi_diag[g_idx]} {data_diag.strftime('%d/%m')}: {len(tappe_diag)} tappe — {', '.join(nomi_diag) if nomi_diag else '(vuoto)'}")
+            
+            # Check duplicati nella settimana
+            all_nomi_week = []
+            for g_idx in range(7):
+                for t in agenda_settimana.get(g_idx, []):
+                    all_nomi_week.append(t.get('nome_cliente', t.get('nome', '?')))
+            _dup_counter = {}
+            for n in all_nomi_week:
+                _dup_counter[n] = _dup_counter.get(n, 0) + 1
+            _duplicati = {k: v for k, v in _dup_counter.items() if v > 1}
+            if _duplicati:
+                st.error(f"⚠️ **{len(_duplicati)} DUPLICATI trovati in questa settimana:**")
+                for n, count in _duplicati.items():
+                    # Mostra in quali giorni appare
+                    giorni_in_cui_appare = []
+                    for g_idx in range(7):
+                        for t in agenda_settimana.get(g_idx, []):
+                            if t.get('nome_cliente', t.get('nome', '?')) == n:
+                                giorni_in_cui_appare.append(f"{_giorni_nomi_diag[g_idx]}")
+                                break
+                    st.text(f"  • {n} ({count}×): {', '.join(giorni_in_cui_appare)}")
+            else:
+                st.success("✅ Nessun duplicato nella settimana visualizzata")
         
         # Funzione per verificare se un giorno è in ferie (range O singolo)
         def is_giorno_ferie_agenda(data):
