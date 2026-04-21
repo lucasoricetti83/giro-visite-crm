@@ -4477,15 +4477,71 @@ def main_app():
             except Exception as e_diag:
                 st.error(f"Errore load: {e_diag}")
             
+            # === DIAGNOSTICA COERENZA GIRO OGGI vs AGENDA OGGI ===
+            st.divider()
+            st.markdown("### 🎯 Coerenza Giro Oggi vs Agenda Oggi")
+            try:
+                oggi_str_diag = ora_italiana.strftime('%Y-%m-%d')
+                giro_salvato_diag = load_giro_giorno(oggi_str_diag)
+                
+                # IDs da Supabase (quello che vedrebbe Agenda alla FASE 1)
+                ids_in_db = giro_salvato_diag.get('ids', []) if giro_salvato_diag else []
+                
+                # IDs in sessione da "_tappe_ottimizzate" (quello che vedrebbe Giro Oggi dopo Google)
+                tappe_sess = st.session_state.get('_tappe_ottimizzate', [])
+                ids_in_sess = [t.get('id') for t in tappe_sess] if tappe_sess else []
+                
+                st.markdown("**IDs giro salvato su Supabase (`__GIRO_SALVATO__`):**")
+                st.code(repr(ids_in_db), language='python')
+                st.caption(f"Totale: {len(ids_in_db)} IDs · data salvataggio: {giro_salvato_diag.get('data') if giro_salvato_diag else 'N/A'} · versione: {giro_salvato_diag.get('v') if giro_salvato_diag else 'N/A'}")
+                
+                st.markdown("**IDs in session state (`_tappe_ottimizzate` da Giro Oggi):**")
+                st.code(repr(ids_in_sess), language='python')
+                st.caption(f"Totale: {len(ids_in_sess)} IDs")
+                
+                if ids_in_db and ids_in_sess:
+                    if ids_in_db == ids_in_sess:
+                        st.success("✅ Giro salvato e sessione sono IDENTICI (stessa sequenza)")
+                    elif set(ids_in_db) == set(ids_in_sess):
+                        st.warning("⚠️ Stessi clienti, ORDINE DIVERSO (Google Maps ha riordinato in sessione ma non ha salvato)")
+                    else:
+                        diff_db_only = set(ids_in_db) - set(ids_in_sess)
+                        diff_sess_only = set(ids_in_sess) - set(ids_in_db)
+                        st.error(f"❌ Clienti DIVERSI — Solo in DB: {len(diff_db_only)}, Solo in Sessione: {len(diff_sess_only)}")
+                elif not ids_in_db and ids_in_sess:
+                    st.warning("⚠️ Il giro è in sessione ma NON salvato su DB")
+                elif ids_in_db and not ids_in_sess:
+                    st.info("ℹ️ Giro salvato su DB, ma non ancora caricato in sessione (Giro Oggi non è stato aperto in questa sessione)")
+                else:
+                    st.info("ℹ️ Nessun giro ancora salvato per oggi")
+            except Exception as e_d:
+                st.error(f"Errore diagnostica: {e_d}")
+            st.divider()
+            
             # Pulsante RESET per pulire tutti gli scambi (utile quando la lista è corrotta)
-            col_reset1, col_reset2 = st.columns([3, 1])
+            col_reset1, col_reset2, col_reset3 = st.columns([2, 1, 1])
             with col_reset2:
-                if st.button("🗑️ Reset tutti", type="primary", use_container_width=True, key="btn_reset_scambi_diag", help="Cancella TUTTI gli scambi salvati (non reversibile)"):
+                if st.button("🗑️ Reset scambi", type="secondary", use_container_width=True, key="btn_reset_scambi_diag", help="Cancella TUTTI gli scambi salvati"):
                     st.session_state.scambi_giorni = []
                     save_scambi_giorni([])
                     st.toast("🗑️ Tutti gli scambi cancellati", icon="✅")
                     time_module.sleep(0.4)
                     st.rerun()
+            with col_reset3:
+                if st.button("🔄 Reset giro oggi", type="secondary", use_container_width=True, key="btn_reset_giro_diag", help="Cancella il giro salvato per oggi — al prossimo caricamento verrà ricalcolato da zero"):
+                    try:
+                        user_id_r = get_user_id()
+                        if user_id_r:
+                            supabase.table('clienti').delete().eq('user_id', user_id_r).eq('nome_cliente', '__GIRO_SALVATO__').execute()
+                            # Pulisci anche cache sessione
+                            for k in ['_tappe_ottimizzate', '_route_cache_key', '_route_info']:
+                                if k in st.session_state:
+                                    del st.session_state[k]
+                            st.toast("🔄 Giro di oggi resettato", icon="✅")
+                            time_module.sleep(0.4)
+                            st.rerun()
+                    except Exception as e_r:
+                        st.error(f"Errore reset: {e_r}")
             
             st.markdown("**Agenda per ogni giorno della settimana visualizzata:**")
             _giorni_nomi_diag = ["Lun","Mar","Mer","Gio","Ven","Sab","Dom"]
