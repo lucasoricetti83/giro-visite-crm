@@ -2922,50 +2922,6 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             nomi_schedulati.add(c['nome'])
             n_recuperati += 1
     
-    # ============================================================
-    # 11c. DEDUPLICA ANTI-RIPETIZIONE — nessun cliente può apparire
-    # in più giorni della stessa settimana. Se trovo duplicati, tengo il
-    # cliente nel giorno con distanza minore dal baricentro del giro (più
-    # compatto), e lo rimuovo dagli altri giorni.
-    # ============================================================
-    clienti_visti = {}  # nome → (giorno, indice_nel_giro, distanza_dal_baricentro)
-    
-    # Prima passata: trova duplicati e calcola distanza dal baricentro per ciascuna occorrenza
-    for giorno, (data_g, giro) in risultati.items():
-        if not giro:
-            continue
-        # Baricentro del giro
-        if len(giro) > 0:
-            cx = sum(c['lat'] for c in giro) / len(giro)
-            cy = sum(c['lon'] for c in giro) / len(giro)
-        else:
-            cx, cy = base_lat, base_lon
-        
-        for idx_c, c in enumerate(giro):
-            nome = c['nome']
-            dist_baricentro = haversine(c['lat'], c['lon'], cx, cy)
-            
-            if nome not in clienti_visti:
-                clienti_visti[nome] = (giorno, idx_c, dist_baricentro)
-            else:
-                # Duplicato trovato! Confronta: tieni quello più vicino al baricentro
-                g_prev, idx_prev, dist_prev = clienti_visti[nome]
-                if dist_baricentro < dist_prev:
-                    # Il nuovo è migliore → segna il PRECEDENTE per rimozione
-                    clienti_visti[nome] = (giorno, idx_c, dist_baricentro)
-                    # Rimuovi il cliente dal giorno precedente
-                    giro_prev = risultati[g_prev][1]
-                    risultati[g_prev] = (
-                        risultati[g_prev][0],
-                        [x for x in giro_prev if x['nome'] != nome]
-                    )
-                else:
-                    # Il precedente era migliore → rimuovi il cliente da QUESTO giorno
-                    risultati[giorno] = (
-                        data_g,
-                        [x for x in giro if x['nome'] != nome]
-                    )
-    
     # Salvo metadati per eventuale debug / dashboard
     try:
         import streamlit as _st
@@ -4441,24 +4397,6 @@ def main_app():
                 # else: scambio non coinvolge la settimana visualizzata → ignora
             
             agenda_settimana = nuova_agenda
-        
-        # ============================================================
-        # FASE 3: DEDUPLICA FORTE ANTI-RIPETIZIONE
-        # Dopo tutti gli scambi + calcolo base, garantiamo che nessun cliente
-        # appaia in più giorni della settimana visualizzata.
-        # ============================================================
-        nomi_gia_visti_settimana = set()
-        for g_idx in sorted(agenda_settimana.keys()):
-            tappe_g = agenda_settimana.get(g_idx, [])
-            tappe_pulite = []
-            for t in tappe_g:
-                nome_t = t.get('nome_cliente') or t.get('nome', '')
-                if nome_t and nome_t in nomi_gia_visti_settimana:
-                    continue  # Già in un altro giorno → rimuovo
-                if nome_t:
-                    nomi_gia_visti_settimana.add(nome_t)
-                tappe_pulite.append(t)
-            agenda_settimana[g_idx] = tappe_pulite
         
         # === 🔍 PANNELLO DIAGNOSTICO (apri per vedere stato scambi + duplicati) ===
         with st.expander("🔍 Diagnostica scambi & duplicati", expanded=False):
