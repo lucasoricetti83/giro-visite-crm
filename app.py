@@ -2736,6 +2736,20 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         else:
             cluster_giorni = [pool_per_giorni] + [[] for _ in range(n_giorni_liberi - 1)]
         
+        # === DIAGNOSTICA STEP-BY-STEP (salva snapshot in metadati) ===
+        _debug_cluster_states = []
+        def _snapshot_cluster(label, clusters):
+            _debug_cluster_states.append({
+                'label': label,
+                'n_cluster': len(clusters),
+                'dimensioni': [len(c) for c in clusters],
+                'clienti_per_cluster': [[c.get('nome','?')[:30] for c in cl] for cl in clusters],
+                'tot_clienti': sum(len(c) for c in clusters),
+                'clienti_unici': len(set(c.get('nome','') for cl in clusters for c in cl)),
+            })
+        
+        _snapshot_cluster("1. Post k-means (grezzo)", cluster_giorni)
+        
         # === FUSIONE CLUSTER PICCOLI (< 5 clienti) con il cluster più vicino ===
         # Motivazione: un cluster con pochi clienti genera un giorno "leggero" (3-4 tappe invece di 8).
         # Li fondiamo nel cluster vicino, poi ridistribuiamo in modo bilanciato.
@@ -2790,6 +2804,8 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         
         cluster_giorni = _fondi_cluster_piccoli(cluster_giorni)
         
+        _snapshot_cluster("2. Post fusione piccoli (<5)", cluster_giorni)
+        
         # === BILANCIAMENTO POST-FUSIONE ===
         # Dopo la fusione alcuni cluster potrebbero essere sovradimensionati (es. 16 clienti)
         # mentre altri sono vuoti. Ribilanciamo in modo che ogni cluster ≈ pool/n_giorni_liberi.
@@ -2834,6 +2850,8 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             return clusters
         
         cluster_giorni = _bilancia_cluster(cluster_giorni, SOGLIA_BILANCIA)
+        
+        _snapshot_cluster("3. Post bilanciamento", cluster_giorni)
         
         # Ordina cluster per angolo dalla base
         cluster_con_angolo = []
@@ -2973,6 +2991,15 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             
             risultati[giorno] = (data_g, giro)
     
+    # Snapshot post-assegnazione giorni (ma pre-fase 11b)
+    try:
+        _snap_pre11b = {
+            'label': "4. Post assegnazione giorni (pre-11b)",
+            'giri_per_giorno': {g: [c.get('nome','?')[:30] for c in risultati[g][1]] for g in risultati},
+        }
+    except Exception:
+        _snap_pre11b = None
+    
     # ============================================================
     # 11b. RECUPERO URGENTI NON ASSEGNATI (prima data utile in zona)
     # 
@@ -3042,13 +3069,36 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     try:
         import streamlit as _st
         if settimana_offset == 0:
+            # Snapshot post-11b
+            _snap_post11b = {
+                'label': "5. Post fase 11b (recupero scaduti)",
+                'giri_per_giorno': {g: [c.get('nome','?')[:30] for c in risultati[g][1]] for g in risultati},
+                'n_recuperati_11b': n_recuperati,
+            }
+            
+            # Check duplicati ad ogni stadio
+            def _check_dup_risultati(giri_per_giorno):
+                nomi = []
+                for g, lista in giri_per_giorno.items():
+                    nomi.extend(lista)
+                from collections import Counter
+                counts = Counter(nomi)
+                return {n: c for n, c in counts.items() if c > 1}
+            
             _st.session_state['_ultimo_calcolo_metadati'] = {
                 'n_pool': len(pool),
                 'n_schedulati': len(nomi_schedulati),
                 'n_recuperati': n_recuperati,
                 'n_non_schedulati': len(pool) - len(nomi_schedulati) - len(nomi_usati_da_app),
                 'max_visite': max_visite,
+                'n_giorni_liberi': n_giorni_liberi,
                 'timestamp': datetime.now().isoformat(),
+                # Diagnostica deep-dive
+                'debug_cluster_states': _debug_cluster_states,
+                'debug_snap_pre11b': _snap_pre11b,
+                'debug_snap_post11b': _snap_post11b,
+                'debug_dup_pre11b': _check_dup_risultati(_snap_pre11b['giri_per_giorno']) if _snap_pre11b else {},
+                'debug_dup_post11b': _check_dup_risultati(_snap_post11b['giri_per_giorno']),
             }
     except Exception:
         pass
@@ -4679,6 +4729,50 @@ def main_app():
                     st.text(f"  • {n} ({count}×): {', '.join(giorni_in_cui_appare)}")
             else:
                 st.success("✅ Nessun duplicato nella settimana visualizzata")
+            
+            # === DIAGNOSTICA DEEP-DIVE CLUSTER & FASI ALGORITMO ===
+            st.divider()
+            st.markdown("### 🔬 Deep-dive algoritmo (stati intermedi)")
+            _meta_deep = st.session_state.get('_ultimo_calcolo_metadati', {})
+            if _meta_deep:
+                st.caption(f"Pool totale: {_meta_deep.get('n_pool', '?')} · Schedulati: {_meta_deep.get('n_schedulati', '?')} · Recuperati 11b: {_meta_deep.get('n_recuperati', '?')} · Max visite/giorno: {_meta_deep.get('max_visite', '?')}")
+                
+                # Stati cluster
+                for snap in _meta_deep.get('debug_cluster_states', []):
+                    st.markdown(f"**{snap['label']}** — {snap['n_cluster']} cluster · {snap['tot_clienti']} clienti totali · {snap['clienti_unici']} unici")
+                    if snap['tot_clienti'] != snap['clienti_unici']:
+                        st.warning(f"⚠️ DUPLICATI: {snap['tot_clienti'] - snap['clienti_unici']} occorrenze in più")
+                    st.text(f"  Dimensioni cluster: {snap['dimensioni']}")
+                
+                # Pre 11b
+                _pre11b = _meta_deep.get('debug_snap_pre11b')
+                if _pre11b:
+                    st.markdown(f"**{_pre11b['label']}**")
+                    for g, nomi in sorted(_pre11b['giri_per_giorno'].items()):
+                        st.text(f"  Giorno {g} ({_giorni_nomi_diag[g] if g < 7 else '?'}): {len(nomi)} tappe — {', '.join(nomi[:5])}{'...' if len(nomi) > 5 else ''}")
+                    _dup_pre = _meta_deep.get('debug_dup_pre11b', {})
+                    if _dup_pre:
+                        st.error(f"⚠️ {len(_dup_pre)} DUPLICATI già presenti PRIMA della fase 11b:")
+                        for n, c in _dup_pre.items():
+                            st.text(f"    • {n} ({c}×)")
+                    else:
+                        st.success("✅ Nessun duplicato pre-11b")
+                
+                # Post 11b
+                _post11b = _meta_deep.get('debug_snap_post11b')
+                if _post11b:
+                    st.markdown(f"**{_post11b['label']}** — Recuperati: {_post11b.get('n_recuperati_11b', 0)}")
+                    for g, nomi in sorted(_post11b['giri_per_giorno'].items()):
+                        st.text(f"  Giorno {g} ({_giorni_nomi_diag[g] if g < 7 else '?'}): {len(nomi)} tappe — {', '.join(nomi[:5])}{'...' if len(nomi) > 5 else ''}")
+                    _dup_post = _meta_deep.get('debug_dup_post11b', {})
+                    if _dup_post:
+                        st.error(f"⚠️ {len(_dup_post)} DUPLICATI dopo la fase 11b:")
+                        for n, c in _dup_post.items():
+                            st.text(f"    • {n} ({c}×)")
+                    else:
+                        st.success("✅ Nessun duplicato post-11b")
+            else:
+                st.info("ℹ️ Nessun dato diagnostico disponibile. Ricarica l'agenda per popolarlo.")
         
         # Funzione per verificare se un giorno è in ferie (range O singolo)
         def is_giorno_ferie_agenda(data):
