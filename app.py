@@ -1322,6 +1322,33 @@ def save_config(config_data):
         st.error(f"❌ Errore salvataggio config: {str(e)}")
         return False
 
+def _dedup_scambi(scambi_list):
+    """
+    Pulisce la lista degli scambi rimuovendo:
+    1. Coppie identiche duplicate (stessa tupla inserita 2 volte)
+    2. Scambi dove d1 == d2 (no-op)
+    Le coppie sono normalizzate: sorted tuple per riconoscere (A,B) == (B,A)
+    ma mantenendo l'ordine originale (solo per dedup).
+    """
+    if not scambi_list:
+        return []
+    visti = set()
+    puliti = []
+    for item in scambi_list:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            continue
+        d1, d2 = str(item[0]), str(item[1])
+        if d1 == d2:
+            continue  # scambio no-op
+        # Normalizziamo come tupla ordinata per dedup (A,B) == (B,A)
+        key = tuple(sorted([d1, d2]))
+        if key in visti:
+            continue
+        visti.add(key)
+        puliti.append((d1, d2))
+    return puliti
+
+
 def _migra_scambi_vecchio_formato(vecchio_dict):
     """Converte il vecchio formato {week_iso: [(idx1, idx2), ...]} nel nuovo [(date1_iso, date2_iso), ...]"""
     nuova_lista = []
@@ -1360,6 +1387,9 @@ def save_scambi_giorni(scambi_list):
         # Se per errore viene passato il vecchio formato (dict), lo migro al volo
         if isinstance(scambi_list, dict):
             scambi_list = _migra_scambi_vecchio_formato(scambi_list)
+        
+        # Pulizia: rimuovi duplicati e scambi invalidi
+        scambi_list = _dedup_scambi(scambi_list)
         
         # Normalizzo le coppie come liste (JSON-friendly)
         scambi_normalizzati = [[a, b] for (a, b) in scambi_list]
@@ -1419,7 +1449,8 @@ def load_scambi_giorni():
                 for item in data:
                     if isinstance(item, (list, tuple)) and len(item) == 2:
                         out.append((str(item[0]), str(item[1])))
-                return out
+                # Deduplica e rimuovi scambi invalidi
+                return _dedup_scambi(out)
     except Exception:
         pass
     return []
@@ -4321,6 +4352,14 @@ def main_app():
         if not isinstance(scambi_list, list):
             scambi_list = []
         
+        # Pulisci lista scambi: rimuovi duplicati e no-op
+        scambi_list = _dedup_scambi(scambi_list)
+        
+        # Se la lista è stata ripulita, aggiorna anche session_state + database
+        if scambi_list != st.session_state.get('scambi_giorni', []):
+            st.session_state.scambi_giorni = scambi_list
+            save_scambi_giorni(scambi_list)
+        
         if scambi_list:
             # Cache delle agende di altre settimane (calcolate on-demand)
             cache_agende_settimane = {lunedi_selezionato: {k: list(v) for k, v in agenda_settimana.items()}}
@@ -4345,6 +4384,10 @@ def main_app():
             
             nuova_agenda = {k: list(v) for k, v in agenda_settimana.items()}
             
+            # Traccia quali giorni della settimana corrente hanno ricevuto uno scambio.
+            # Se un giorno è il "destinatario" di più scambi → vince l'ULTIMO (più recente).
+            giorni_sovrascritti = set()
+            
             for (d1_iso, d2_iso) in scambi_list:
                 try:
                     d1 = datetime.fromisoformat(d1_iso).date()
@@ -4358,23 +4401,45 @@ def main_app():
                 if d1_in_sett and d2_in_sett:
                     # Scambio interno alla settimana visualizzata
                     idx1, idx2 = d1.weekday(), d2.weekday()
-                    t1 = nuova_agenda.get(idx1, [])
-                    t2 = nuova_agenda.get(idx2, [])
+                    t1 = list(nuova_agenda.get(idx1, []))
+                    t2 = list(nuova_agenda.get(idx2, []))
                     nuova_agenda[idx1] = t2
                     nuova_agenda[idx2] = t1
+                    giorni_sovrascritti.add(idx1)
+                    giorni_sovrascritti.add(idx2)
                 elif d1_in_sett:
                     # d1 nella sett corrente, d2 in altra settimana → prendi tappe di d2
                     lun_d2 = d2 - timedelta(days=d2.weekday())
                     ag_altra = _get_agenda_settimana_per_lunedi(lun_d2)
                     nuova_agenda[d1.weekday()] = list(ag_altra.get(d2.weekday(), []))
+                    giorni_sovrascritti.add(d1.weekday())
                 elif d2_in_sett:
                     # d2 nella sett corrente, d1 in altra settimana → prendi tappe di d1
                     lun_d1 = d1 - timedelta(days=d1.weekday())
                     ag_altra = _get_agenda_settimana_per_lunedi(lun_d1)
                     nuova_agenda[d2.weekday()] = list(ag_altra.get(d1.weekday(), []))
+                    giorni_sovrascritti.add(d2.weekday())
                 # else: scambio non coinvolge la settimana visualizzata → ignora
             
             agenda_settimana = nuova_agenda
+        
+        # === DEDUPLICA FORTE ANTI-RIPETIZIONE ===
+        # Dopo tutti gli scambi + calcolo base, garantiamo che NESSUN cliente
+        # appaia in più giorni della settimana visualizzata.
+        # Strategia: primo giorno in cui appare = lo tiene. Altri giorni = lo rimuovono.
+        # Ordine di priorità: scorro i giorni in ordine da Lun a Dom.
+        nomi_gia_visti_settimana = set()
+        for g_idx in sorted(agenda_settimana.keys()):
+            tappe_g = agenda_settimana.get(g_idx, [])
+            tappe_pulite = []
+            for t in tappe_g:
+                nome_t = t.get('nome_cliente') or t.get('nome', '')
+                if nome_t and nome_t in nomi_gia_visti_settimana:
+                    continue  # Già in un altro giorno → rimuovo
+                if nome_t:
+                    nomi_gia_visti_settimana.add(nome_t)
+                tappe_pulite.append(t)
+            agenda_settimana[g_idx] = tappe_pulite
         
         # Se settimana corrente: sovrascrive OGGI con il giro SALVATO (coerente con Giro Oggi)
         # MA SOLO SE oggi non è coinvolto in uno scambio (altrimenti cancelleremmo lo scambio).
@@ -4413,6 +4478,16 @@ def main_app():
                     st.success("✅ Sessione e database sono allineati")
             except Exception as e_diag:
                 st.error(f"Errore load: {e_diag}")
+            
+            # Pulsante RESET per pulire tutti gli scambi (utile quando la lista è corrotta)
+            col_reset1, col_reset2 = st.columns([3, 1])
+            with col_reset2:
+                if st.button("🗑️ Reset tutti", type="primary", use_container_width=True, key="btn_reset_scambi_diag", help="Cancella TUTTI gli scambi salvati (non reversibile)"):
+                    st.session_state.scambi_giorni = []
+                    save_scambi_giorni([])
+                    st.toast("🗑️ Tutti gli scambi cancellati", icon="✅")
+                    time_module.sleep(0.4)
+                    st.rerun()
             
             st.markdown("**Agenda per ogni giorno della settimana visualizzata:**")
             _giorni_nomi_diag = ["Lun","Mar","Mer","Gio","Ven","Sab","Dom"]
