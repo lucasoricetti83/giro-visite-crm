@@ -3668,12 +3668,14 @@ def main_app():
                 st.info(f"🔄 Scambio attivo: oggi mostro il giro di **{giorni_nomi_swap[idx_effettivo]} {data_effettiva_oggi.strftime('%d/%m/%Y')}** (scambiato con oggi)")
             
             # === LOGICA SALVATAGGIO GIRO ===
-            # 1. Se c'è un giro salvato per oggi E non è stato forzato il ricalcolo → usa quello
-            # 2. Altrimenti → calcola nuovo → salva su DB
+            # 1. Se oggi è in uno scambio → il giro_salvato è STALE → ignoralo e ricalcola
+            # 2. Altrimenti, se c'è un giro salvato per oggi E non è stato forzato il ricalcolo → usa quello
+            # 3. Altrimenti → calcola nuovo → salva su DB
             tappe_oggi = None
+            oggi_in_scambio_gg = (data_effettiva_oggi != oggi_date)
             
-            if giro_salvato and not forza_ricalcolo:
-                # Ricostruisci tappe dal giro salvato
+            if giro_salvato and not forza_ricalcolo and not oggi_in_scambio_gg:
+                # Ricostruisci tappe dal giro salvato (solo se NON c'è scambio attivo su oggi)
                 saved_ids = giro_salvato.get('ids', [])
                 if saved_ids:
                     tappe_oggi = ricostruisci_tappe_da_ids(df, saved_ids, config)
@@ -3681,11 +3683,12 @@ def main_app():
                         st.caption("💾 Giro salvato")
             
             if tappe_oggi is None:
-                # Calcola nuovo giro
+                # Calcola nuovo giro (usa idx_effettivo che è già post-scambio)
                 tappe_oggi = calcola_piano_giornaliero(df, idx_effettivo, config, st.session_state.esclusi_oggi, variante=variante)
                 
-                # Segna che è un giro nuovo da salvare
-                _giro_da_salvare = True
+                # Segna che è un giro nuovo da salvare (ma solo se NON è uno scambio,
+                # altrimenti salveremmo un giro "sbagliato" per la data di oggi)
+                _giro_da_salvare = not oggi_in_scambio_gg
             else:
                 _giro_da_salvare = False
             
@@ -4346,8 +4349,24 @@ def main_app():
             st.session_state.current_week_index
         )
         
-        # APPLICA SCAMBI SALVATI — ora supporta scambi TRA SETTIMANE DIVERSE
-        # Gli scambi sono salvati come lista di coppie (date1_iso, date2_iso)
+        # ============================================================
+        # FASE 1: Sovrascrivi OGGI con il giro SALVATO (se stiamo visualizzando settimana corrente)
+        # Questo viene fatto PRIMA degli scambi così che lo swap 21↔24 prenda
+        # il giro "vero" di oggi (quello salvato) e lo sposti correttamente.
+        # ============================================================
+        if st.session_state.current_week_index == 0:
+            oggi_str_agenda = ora_italiana.strftime('%Y-%m-%d')
+            giro_salvato_agenda = load_giro_giorno(oggi_str_agenda)
+            if giro_salvato_agenda and giro_salvato_agenda.get('ids'):
+                tappe_salvate = ricostruisci_tappe_da_ids(df, giro_salvato_agenda['ids'], config)
+                if tappe_salvate:
+                    idx_oggi = ora_italiana.weekday()
+                    agenda_settimana[idx_oggi] = tappe_salvate
+        
+        # ============================================================
+        # FASE 2: APPLICA SCAMBI SALVATI
+        # Gli scambi sono coppie di DATE ISO, possono essere cross-week.
+        # ============================================================
         scambi_list = st.session_state.get('scambi_giorni', [])
         if not isinstance(scambi_list, list):
             scambi_list = []
@@ -4366,7 +4385,7 @@ def main_app():
             lunedi_oggi_ref = oggi - timedelta(days=oggi.weekday())
             
             def _get_agenda_settimana_per_lunedi(lun_date):
-                """Ritorna l'agenda grezza (pre-scambi) di una settimana, calcolandola se non in cache."""
+                """Ritorna l'agenda grezza di una settimana, calcolandola se non in cache."""
                 if lun_date in cache_agende_settimane:
                     return cache_agende_settimane[lun_date]
                 offset_w = (lun_date - lunedi_oggi_ref).days // 7
@@ -4377,16 +4396,20 @@ def main_app():
                         st.session_state.esclusi_oggi if offset_w == 0 else [],
                         settimana_offset=offset_w
                     )
+                    # Anche per l'altra settimana: se è la corrente, applica giro salvato di oggi
+                    if offset_w == 0:
+                        oggi_str_w = ora_italiana.strftime('%Y-%m-%d')
+                        giro_salv_w = load_giro_giorno(oggi_str_w)
+                        if giro_salv_w and giro_salv_w.get('ids'):
+                            tappe_salv_w = ricostruisci_tappe_da_ids(df, giro_salv_w['ids'], config)
+                            if tappe_salv_w:
+                                ag_other[ora_italiana.weekday()] = tappe_salv_w
                 except Exception:
                     ag_other = {}
                 cache_agende_settimane[lun_date] = ag_other
                 return ag_other
             
             nuova_agenda = {k: list(v) for k, v in agenda_settimana.items()}
-            
-            # Traccia quali giorni della settimana corrente hanno ricevuto uno scambio.
-            # Se un giorno è il "destinatario" di più scambi → vince l'ULTIMO (più recente).
-            giorni_sovrascritti = set()
             
             for (d1_iso, d2_iso) in scambi_list:
                 try:
@@ -4399,35 +4422,31 @@ def main_app():
                 d2_in_sett = lunedi_selezionato <= d2 <= domenica_selezionata
                 
                 if d1_in_sett and d2_in_sett:
-                    # Scambio interno alla settimana visualizzata
+                    # Scambio interno alla settimana visualizzata → swap delle due celle
                     idx1, idx2 = d1.weekday(), d2.weekday()
                     t1 = list(nuova_agenda.get(idx1, []))
                     t2 = list(nuova_agenda.get(idx2, []))
                     nuova_agenda[idx1] = t2
                     nuova_agenda[idx2] = t1
-                    giorni_sovrascritti.add(idx1)
-                    giorni_sovrascritti.add(idx2)
                 elif d1_in_sett:
                     # d1 nella sett corrente, d2 in altra settimana → prendi tappe di d2
                     lun_d2 = d2 - timedelta(days=d2.weekday())
                     ag_altra = _get_agenda_settimana_per_lunedi(lun_d2)
                     nuova_agenda[d1.weekday()] = list(ag_altra.get(d2.weekday(), []))
-                    giorni_sovrascritti.add(d1.weekday())
                 elif d2_in_sett:
                     # d2 nella sett corrente, d1 in altra settimana → prendi tappe di d1
                     lun_d1 = d1 - timedelta(days=d1.weekday())
                     ag_altra = _get_agenda_settimana_per_lunedi(lun_d1)
                     nuova_agenda[d2.weekday()] = list(ag_altra.get(d1.weekday(), []))
-                    giorni_sovrascritti.add(d2.weekday())
                 # else: scambio non coinvolge la settimana visualizzata → ignora
             
             agenda_settimana = nuova_agenda
         
-        # === DEDUPLICA FORTE ANTI-RIPETIZIONE ===
-        # Dopo tutti gli scambi + calcolo base, garantiamo che NESSUN cliente
+        # ============================================================
+        # FASE 3: DEDUPLICA FORTE ANTI-RIPETIZIONE
+        # Dopo tutti gli scambi + calcolo base, garantiamo che nessun cliente
         # appaia in più giorni della settimana visualizzata.
-        # Strategia: primo giorno in cui appare = lo tiene. Altri giorni = lo rimuovono.
-        # Ordine di priorità: scorro i giorni in ordine da Lun a Dom.
+        # ============================================================
         nomi_gia_visti_settimana = set()
         for g_idx in sorted(agenda_settimana.keys()):
             tappe_g = agenda_settimana.get(g_idx, [])
@@ -4440,27 +4459,6 @@ def main_app():
                     nomi_gia_visti_settimana.add(nome_t)
                 tappe_pulite.append(t)
             agenda_settimana[g_idx] = tappe_pulite
-        
-        # Se settimana corrente: sovrascrive OGGI con il giro SALVATO (coerente con Giro Oggi)
-        # MA SOLO SE oggi non è coinvolto in uno scambio (altrimenti cancelleremmo lo scambio).
-        if st.session_state.current_week_index == 0:
-            oggi_date_check = ora_italiana.date()
-            oggi_iso_check = oggi_date_check.isoformat()
-            
-            # Oggi è coinvolto in qualche scambio?
-            oggi_in_scambio = any(
-                (d1 == oggi_iso_check or d2 == oggi_iso_check)
-                for (d1, d2) in scambi_list
-            )
-            
-            if not oggi_in_scambio:
-                oggi_str_agenda = ora_italiana.strftime('%Y-%m-%d')
-                giro_salvato_agenda = load_giro_giorno(oggi_str_agenda)
-                if giro_salvato_agenda and giro_salvato_agenda.get('ids'):
-                    tappe_salvate = ricostruisci_tappe_da_ids(df, giro_salvato_agenda['ids'], config)
-                    if tappe_salvate:
-                        idx_oggi = ora_italiana.weekday()
-                        agenda_settimana[idx_oggi] = tappe_salvate
         
         # === 🔍 PANNELLO DIAGNOSTICO (apri per vedere stato scambi + duplicati) ===
         with st.expander("🔍 Diagnostica scambi & duplicati", expanded=False):
