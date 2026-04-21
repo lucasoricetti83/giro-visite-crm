@@ -4527,12 +4527,6 @@ def main_app():
         # FASE 1: Sovrascrivi OGGI con il giro SALVATO (se stiamo visualizzando settimana corrente)
         # Questo viene fatto PRIMA degli scambi così che lo swap 21↔24 prenda
         # il giro "vero" di oggi (quello salvato) e lo sposti correttamente.
-        # 
-        # IMPORTANTE: dopo aver forzato il giro salvato su oggi, dobbiamo RIMUOVERE i clienti
-        # duplicati dagli altri giorni. Motivo: l'algoritmo naturale potrebbe aver assegnato
-        # questi clienti ad altri giorni (ad esempio perché il giro salvato è stato fatto
-        # da un'ottimizzazione precedente e nel frattempo l'agenda è stata ricalcolata).
-        # Se non li rimuoviamo, finiscono in più giorni → duplicati dopo lo swap.
         # ============================================================
         if st.session_state.current_week_index == 0:
             oggi_str_agenda = ora_italiana.strftime('%Y-%m-%d')
@@ -4543,19 +4537,6 @@ def main_app():
                     idx_oggi = ora_italiana.weekday()
                     # Forza il giro salvato su oggi
                     agenda_settimana[idx_oggi] = tappe_salvate
-                    # Rimuovi gli stessi clienti dagli ALTRI giorni (se presenti)
-                    nomi_in_oggi = set()
-                    for _t in tappe_salvate:
-                        _n = _t.get('nome_cliente') or _t.get('nome', '')
-                        if _n:
-                            nomi_in_oggi.add(_n)
-                    for g_other in list(agenda_settimana.keys()):
-                        if g_other == idx_oggi:
-                            continue
-                        agenda_settimana[g_other] = [
-                            t for t in agenda_settimana[g_other]
-                            if (t.get('nome_cliente') or t.get('nome', '')) not in nomi_in_oggi
-                        ]
         
         # ============================================================
         # FASE 2: APPLICA SCAMBI SALVATI
@@ -4591,7 +4572,6 @@ def main_app():
                         settimana_offset=offset_w
                     )
                     # Anche per l'altra settimana: se è la corrente, applica giro salvato di oggi
-                    # + rimuovi duplicati dagli altri giorni (come in FASE 1)
                     if offset_w == 0:
                         oggi_str_w = ora_italiana.strftime('%Y-%m-%d')
                         giro_salv_w = load_giro_giorno(oggi_str_w)
@@ -4599,16 +4579,6 @@ def main_app():
                             tappe_salv_w = ricostruisci_tappe_da_ids(df, giro_salv_w['ids'], config)
                             if tappe_salv_w:
                                 ag_other[ora_italiana.weekday()] = tappe_salv_w
-                                # Rimuovi gli stessi clienti dagli altri giorni
-                                nomi_w = {(_t.get('nome_cliente') or _t.get('nome','')) for _t in tappe_salv_w}
-                                nomi_w.discard('')
-                                for g_w in list(ag_other.keys()):
-                                    if g_w == ora_italiana.weekday():
-                                        continue
-                                    ag_other[g_w] = [
-                                        t for t in ag_other[g_w]
-                                        if (t.get('nome_cliente') or t.get('nome','')) not in nomi_w
-                                    ]
                 except Exception:
                     ag_other = {}
                 cache_agende_settimane[lun_date] = ag_other
@@ -4646,6 +4616,29 @@ def main_app():
                 # else: scambio non coinvolge la settimana visualizzata → ignora
             
             agenda_settimana = nuova_agenda
+        
+        # ============================================================
+        # FASE 3: DEDUPLICA POST-SWAP MIRATA
+        # Dopo aver applicato FASE 1 (forza giro salvato oggi) + FASE 2 (swap scambi),
+        # può succedere che lo stesso cliente appaia in più giorni perché:
+        # - Il giro salvato di oggi contiene clienti che l'algoritmo naturale aveva
+        #   messi su altri giorni
+        # Rimuoviamo i duplicati dando priorità ai giorni in ordine Lun→Dom.
+        # Risultato: ogni cliente appare in un solo giorno della settimana.
+        # ============================================================
+        if scambi_list:
+            nomi_visti_sett = set()
+            for g_idx in sorted(agenda_settimana.keys()):
+                tappe_g = agenda_settimana.get(g_idx, [])
+                tappe_filtrate = []
+                for t in tappe_g:
+                    nome_t = t.get('nome_cliente') or t.get('nome', '')
+                    if nome_t and nome_t in nomi_visti_sett:
+                        continue
+                    if nome_t:
+                        nomi_visti_sett.add(nome_t)
+                    tappe_filtrate.append(t)
+                agenda_settimana[g_idx] = tappe_filtrate
         
         # === 🔍 PANNELLO DIAGNOSTICO (apri per vedere stato scambi + duplicati) ===
         with st.expander("🔍 Diagnostica scambi & duplicati", expanded=False):
