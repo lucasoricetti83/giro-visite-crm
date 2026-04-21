@@ -3762,11 +3762,12 @@ def main_app():
                         st.caption("💾 Giro salvato")
             
             if tappe_oggi is None:
-                # Se c'è scambio attivo: NON chiamiamo calcola_piano_giornaliero standalone
-                # (non sa dello scambio, produrrebbe cluster del giorno locale qualunque).
-                # Invece leggiamo dall'agenda settimanale che applica gli scambi correttamente.
+                # Se c'è scambio attivo: leggiamo il giro NATURALE del giorno di destinazione.
+                # Lo scambio sposta l'abbinamento "oggi → giro", NON inverte i giri tra i giorni.
+                # Quindi se oggi (mar 21) è scambiato con ven (24), devo mostrare il giro
+                # che l'algoritmo produce per il venerdì 24, senza applicare ulteriori swap
+                # (l'agenda ha già il giro "originale" del venerdì in quella cella).
                 if oggi_in_scambio_gg:
-                    # Calcola l'agenda settimanale completa della settimana di data_effettiva_oggi
                     lunedi_target = data_effettiva_oggi - timedelta(days=data_effettiva_oggi.weekday())
                     lunedi_oggi_ref_gg = oggi_date - timedelta(days=oggi_date.weekday())
                     offset_w_gg = (lunedi_target - lunedi_oggi_ref_gg).days // 7
@@ -3778,32 +3779,9 @@ def main_app():
                             settimana_offset=offset_w_gg,
                             variante=variante
                         )
-                        
-                        # Applichiamo gli scambi sull'agenda di destinazione, come fa la tab Agenda.
-                        # La data effettiva è data_effettiva_oggi → prendiamo il giorno di idx_effettivo
-                        # di quella settimana, ma se quel giorno è a sua volta coinvolto in un altro scambio
-                        # che porta altrove, seguiamo la catena.
-                        _domenica_target = lunedi_target + timedelta(days=6)
-                        nuova_ag_gg = {k: list(v) for k, v in ag_completa.items()}
-                        
-                        for (d1_iso, d2_iso) in (scambi_list_oggi or []):
-                            try:
-                                d1 = datetime.fromisoformat(d1_iso).date()
-                                d2 = datetime.fromisoformat(d2_iso).date()
-                            except Exception:
-                                continue
-                            d1_in = lunedi_target <= d1 <= _domenica_target
-                            d2_in = lunedi_target <= d2 <= _domenica_target
-                            if d1_in and d2_in:
-                                i1, i2 = d1.weekday(), d2.weekday()
-                                t1 = list(nuova_ag_gg.get(i1, []))
-                                t2 = list(nuova_ag_gg.get(i2, []))
-                                nuova_ag_gg[i1] = t2
-                                nuova_ag_gg[i2] = t1
-                            # Cross-week non ha senso qui: stiamo già leggendo la settimana target,
-                            # e il giorno di oggi NON è in questa settimana (è in un'altra).
-                        
-                        tappe_oggi = list(nuova_ag_gg.get(idx_effettivo, []))
+                        # Leggi DIRETTAMENTE il giro del giorno di destinazione.
+                        # Nessuno swap applicato: usiamo l'agenda "cruda" del settimana target.
+                        tappe_oggi = list(ag_completa.get(idx_effettivo, []))
                     except Exception as e:
                         st.warning(f"⚠️ Errore lettura agenda per scambio: {e}")
                         tappe_oggi = calcola_piano_giornaliero(df, idx_effettivo, config, st.session_state.esclusi_oggi, variante=variante)
