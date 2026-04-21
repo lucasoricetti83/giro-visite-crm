@@ -3799,6 +3799,9 @@ def main_app():
             # === LEGGI TAPPE DALL'AGENDA SETTIMANALE ===
             # Se c'è scambio: leggi dal giorno di destinazione della settimana target
             # Se non c'è scambio: leggi dal giorno di oggi della settimana corrente
+            # IMPORTANTE: passiamo variante=0 (default, come fa la tab Agenda) così i cluster
+            # sono gli stessi in entrambe le viste. La variante salvata in session_state
+            # viene usata solo per l'ottimizzazione Google/TSP, non per il clustering.
             tappe_oggi = None
             try:
                 if oggi_in_scambio_gg:
@@ -3811,7 +3814,7 @@ def main_app():
                         df, config,
                         st.session_state.esclusi_oggi if offset_w_gg == 0 else [],
                         settimana_offset=offset_w_gg,
-                        variante=variante
+                        variante=0  # stesso di Agenda → cluster coerenti
                     )
                     tappe_oggi = list(ag_completa.get(idx_effettivo, []))
                 else:
@@ -3820,16 +3823,16 @@ def main_app():
                         df, config,
                         st.session_state.esclusi_oggi,
                         settimana_offset=0,
-                        variante=variante
+                        variante=0  # stesso di Agenda → cluster coerenti
                     )
                     tappe_oggi = list(ag_oggi.get(idx_effettivo, []))
             except Exception as e:
                 st.warning(f"⚠️ Errore lettura agenda: {e}. Uso fallback.")
-                tappe_oggi = calcola_piano_giornaliero(df, idx_effettivo, config, st.session_state.esclusi_oggi, variante=variante)
+                tappe_oggi = calcola_piano_giornaliero(df, idx_effettivo, config, st.session_state.esclusi_oggi, variante=0)
             
             # Se lista vuota come fallback
             if not tappe_oggi:
-                tappe_oggi = calcola_piano_giornaliero(df, idx_effettivo, config, st.session_state.esclusi_oggi, variante=variante)
+                tappe_oggi = calcola_piano_giornaliero(df, idx_effettivo, config, st.session_state.esclusi_oggi, variante=0)
             
             # === SALVATAGGIO GIRO ===
             # Non salviamo più il "giro di oggi" come record separato — era fonte di bug.
@@ -4594,6 +4597,9 @@ def main_app():
                     ag_altra = _get_agenda_settimana_per_lunedi(lun_d1)
                     nuova_agenda[d2.weekday()] = list(ag_altra.get(d1.weekday(), []))
                 # else: scambio non coinvolge la settimana visualizzata → ignora
+            
+            # Applica l'agenda scambiata
+            agenda_settimana = nuova_agenda
             
         # ============================================================
         # NOTA: FASE 1 (sovrascrittura giro salvato su oggi) → RIMOSSA
