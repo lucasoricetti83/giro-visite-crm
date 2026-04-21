@@ -4649,6 +4649,95 @@ def main_app():
                 tappe_filtrate.append(t)
             agenda_settimana[g_idx] = tappe_filtrate
         
+        # ============================================================
+        # FASE 4: RIEMPIMENTO GIORNI VUOTI / CORTI
+        # Se un giorno è rimasto vuoto (o sotto il minimo) dopo la deduplica,
+        # peschiamo clienti ALTERNATIVI dal pool "visitare=SI" che non sono
+        # ancora assegnati a nessun giorno della settimana visualizzata.
+        # Li assegniamo al giorno il cui baricentro è più vicino alla loro posizione.
+        # ============================================================
+        MIN_VISITE_GIORNO = 4  # soglia sotto la quale consideriamo un giorno "da riempire"
+        MAX_VISITE_GIORNO = int(config.get('max_visite_giornaliere', 8))
+        
+        # Pool di candidati: clienti visitare=SI con coordinate valide, non già in agenda
+        if not df.empty and 'visitare' in df.columns:
+            df_pool = df[
+                (df['visitare'] == 'SI') & 
+                df['latitude'].notna() & 
+                df['longitude'].notna() &
+                (df['latitude'] != 0) &
+                (df['longitude'] != 0)
+            ].copy()
+            
+            candidati_extra = []
+            for _, riga in df_pool.iterrows():
+                nome_r = riga.get('nome_cliente', '')
+                if nome_r and nome_r not in nomi_visti_sett:
+                    candidati_extra.append({
+                        'id': riga.get('id'),
+                        'nome_cliente': nome_r,
+                        'nome': nome_r,
+                        'latitude': riga.get('latitude'),
+                        'longitude': riga.get('longitude'),
+                        'lat': riga.get('latitude'),
+                        'lon': riga.get('longitude'),
+                        'indirizzo': riga.get('indirizzo', ''),
+                        'citta': riga.get('citta', ''),
+                        'cellulare': riga.get('cellulare', ''),
+                        'ultima_visita': riga.get('ultima_visita'),
+                        'frequenza_giorni': riga.get('frequenza_giorni', 30),
+                        'urgenza': 50,  # urgenza media per candidati riempimento
+                        'distanza_km': 0,
+                        'ora_arrivo': '--:--',
+                        'tipo_tappa': 'Visita',
+                        'ritardo': 0,
+                    })
+            
+            # Per ogni giorno sotto soglia, riempi fino a MAX_VISITE_GIORNO
+            giorni_da_riempire = sorted([
+                g for g in agenda_settimana.keys()
+                if len(agenda_settimana.get(g, [])) < MIN_VISITE_GIORNO
+            ])
+            
+            for g_idx in giorni_da_riempire:
+                tappe_g = list(agenda_settimana.get(g_idx, []))
+                if not candidati_extra:
+                    break
+                
+                # Baricentro del giorno: usa clienti già presenti, o giorno vicino, o base
+                if tappe_g:
+                    cx = sum(t.get('latitude', 0) for t in tappe_g) / len(tappe_g)
+                    cy = sum(t.get('longitude', 0) for t in tappe_g) / len(tappe_g)
+                else:
+                    # Giorno vuoto: usa baricentro dei giorni adiacenti
+                    altri_nonVuoti = [
+                        g for g in agenda_settimana.keys()
+                        if g != g_idx and agenda_settimana.get(g)
+                    ]
+                    if altri_nonVuoti:
+                        g_vicino = min(altri_nonVuoti, key=lambda g: abs(g - g_idx))
+                        tappe_vicino = agenda_settimana[g_vicino]
+                        cx = sum(t.get('latitude', 0) for t in tappe_vicino) / len(tappe_vicino)
+                        cy = sum(t.get('longitude', 0) for t in tappe_vicino) / len(tappe_vicino)
+                    else:
+                        cx, cy = base_lat, base_lon
+                
+                # Ordina candidati per distanza dal baricentro del giorno
+                candidati_extra.sort(key=lambda c: haversine(c['latitude'], c['longitude'], cx, cy))
+                
+                # Aggiungi fino a MAX_VISITE_GIORNO
+                quanti = MAX_VISITE_GIORNO - len(tappe_g)
+                aggiunti = 0
+                for cand in list(candidati_extra):
+                    if aggiunti >= quanti:
+                        break
+                    tappe_g.append(cand)
+                    candidati_extra.remove(cand)
+                    nomi_visti_sett.add(cand['nome_cliente'])
+                    aggiunti += 1
+                
+                agenda_settimana[g_idx] = tappe_g
+        
         # === 🔍 PANNELLO DIAGNOSTICO (apri per vedere stato scambi + duplicati) ===
         with st.expander("🔍 Diagnostica scambi & duplicati", expanded=False):
             st.markdown("**Stato `st.session_state.scambi_giorni`:**")
