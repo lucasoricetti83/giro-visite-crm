@@ -3772,7 +3772,8 @@ def main_app():
             if critici:
                 st.error(f"🚨 **{len(critici)} clienti critici** da visitare urgentemente!")
             
-            # Calcola tappe — USA GIRO SALVATO se disponibile
+            # Calcola tappe — USA SEMPRE L'AGENDA SETTIMANALE (fonte unica di verità)
+            # Questo garantisce coerenza tra Giro Oggi e la tab Agenda.
             variante = st.session_state.get('variante_giro', 0)
             forza_ricalcolo = st.session_state.pop('_forza_ricalcolo', False)
             
@@ -3781,68 +3782,59 @@ def main_app():
             scambi_list_oggi = st.session_state.get('scambi_giorni', [])
             if not isinstance(scambi_list_oggi, list):
                 scambi_list_oggi = []
+            scambi_list_oggi = _dedup_scambi(scambi_list_oggi)
             
             data_effettiva_oggi = trova_data_scambiata(oggi_date, scambi_list_oggi)
             idx_effettivo = data_effettiva_oggi.weekday()
-            
-            if data_effettiva_oggi != oggi_date:
-                giorni_nomi_swap = ["Lun","Mar","Mer","Gio","Ven","Sab","Dom"]
-                st.info(f"🔄 Scambio attivo: oggi mostro il giro di **{giorni_nomi_swap[idx_effettivo]} {data_effettiva_oggi.strftime('%d/%m/%Y')}** (scambiato con oggi)")
-            
-            # === LOGICA SALVATAGGIO GIRO ===
-            # 1. Se oggi è in uno scambio → il giro_salvato è STALE → ignoralo e ricalcola
-            # 2. Altrimenti, se c'è un giro salvato per oggi E non è stato forzato il ricalcolo → usa quello
-            # 3. Altrimenti → calcola nuovo → salva su DB
-            tappe_oggi = None
             oggi_in_scambio_gg = (data_effettiva_oggi != oggi_date)
             
-            # Se c'è scambio attivo → invalida la cache _tappe_ottimizzate vecchia
-            # (altrimenti mostreremmo il vecchio giro ottimizzato anche se idx_effettivo è cambiato)
             if oggi_in_scambio_gg:
+                giorni_nomi_swap = ["Lun","Mar","Mer","Gio","Ven","Sab","Dom"]
+                st.info(f"🔄 Scambio attivo: oggi mostro il giro di **{giorni_nomi_swap[idx_effettivo]} {data_effettiva_oggi.strftime('%d/%m/%Y')}** (scambiato con oggi)")
+                # Invalida cache ottimizzazione Google (idx è cambiato)
                 for _k in ['_tappe_ottimizzate', '_route_cache_key', '_route_info']:
                     if _k in st.session_state:
                         del st.session_state[_k]
             
-            if giro_salvato and not forza_ricalcolo and not oggi_in_scambio_gg:
-                # Ricostruisci tappe dal giro salvato (solo se NON c'è scambio attivo su oggi)
-                saved_ids = giro_salvato.get('ids', [])
-                if saved_ids:
-                    tappe_oggi = ricostruisci_tappe_da_ids(df, saved_ids, config)
-                    if tappe_oggi:
-                        st.caption("💾 Giro salvato")
-            
-            if tappe_oggi is None:
-                # Se c'è scambio attivo: leggiamo il giro NATURALE del giorno di destinazione.
-                # Lo scambio sposta l'abbinamento "oggi → giro", NON inverte i giri tra i giorni.
-                # Quindi se oggi (mar 21) è scambiato con ven (24), devo mostrare il giro
-                # che l'algoritmo produce per il venerdì 24, senza applicare ulteriori swap
-                # (l'agenda ha già il giro "originale" del venerdì in quella cella).
+            # === LEGGI TAPPE DALL'AGENDA SETTIMANALE ===
+            # Se c'è scambio: leggi dal giorno di destinazione della settimana target
+            # Se non c'è scambio: leggi dal giorno di oggi della settimana corrente
+            tappe_oggi = None
+            try:
                 if oggi_in_scambio_gg:
+                    # Calcola agenda della settimana che contiene data_effettiva_oggi
                     lunedi_target = data_effettiva_oggi - timedelta(days=data_effettiva_oggi.weekday())
                     lunedi_oggi_ref_gg = oggi_date - timedelta(days=oggi_date.weekday())
                     offset_w_gg = (lunedi_target - lunedi_oggi_ref_gg).days // 7
                     
-                    try:
-                        ag_completa = calcola_agenda_settimana_con_proiezione(
-                            df, config,
-                            st.session_state.esclusi_oggi if offset_w_gg == 0 else [],
-                            settimana_offset=offset_w_gg,
-                            variante=variante
-                        )
-                        # Leggi DIRETTAMENTE il giro del giorno di destinazione.
-                        # Nessuno swap applicato: usiamo l'agenda "cruda" del settimana target.
-                        tappe_oggi = list(ag_completa.get(idx_effettivo, []))
-                    except Exception as e:
-                        st.warning(f"⚠️ Errore lettura agenda per scambio: {e}")
-                        tappe_oggi = calcola_piano_giornaliero(df, idx_effettivo, config, st.session_state.esclusi_oggi, variante=variante)
-                    
-                    _giro_da_salvare = False  # giro scambiato: NON sovrascrivere il giro salvato di oggi
+                    ag_completa = calcola_agenda_settimana_con_proiezione(
+                        df, config,
+                        st.session_state.esclusi_oggi if offset_w_gg == 0 else [],
+                        settimana_offset=offset_w_gg,
+                        variante=variante
+                    )
+                    tappe_oggi = list(ag_completa.get(idx_effettivo, []))
                 else:
-                    # Nessuno scambio: flusso normale
-                    tappe_oggi = calcola_piano_giornaliero(df, idx_effettivo, config, st.session_state.esclusi_oggi, variante=variante)
-                    _giro_da_salvare = True
-            else:
-                _giro_da_salvare = False
+                    # Caso normale: prendi dall'agenda di questa settimana
+                    ag_oggi = calcola_agenda_settimana_con_proiezione(
+                        df, config,
+                        st.session_state.esclusi_oggi,
+                        settimana_offset=0,
+                        variante=variante
+                    )
+                    tappe_oggi = list(ag_oggi.get(idx_effettivo, []))
+            except Exception as e:
+                st.warning(f"⚠️ Errore lettura agenda: {e}. Uso fallback.")
+                tappe_oggi = calcola_piano_giornaliero(df, idx_effettivo, config, st.session_state.esclusi_oggi, variante=variante)
+            
+            # Se lista vuota come fallback
+            if not tappe_oggi:
+                tappe_oggi = calcola_piano_giornaliero(df, idx_effettivo, config, st.session_state.esclusi_oggi, variante=variante)
+            
+            # === SALVATAGGIO GIRO ===
+            # Non salviamo più il "giro di oggi" come record separato — era fonte di bug.
+            # Manteniamo solo la cache Google Maps ottimization in session_state (non persistita).
+            _giro_da_salvare = False  # disabilitato: fonte unica = agenda calcolata
             
             # === 🔍 DIAGNOSTICA (solo se scambio attivo) — ti dice ESATTAMENTE cosa mostra il giro ===
             if oggi_in_scambio_gg:
@@ -3885,14 +3877,15 @@ def main_app():
                     route_info = st.session_state.get('_route_info')
                     tappe_oggi = st.session_state.get('_tappe_ottimizzate', tappe_oggi)
             
-            # === SALVA GIRO SU DB (persiste cross-refresh e cross-device) ===
-            if _giro_da_salvare and tappe_oggi:
-                ids_da_salvare = [t['id'] for t in tappe_oggi]
-                save_giro_giorno(
-                    oggi_str, ids_da_salvare,
-                    variante=variante,
-                    esclusi=st.session_state.esclusi_oggi
-                )
+            # === SALVA GIRO SU DB → DISABILITATO ===
+            # Il record persistente __GIRO_SALVATO__ causava bug:
+            # - Giro Oggi leggeva IDs vecchi dopo scambi/riorganizzazioni
+            # - L'agenda veniva sovrascritta con dati obsoleti (FASE 1 rimossa)
+            # Ora la fonte unica di verità è l'agenda calcolata al volo.
+            # La cache Google Maps ottimization resta in session_state (non persistita).
+            # if _giro_da_salvare and tappe_oggi:
+            #     ids_da_salvare = [t['id'] for t in tappe_oggi]
+            #     save_giro_giorno(oggi_str, ids_da_salvare, variante=variante, esclusi=st.session_state.esclusi_oggi)
             
             # Trova visitati fuori giro
             nomi_nel_giro = [t['nome_cliente'] for t in tappe_oggi]
@@ -4524,29 +4517,14 @@ def main_app():
         )
         
         # ============================================================
-        # FASE 1: Sovrascrivi OGGI con il giro SALVATO (se stiamo visualizzando settimana corrente)
-        # Questo garantisce che Giro Oggi e Agenda mostrino la STESSA lista per oggi.
-        # 
-        # IMPORTANTE: il giro salvato può contenere clienti che l'algoritmo attuale
-        # avrebbe assegnato ad ALTRI giorni (perché l'algoritmo è cambiato nel tempo,
-        # o per effetto di fusioni cluster, ecc.). Dopo aver forzato il giro salvato
-        # su oggi, rimuoviamo gli stessi clienti dagli altri giorni per evitare duplicati.
+        # NOTA: FASE 1 (sovrascrittura giro salvato su oggi) RIMOSSA
+        # L'agenda mostra ciò che l'algoritmo calcola naturalmente.
+        # Giro Oggi può divergere leggermente (usa il giro salvato persistito su DB),
+        # ma questa è una divergenza accettabile perché Giro Oggi rappresenta
+        # "cosa sto facendo oggi" mentre Agenda rappresenta "la pianificazione ottimale".
+        # Per coerenza massima: l'utente può premere 'Reset giro oggi' per allineare.
         # ============================================================
         idx_oggi = ora_italiana.weekday()
-        nomi_forzati_oggi = set()  # usati anche dalla FASE 3
-        if st.session_state.current_week_index == 0:
-            oggi_str_agenda = ora_italiana.strftime('%Y-%m-%d')
-            giro_salvato_agenda = load_giro_giorno(oggi_str_agenda)
-            if giro_salvato_agenda and giro_salvato_agenda.get('ids'):
-                tappe_salvate = ricostruisci_tappe_da_ids(df, giro_salvato_agenda['ids'], config)
-                if tappe_salvate:
-                    # Forza il giro salvato su oggi
-                    agenda_settimana[idx_oggi] = tappe_salvate
-                    # Memorizza i nomi per rimuoverli dagli altri giorni (FASE 3)
-                    for _t in tappe_salvate:
-                        _n = _t.get('nome_cliente') or _t.get('nome', '')
-                        if _n:
-                            nomi_forzati_oggi.add(_n)
         
         # ============================================================
         # FASE 2: APPLICA SCAMBI SALVATI
@@ -4581,14 +4559,6 @@ def main_app():
                         st.session_state.esclusi_oggi if offset_w == 0 else [],
                         settimana_offset=offset_w
                     )
-                    # Anche per l'altra settimana: se è la corrente, applica giro salvato di oggi
-                    if offset_w == 0:
-                        oggi_str_w = ora_italiana.strftime('%Y-%m-%d')
-                        giro_salv_w = load_giro_giorno(oggi_str_w)
-                        if giro_salv_w and giro_salv_w.get('ids'):
-                            tappe_salv_w = ricostruisci_tappe_da_ids(df, giro_salv_w['ids'], config)
-                            if tappe_salv_w:
-                                ag_other[ora_italiana.weekday()] = tappe_salv_w
                 except Exception:
                     ag_other = {}
                 cache_agende_settimane[lun_date] = ag_other
@@ -4626,117 +4596,15 @@ def main_app():
                 # else: scambio non coinvolge la settimana visualizzata → ignora
             
         # ============================================================
-        # FASE 3: DEDUPLICA POST-FASE 1 + POST-SWAP
-        # Sempre attiva: scorre tutti i giorni e rimuove duplicati.
-        # Priorità: oggi (idx_oggi) vince sempre, poi Lun→Dom.
-        # I clienti forzati dal giro salvato su oggi vengono preservati su oggi
-        # e rimossi dagli altri giorni.
+        # NOTA: FASE 1 (sovrascrittura giro salvato su oggi) → RIMOSSA
+        # NOTA: FASE 3 (deduplica post-swap) → RIMOSSA
+        # NOTA: FASE 4 (riempimento giorni vuoti con candidati extra) → RIMOSSA
+        # 
+        # L'algoritmo base produce già giri coerenti e senza duplicati.
+        # Le fasi post-processing introducevano bug (svuotamento giorni, clienti casuali).
+        # Per coerenza Giro Oggi ↔ Agenda, è Giro Oggi che ora legge dall'Agenda
+        # (vedi flusso Giro Oggi, fonte unica di verità = agenda calcolata).
         # ============================================================
-        nomi_visti_sett = set()
-        
-        # Prima processa il giorno di oggi (priorità massima: contiene il giro salvato)
-        ordine_giorni = [idx_oggi] + [g for g in sorted(agenda_settimana.keys()) if g != idx_oggi]
-        
-        for g_idx in ordine_giorni:
-            tappe_g = agenda_settimana.get(g_idx, [])
-            tappe_filtrate = []
-            for t in tappe_g:
-                nome_t = t.get('nome_cliente') or t.get('nome', '')
-                if nome_t and nome_t in nomi_visti_sett:
-                    continue
-                if nome_t:
-                    nomi_visti_sett.add(nome_t)
-                tappe_filtrate.append(t)
-            agenda_settimana[g_idx] = tappe_filtrate
-        
-        # ============================================================
-        # FASE 4: RIEMPIMENTO GIORNI VUOTI / CORTI
-        # Se un giorno è rimasto vuoto (o sotto il minimo) dopo la deduplica,
-        # peschiamo clienti ALTERNATIVI dal pool "visitare=SI" che non sono
-        # ancora assegnati a nessun giorno della settimana visualizzata.
-        # Li assegniamo al giorno il cui baricentro è più vicino alla loro posizione.
-        # ============================================================
-        MIN_VISITE_GIORNO = 4  # soglia sotto la quale consideriamo un giorno "da riempire"
-        MAX_VISITE_GIORNO = int(config.get('max_visite_giornaliere', 8))
-        
-        # Pool di candidati: clienti visitare=SI con coordinate valide, non già in agenda
-        if not df.empty and 'visitare' in df.columns:
-            df_pool = df[
-                (df['visitare'] == 'SI') & 
-                df['latitude'].notna() & 
-                df['longitude'].notna() &
-                (df['latitude'] != 0) &
-                (df['longitude'] != 0)
-            ].copy()
-            
-            candidati_extra = []
-            for _, riga in df_pool.iterrows():
-                nome_r = riga.get('nome_cliente', '')
-                if nome_r and nome_r not in nomi_visti_sett:
-                    candidati_extra.append({
-                        'id': riga.get('id'),
-                        'nome_cliente': nome_r,
-                        'nome': nome_r,
-                        'latitude': riga.get('latitude'),
-                        'longitude': riga.get('longitude'),
-                        'lat': riga.get('latitude'),
-                        'lon': riga.get('longitude'),
-                        'indirizzo': riga.get('indirizzo', ''),
-                        'citta': riga.get('citta', ''),
-                        'cellulare': riga.get('cellulare', ''),
-                        'ultima_visita': riga.get('ultima_visita'),
-                        'frequenza_giorni': riga.get('frequenza_giorni', 30),
-                        'urgenza': 50,  # urgenza media per candidati riempimento
-                        'distanza_km': 0,
-                        'ora_arrivo': '--:--',
-                        'tipo_tappa': 'Visita',
-                        'ritardo': 0,
-                    })
-            
-            # Per ogni giorno sotto soglia, riempi fino a MAX_VISITE_GIORNO
-            giorni_da_riempire = sorted([
-                g for g in agenda_settimana.keys()
-                if len(agenda_settimana.get(g, [])) < MIN_VISITE_GIORNO
-            ])
-            
-            for g_idx in giorni_da_riempire:
-                tappe_g = list(agenda_settimana.get(g_idx, []))
-                if not candidati_extra:
-                    break
-                
-                # Baricentro del giorno: usa clienti già presenti, o giorno vicino, o base
-                if tappe_g:
-                    cx = sum(t.get('latitude', 0) for t in tappe_g) / len(tappe_g)
-                    cy = sum(t.get('longitude', 0) for t in tappe_g) / len(tappe_g)
-                else:
-                    # Giorno vuoto: usa baricentro dei giorni adiacenti
-                    altri_nonVuoti = [
-                        g for g in agenda_settimana.keys()
-                        if g != g_idx and agenda_settimana.get(g)
-                    ]
-                    if altri_nonVuoti:
-                        g_vicino = min(altri_nonVuoti, key=lambda g: abs(g - g_idx))
-                        tappe_vicino = agenda_settimana[g_vicino]
-                        cx = sum(t.get('latitude', 0) for t in tappe_vicino) / len(tappe_vicino)
-                        cy = sum(t.get('longitude', 0) for t in tappe_vicino) / len(tappe_vicino)
-                    else:
-                        cx, cy = base_lat, base_lon
-                
-                # Ordina candidati per distanza dal baricentro del giorno
-                candidati_extra.sort(key=lambda c: haversine(c['latitude'], c['longitude'], cx, cy))
-                
-                # Aggiungi fino a MAX_VISITE_GIORNO
-                quanti = MAX_VISITE_GIORNO - len(tappe_g)
-                aggiunti = 0
-                for cand in list(candidati_extra):
-                    if aggiunti >= quanti:
-                        break
-                    tappe_g.append(cand)
-                    candidati_extra.remove(cand)
-                    nomi_visti_sett.add(cand['nome_cliente'])
-                    aggiunti += 1
-                
-                agenda_settimana[g_idx] = tappe_g
         
         # === 🔍 PANNELLO DIAGNOSTICO (apri per vedere stato scambi + duplicati) ===
         with st.expander("🔍 Diagnostica scambi & duplicati", expanded=False):
