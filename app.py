@@ -1327,26 +1327,43 @@ def _dedup_scambi(scambi_list):
     Pulisce la lista degli scambi rimuovendo:
     1. Coppie identiche duplicate (stessa tupla inserita 2 volte)
     2. Scambi dove d1 == d2 (no-op)
-    Le coppie sono normalizzate: sorted tuple per riconoscere (A,B) == (B,A)
-    ma mantenendo l'ordine originale (solo per dedup).
+    3. Scambi in CONFLITTO: se la stessa data appare in più scambi,
+       viene tenuto solo l'ULTIMO (il più recente) e gli altri scartati.
+       Motivo: se (A,B) e (A,C) sono entrambi attivi, la semantica è ambigua
+       → "A va in B" vs "A va in C". Impedire il conflitto a monte.
     """
     if not scambi_list:
         return []
+    
+    # Step 1: rimuovi duplicati identici e no-op
     visti = set()
-    puliti = []
+    step1 = []
     for item in scambi_list:
         if not isinstance(item, (list, tuple)) or len(item) != 2:
             continue
         d1, d2 = str(item[0]), str(item[1])
         if d1 == d2:
-            continue  # scambio no-op
-        # Normalizziamo come tupla ordinata per dedup (A,B) == (B,A)
+            continue
         key = tuple(sorted([d1, d2]))
         if key in visti:
             continue
         visti.add(key)
-        puliti.append((d1, d2))
-    return puliti
+        step1.append((d1, d2))
+    
+    # Step 2: risolvi conflitti (stessa data in più scambi)
+    # Strategia: iteriamo DALL'ULTIMO al PRIMO, teniamo solo scambi le cui date non sono
+    # già "bloccate" da uno scambio successivo. Poi inverto per mantenere ordine cronologico.
+    date_bloccate = set()
+    step2_rev = []
+    for (d1, d2) in reversed(step1):
+        if d1 in date_bloccate or d2 in date_bloccate:
+            continue  # conflitto: scarta questo scambio più vecchio
+        date_bloccate.add(d1)
+        date_bloccate.add(d2)
+        step2_rev.append((d1, d2))
+    
+    # Inverto per mantenere l'ordine di inserimento originale
+    return list(reversed(step2_rev))
 
 
 def _migra_scambi_vecchio_formato(vecchio_dict):
@@ -4338,20 +4355,29 @@ def main_app():
                         elif giorno_target.weekday() not in giorni_attivi:
                             st.warning(f"⚠️ **{giorni_nomi_full[giorno_target.weekday()]}** non è un giorno lavorativo. Seleziona uno tra: {', '.join([giorni_nomi_full[g] for g in giorni_attivi])}.")
                         else:
-                            # Salva lo scambio come coppia di DATE complete
-                            if not isinstance(st.session_state.scambi_giorni, list):
-                                st.session_state.scambi_giorni = []
-                            st.session_state.scambi_giorni.append(
-                                (giorno_src.isoformat(), giorno_target.isoformat())
-                            )
-                            saved = save_scambi_giorni(st.session_state.scambi_giorni)
-                            st.session_state.giorno_da_scambiare = None
-                            if saved:
-                                st.toast(f"✅ {giorno_src.strftime('%d/%m')} ↔️ {giorno_target.strftime('%d/%m')} — Scambio salvato!", icon="✅")
+                            # Verifica CONFLITTO: una delle due date è già in uno scambio attivo?
+                            src_iso = giorno_src.isoformat()
+                            tgt_iso = giorno_target.isoformat()
+                            date_in_scambi = set()
+                            for (_d1, _d2) in (st.session_state.get('scambi_giorni') or []):
+                                date_in_scambi.add(_d1)
+                                date_in_scambi.add(_d2)
+                            conflitti = [d for d in (src_iso, tgt_iso) if d in date_in_scambi]
+                            if conflitti:
+                                st.warning(f"⚠️ La data {', '.join(conflitti)} è già coinvolta in uno scambio attivo. Rimuovi prima lo scambio esistente dal pannello '🗑️ Scambi attivi' e poi crea il nuovo.")
                             else:
-                                st.toast(f"🔄 {giorno_src.strftime('%d/%m')} ↔️ {giorno_target.strftime('%d/%m')} — ⚠️ Non salvato (controlla la connessione)", icon="⚠️")
-                            time_module.sleep(0.4)
-                            st.rerun()
+                                # Salva lo scambio come coppia di DATE complete
+                                if not isinstance(st.session_state.scambi_giorni, list):
+                                    st.session_state.scambi_giorni = []
+                                st.session_state.scambi_giorni.append((src_iso, tgt_iso))
+                                saved = save_scambi_giorni(st.session_state.scambi_giorni)
+                                st.session_state.giorno_da_scambiare = None
+                                if saved:
+                                    st.toast(f"✅ {giorno_src.strftime('%d/%m')} ↔️ {giorno_target.strftime('%d/%m')} — Scambio salvato!", icon="✅")
+                                else:
+                                    st.toast(f"🔄 {giorno_src.strftime('%d/%m')} ↔️ {giorno_target.strftime('%d/%m')} — ⚠️ Non salvato (controlla la connessione)", icon="⚠️")
+                                time_module.sleep(0.4)
+                                st.rerun()
                 
                 with col_ann:
                     st.write("")  # spacer
