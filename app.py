@@ -3646,12 +3646,57 @@ def main_app():
                         st.caption("💾 Giro salvato")
             
             if tappe_oggi is None:
-                # Calcola nuovo giro (usa idx_effettivo che è già post-scambio)
-                tappe_oggi = calcola_piano_giornaliero(df, idx_effettivo, config, st.session_state.esclusi_oggi, variante=variante)
-                
-                # Segna che è un giro nuovo da salvare (ma solo se NON è uno scambio,
-                # altrimenti salveremmo un giro "sbagliato" per la data di oggi)
-                _giro_da_salvare = not oggi_in_scambio_gg
+                # Se c'è scambio attivo: NON chiamiamo calcola_piano_giornaliero standalone
+                # (non sa dello scambio, produrrebbe cluster del giorno locale qualunque).
+                # Invece leggiamo dall'agenda settimanale che applica gli scambi correttamente.
+                if oggi_in_scambio_gg:
+                    # Calcola l'agenda settimanale completa della settimana di data_effettiva_oggi
+                    lunedi_target = data_effettiva_oggi - timedelta(days=data_effettiva_oggi.weekday())
+                    lunedi_oggi_ref_gg = oggi_date - timedelta(days=oggi_date.weekday())
+                    offset_w_gg = (lunedi_target - lunedi_oggi_ref_gg).days // 7
+                    
+                    try:
+                        ag_completa = calcola_agenda_settimana_con_proiezione(
+                            df, config,
+                            st.session_state.esclusi_oggi if offset_w_gg == 0 else [],
+                            settimana_offset=offset_w_gg,
+                            variante=variante
+                        )
+                        
+                        # Applichiamo gli scambi sull'agenda di destinazione, come fa la tab Agenda.
+                        # La data effettiva è data_effettiva_oggi → prendiamo il giorno di idx_effettivo
+                        # di quella settimana, ma se quel giorno è a sua volta coinvolto in un altro scambio
+                        # che porta altrove, seguiamo la catena.
+                        _domenica_target = lunedi_target + timedelta(days=6)
+                        nuova_ag_gg = {k: list(v) for k, v in ag_completa.items()}
+                        
+                        for (d1_iso, d2_iso) in (scambi_list_oggi or []):
+                            try:
+                                d1 = datetime.fromisoformat(d1_iso).date()
+                                d2 = datetime.fromisoformat(d2_iso).date()
+                            except Exception:
+                                continue
+                            d1_in = lunedi_target <= d1 <= _domenica_target
+                            d2_in = lunedi_target <= d2 <= _domenica_target
+                            if d1_in and d2_in:
+                                i1, i2 = d1.weekday(), d2.weekday()
+                                t1 = list(nuova_ag_gg.get(i1, []))
+                                t2 = list(nuova_ag_gg.get(i2, []))
+                                nuova_ag_gg[i1] = t2
+                                nuova_ag_gg[i2] = t1
+                            # Cross-week non ha senso qui: stiamo già leggendo la settimana target,
+                            # e il giorno di oggi NON è in questa settimana (è in un'altra).
+                        
+                        tappe_oggi = list(nuova_ag_gg.get(idx_effettivo, []))
+                    except Exception as e:
+                        st.warning(f"⚠️ Errore lettura agenda per scambio: {e}")
+                        tappe_oggi = calcola_piano_giornaliero(df, idx_effettivo, config, st.session_state.esclusi_oggi, variante=variante)
+                    
+                    _giro_da_salvare = False  # giro scambiato: NON sovrascrivere il giro salvato di oggi
+                else:
+                    # Nessuno scambio: flusso normale
+                    tappe_oggi = calcola_piano_giornaliero(df, idx_effettivo, config, st.session_state.esclusi_oggi, variante=variante)
+                    _giro_da_salvare = True
             else:
                 _giro_da_salvare = False
             
