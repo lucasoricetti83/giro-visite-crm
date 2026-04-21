@@ -3630,6 +3630,13 @@ def main_app():
             tappe_oggi = None
             oggi_in_scambio_gg = (data_effettiva_oggi != oggi_date)
             
+            # Se c'è scambio attivo → invalida la cache _tappe_ottimizzate vecchia
+            # (altrimenti mostreremmo il vecchio giro ottimizzato anche se idx_effettivo è cambiato)
+            if oggi_in_scambio_gg:
+                for _k in ['_tappe_ottimizzate', '_route_cache_key', '_route_info']:
+                    if _k in st.session_state:
+                        del st.session_state[_k]
+            
             if giro_salvato and not forza_ricalcolo and not oggi_in_scambio_gg:
                 # Ricostruisci tappe dal giro salvato (solo se NON c'è scambio attivo su oggi)
                 saved_ids = giro_salvato.get('ids', [])
@@ -3647,6 +3654,19 @@ def main_app():
                 _giro_da_salvare = not oggi_in_scambio_gg
             else:
                 _giro_da_salvare = False
+            
+            # === 🔍 DIAGNOSTICA (solo se scambio attivo) — ti dice ESATTAMENTE cosa mostra il giro ===
+            if oggi_in_scambio_gg:
+                with st.expander("🔍 Diagnostica scambio Giro Oggi", expanded=False):
+                    st.markdown(f"**idx_effettivo usato nel calcolo:** `{idx_effettivo}` ({['Lun','Mar','Mer','Gio','Ven','Sab','Dom'][idx_effettivo]})")
+                    st.markdown(f"**data_effettiva_oggi:** `{data_effettiva_oggi}`")
+                    st.markdown(f"**oggi_date:** `{oggi_date}`")
+                    st.markdown(f"**giro_salvato presente:** `{giro_salvato is not None}` — ignorato perché scambio attivo: `{oggi_in_scambio_gg}`")
+                    st.markdown(f"**cache Google invalidata:** ✅")
+                    st.markdown(f"**Clienti calcolati da `calcola_piano_giornaliero(giorno={idx_effettivo})`:**")
+                    _nomi_calc = [t.get('nome_cliente', '?') for t in (tappe_oggi or [])]
+                    st.code(repr(_nomi_calc), language='python')
+                    st.caption(f"Totale: {len(_nomi_calc)} tappe calcolate")
             
             # OTTIMIZZAZIONE ORDINE CON GOOGLE MAPS (tempi stradali reali + TSP)
             if tappe_oggi and len(tappe_oggi) >= 2 and GOOGLE_MAPS_API_KEY:
