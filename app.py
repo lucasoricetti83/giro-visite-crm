@@ -2736,6 +2736,105 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         else:
             cluster_giorni = [pool_per_giorni] + [[] for _ in range(n_giorni_liberi - 1)]
         
+        # === FUSIONE CLUSTER PICCOLI (< 5 clienti) con il cluster più vicino ===
+        # Motivazione: un cluster con pochi clienti genera un giorno "leggero" (3-4 tappe invece di 8).
+        # Li fondiamo nel cluster vicino, poi ridistribuiamo in modo bilanciato.
+        SOGLIA_MERGE = 5
+        
+        def _baricentro(cl):
+            if not cl:
+                return None
+            cx = sum(c['lat'] for c in cl) / len(cl)
+            cy = sum(c['lon'] for c in cl) / len(cl)
+            return (cx, cy)
+        
+        def _fondi_cluster_piccoli(clusters):
+            """
+            Fonde cluster con meno di SOGLIA_MERGE clienti nel cluster più vicino.
+            Ritorna una nuova lista di cluster (può avere meno elementi dell'originale).
+            """
+            # Escludo cluster vuoti e divido in "piccoli" vs "grandi"
+            non_vuoti = [cl for cl in clusters if cl]
+            if len(non_vuoti) <= 1:
+                return non_vuoti + [[] for _ in range(len(clusters) - len(non_vuoti))]
+            
+            piccoli = [cl for cl in non_vuoti if len(cl) < SOGLIA_MERGE]
+            grandi = [cl for cl in non_vuoti if len(cl) >= SOGLIA_MERGE]
+            
+            # Se non ci sono cluster grandi (tutti piccoli), non fondiamo — lasciamo come sono
+            if not grandi:
+                return clusters
+            
+            # Per ogni piccolo, fondilo nel grande il cui baricentro è più vicino
+            for pic in piccoli:
+                pic_bar = _baricentro(pic)
+                if pic_bar is None:
+                    continue
+                miglior_idx = 0
+                miglior_d = float('inf')
+                for idx, gr in enumerate(grandi):
+                    gr_bar = _baricentro(gr)
+                    if gr_bar is None:
+                        continue
+                    d = haversine(pic_bar[0], pic_bar[1], gr_bar[0], gr_bar[1])
+                    if d < miglior_d:
+                        miglior_d = d
+                        miglior_idx = idx
+                # Fondi il piccolo nel grande più vicino
+                grandi[miglior_idx] = grandi[miglior_idx] + pic
+            
+            # Pad con cluster vuoti per mantenere il numero di giorni
+            n_out = len(clusters)
+            result = list(grandi) + [[] for _ in range(n_out - len(grandi))]
+            return result[:n_out]
+        
+        cluster_giorni = _fondi_cluster_piccoli(cluster_giorni)
+        
+        # === BILANCIAMENTO POST-FUSIONE ===
+        # Dopo la fusione alcuni cluster potrebbero essere sovradimensionati (es. 16 clienti)
+        # mentre altri sono vuoti. Ribilanciamo in modo che ogni cluster ≈ pool/n_giorni_liberi.
+        SOGLIA_BILANCIA = int(len(pool_per_giorni) / max(1, n_giorni_liberi)) + 3
+        
+        def _bilancia_cluster(clusters, max_per_cluster):
+            """
+            Se un cluster ha troppi clienti, i più lontani dal suo baricentro
+            vengono spostati nei cluster vuoti (o meno pieni).
+            """
+            clusters = [list(c) for c in clusters]  # copia mutabile
+            n = len(clusters)
+            cambiato = True
+            iterazioni = 0
+            while cambiato and iterazioni < 10:
+                cambiato = False
+                iterazioni += 1
+                # Trova cluster più pieno e cluster più vuoto
+                idx_pieno = max(range(n), key=lambda i: len(clusters[i]))
+                idx_vuoto = min(range(n), key=lambda i: len(clusters[i]))
+                
+                if len(clusters[idx_pieno]) <= max_per_cluster:
+                    break
+                if len(clusters[idx_vuoto]) >= max_per_cluster:
+                    break
+                if idx_pieno == idx_vuoto:
+                    break
+                
+                # Sposta il cliente più lontano dal baricentro del pieno
+                # (quello più outlier) nel vuoto
+                bar_pieno = _baricentro(clusters[idx_pieno])
+                if bar_pieno is None:
+                    break
+                # Trova cliente più distante dal baricentro
+                cliente_outlier = max(
+                    clusters[idx_pieno],
+                    key=lambda c: haversine(c['lat'], c['lon'], bar_pieno[0], bar_pieno[1])
+                )
+                clusters[idx_pieno] = [c for c in clusters[idx_pieno] if c['nome'] != cliente_outlier['nome']]
+                clusters[idx_vuoto].append(cliente_outlier)
+                cambiato = True
+            return clusters
+        
+        cluster_giorni = _bilancia_cluster(cluster_giorni, SOGLIA_BILANCIA)
+        
         # Ordina cluster per angolo dalla base
         cluster_con_angolo = []
         for cl in cluster_giorni:
