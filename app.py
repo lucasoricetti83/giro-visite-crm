@@ -399,19 +399,26 @@ hr {
 }
 
 /* === PULSANTI HEADER GIRO OGGI (Rigenera / Ricarica / Mappa) ===
-   Rimpiccioliti a 34x34 come i pulsanti Naviga/Chiama nelle righe cliente.
+   Uniformati a 38x38 come i pulsanti Naviga/Chiama (.gv-iconbtn) nelle righe cliente.
    Il marker .gv-hdr-btn-slot è inserito subito PRIMA del bottone Streamlit
    e ne stila il wrapper per avere un bottone icona compatto.
 */
 .gv-hdr-btn-slot + div .stButton > button,
 .gv-hdr-btn-slot ~ div .stButton > button {
-    min-height: 34px !important;
-    height: 34px !important;
-    max-width: 40px !important;
+    min-height: 38px !important;
+    height: 38px !important;
+    width: 38px !important;
+    min-width: 38px !important;
+    max-width: 38px !important;
     padding: 4px !important;
     font-size: 14px !important;
-    border-radius: 8px !important;
+    border-radius: 10px !important;
+    border: 0.5px solid rgba(128,128,128,0.35) !important;
     margin-top: 18px !important;  /* allinea verticalmente con st.header */
+}
+.gv-hdr-btn-slot + div .stButton > button:hover,
+.gv-hdr-btn-slot ~ div .stButton > button:hover {
+    background: rgba(128,128,128,0.15) !important;
 }
 
 /* === AGENDA — STILE COLONNE GIORNI (Alternativa A) ===
@@ -3760,20 +3767,20 @@ def main_app():
             st.header(f"📍 Giro di Oggi ({ora_italiana.strftime('%d/%m/%Y')})")
         with col_regen:
             st.markdown('<div class="gv-hdr-btn-slot"></div>', unsafe_allow_html=True)
-            if st.button("🔄", use_container_width=True, help="Rigenera giro (propone un giro diverso)", key="btn_gv_rigen"):
+            if st.button("🔄", help="Rigenera giro (propone un giro diverso)", key="btn_gv_rigen"):
                 st.session_state.variante_giro = st.session_state.get('variante_giro', 0) + 1
                 st.session_state._route_cache_key = None
                 st.session_state._forza_ricalcolo = True
                 st.rerun()
         with col_refresh:
             st.markdown('<div class="gv-hdr-btn-slot"></div>', unsafe_allow_html=True)
-            if st.button("🔃", use_container_width=True, help="Ricarica dati", key="btn_gv_refresh"):
+            if st.button("🔃", help="Ricarica dati", key="btn_gv_refresh"):
                 st.session_state.reload_data = True
                 st.rerun()
         with col_mapbtn:
             st.markdown('<div class="gv-hdr-btn-slot"></div>', unsafe_allow_html=True)
             # Porta alla tab Mappa (riusa la mappa esistente, non la duplica qui)
-            if st.button("🗺️", use_container_width=True, help="Mostra il giro di oggi sulla mappa", key="btn_gv_mappa"):
+            if st.button("🗺️", help="Mostra il giro di oggi sulla mappa", key="btn_gv_mappa"):
                 st.session_state.active_tab = "🗺️ Mappa"
                 # Preseleziona oggi in mappa se possibile
                 st.session_state.mappa_giorno_selezionato = ora_italiana.weekday()
