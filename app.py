@@ -398,6 +398,22 @@ hr {
     font-weight: 500;
 }
 
+/* === PULSANTI HEADER GIRO OGGI (Rigenera / Ricarica / Mappa) ===
+   Rimpiccioliti a 34x34 come i pulsanti Naviga/Chiama nelle righe cliente.
+   Il marker .gv-hdr-btn-slot è inserito subito PRIMA del bottone Streamlit
+   e ne stila il wrapper per avere un bottone icona compatto.
+*/
+.gv-hdr-btn-slot + div .stButton > button,
+.gv-hdr-btn-slot ~ div .stButton > button {
+    min-height: 34px !important;
+    height: 34px !important;
+    max-width: 40px !important;
+    padding: 4px !important;
+    font-size: 14px !important;
+    border-radius: 8px !important;
+    margin-top: 18px !important;  /* allinea verticalmente con st.header */
+}
+
 /* Nascondi il "Made with Streamlit" footer */
 footer, #MainMenu, [data-testid="stDecoration"] { visibility: hidden !important; }
 </style>
@@ -3644,18 +3660,28 @@ def main_app():
     
     # --- TAB: GIRO OGGI ---
     if st.session_state.active_tab == "🚀 Giro Oggi":
-        col_header, col_regen, col_refresh = st.columns([4, 1, 1])
+        col_header, col_regen, col_refresh, col_mapbtn = st.columns([4, 0.5, 0.5, 0.5])
         with col_header:
             st.header(f"📍 Giro di Oggi ({ora_italiana.strftime('%d/%m/%Y')})")
         with col_regen:
-            if st.button("🔄 Rigenera", use_container_width=True, help="Propone un giro diverso"):
+            st.markdown('<div class="gv-hdr-btn-slot"></div>', unsafe_allow_html=True)
+            if st.button("🔄", use_container_width=True, help="Rigenera giro (propone un giro diverso)", key="btn_gv_rigen"):
                 st.session_state.variante_giro = st.session_state.get('variante_giro', 0) + 1
                 st.session_state._route_cache_key = None
                 st.session_state._forza_ricalcolo = True
                 st.rerun()
         with col_refresh:
-            if st.button("🔃", use_container_width=True, help="Ricarica dati"):
+            st.markdown('<div class="gv-hdr-btn-slot"></div>', unsafe_allow_html=True)
+            if st.button("🔃", use_container_width=True, help="Ricarica dati", key="btn_gv_refresh"):
                 st.session_state.reload_data = True
+                st.rerun()
+        with col_mapbtn:
+            st.markdown('<div class="gv-hdr-btn-slot"></div>', unsafe_allow_html=True)
+            # Porta alla tab Mappa (riusa la mappa esistente, non la duplica qui)
+            if st.button("🗺️", use_container_width=True, help="Mostra il giro di oggi sulla mappa", key="btn_gv_mappa"):
+                st.session_state.active_tab = "🗺️ Mappa"
+                # Preseleziona oggi in mappa se possibile
+                st.session_state.mappa_giorno_selezionato = ora_italiana.weekday()
                 st.rerun()
         
         idx_g = ora_italiana.weekday()
@@ -3676,54 +3702,8 @@ def main_app():
         if 'variante_giro' not in st.session_state:
             st.session_state.variante_giro = 0
         
-        # === PANNELLO GESTIONE GIRO ===
-        with st.expander("⚙️ Gestisci Giro", expanded=False):
-            
-            # Info variante attuale
-            variante_attuale = st.session_state.get('variante_giro', 0)
-            if variante_attuale > 0:
-                st.info(f"🔄 Giro rigenerato {variante_attuale} volta/e - Premi '🔄 Rigenera' per provare un altro percorso")
-                if st.button("↩️ Torna al giro originale"):
-                    st.session_state.variante_giro = 0
-                    st.session_state._route_cache_key = None
-                    st.session_state._forza_ricalcolo = True
-                    st.rerun()
-            
-            st.divider()
-            
-            # --- SEZIONE: Escludi Clienti ---
-            st.write("**🚫 Escludi clienti dal giro di oggi:**")
-            
-            # Lista clienti attivi (da poter escludere)
-            clienti_attivi = df[df['visitare'] == 'SI']['nome_cliente'].tolist() if not df.empty and 'visitare' in df.columns else []
-            
-            if clienti_attivi:
-                # Multiselect per escludere clienti
-                esclusi_selezionati = st.multiselect(
-                    "Seleziona clienti da escludere:",
-                    sorted(clienti_attivi),
-                    default=st.session_state.esclusi_oggi,
-                    key="escludi_clienti_select"
-                )
-                
-                col_esc1, col_esc2 = st.columns(2)
-                
-                with col_esc1:
-                    if st.button("🔄 Ricalcola Giro", type="primary", use_container_width=True):
-                        st.session_state.esclusi_oggi = esclusi_selezionati
-                        st.session_state._forza_ricalcolo = True
-                        st.rerun()
-                
-                with col_esc2:
-                    if st.button("🗑️ Rimuovi Esclusioni", use_container_width=True):
-                        st.session_state.esclusi_oggi = []
-                        st.session_state._forza_ricalcolo = True
-                        st.rerun()
-                
-                if st.session_state.esclusi_oggi:
-                    st.warning(f"⚠️ **{len(st.session_state.esclusi_oggi)} clienti esclusi** dal giro di oggi")
-            else:
-                st.info("Nessun cliente attivo da escludere")
+        # NOTA: "⚙️ Gestisci Giro" è stato SPOSTATO dopo la lista clienti (in fondo alla vista)
+        # per dare priorità visiva al giro (clienti visibili subito).
         
         # Controlla se oggi è giorno di ferie
         oggi_date = ora_italiana.date()
@@ -3767,10 +3747,8 @@ def main_app():
             st.warning(f"🏖️ **Oggi sei in FERIE!** (dal {ferie_inizio.strftime('%d/%m/%Y')} al {ferie_fine.strftime('%d/%m/%Y')})")
             st.info("Per disattivare le ferie, vai su ⚙️ Config → Ferie")
         elif idx_g in giorni_lavorativi:
-            # Alert critici
-            critici = [c for c in get_clienti_trascurati(df) if c['livello'] == 'critico']
-            if critici:
-                st.error(f"🚨 **{len(critici)} clienti critici** da visitare urgentemente!")
+            # Alert critici: SPOSTATO in fondo alla vista (dopo la lista clienti)
+            # critici = [c for c in get_clienti_trascurati(df) if c['livello'] == 'critico']
             
             # Calcola tappe — USA SEMPRE L'AGENDA SETTIMANALE (fonte unica di verità)
             # Questo garantisce coerenza tra Giro Oggi e la tab Agenda.
@@ -3789,8 +3767,9 @@ def main_app():
             oggi_in_scambio_gg = (data_effettiva_oggi != oggi_date)
             
             if oggi_in_scambio_gg:
-                giorni_nomi_swap = ["Lun","Mar","Mer","Gio","Ven","Sab","Dom"]
-                st.info(f"🔄 Scambio attivo: oggi mostro il giro di **{giorni_nomi_swap[idx_effettivo]} {data_effettiva_oggi.strftime('%d/%m/%Y')}** (scambiato con oggi)")
+                # Banner "Scambio attivo" SPOSTATO in fondo alla vista
+                # giorni_nomi_swap = ["Lun","Mar","Mer","Gio","Ven","Sab","Dom"]
+                # st.info(f"🔄 Scambio attivo: oggi mostro il giro di **{giorni_nomi_swap[idx_effettivo]} {data_effettiva_oggi.strftime('%d/%m/%Y')}** (scambiato con oggi)")
                 # Invalida cache ottimizzazione Google (idx è cambiato)
                 for _k in ['_tappe_ottimizzate', '_route_cache_key', '_route_info']:
                     if _k in st.session_state:
@@ -3839,18 +3818,19 @@ def main_app():
             # Manteniamo solo la cache Google Maps ottimization in session_state (non persistita).
             _giro_da_salvare = False  # disabilitato: fonte unica = agenda calcolata
             
-            # === 🔍 DIAGNOSTICA (solo se scambio attivo) — ti dice ESATTAMENTE cosa mostra il giro ===
+            # === 🔍 DIAGNOSTICA: SPOSTATA in fondo alla vista ===
+            # (salvo i dati in session_state per renderizzare la diagnostica dopo la lista clienti)
             if oggi_in_scambio_gg:
-                with st.expander("🔍 Diagnostica scambio Giro Oggi", expanded=False):
-                    st.markdown(f"**idx_effettivo usato nel calcolo:** `{idx_effettivo}` ({['Lun','Mar','Mer','Gio','Ven','Sab','Dom'][idx_effettivo]})")
-                    st.markdown(f"**data_effettiva_oggi:** `{data_effettiva_oggi}`")
-                    st.markdown(f"**oggi_date:** `{oggi_date}`")
-                    st.markdown(f"**giro_salvato presente:** `{giro_salvato is not None}` — ignorato perché scambio attivo: `{oggi_in_scambio_gg}`")
-                    st.markdown(f"**cache Google invalidata:** ✅")
-                    st.markdown(f"**Clienti calcolati da `calcola_piano_giornaliero(giorno={idx_effettivo})`:**")
-                    _nomi_calc = [t.get('nome_cliente', '?') for t in (tappe_oggi or [])]
-                    st.code(repr(_nomi_calc), language='python')
-                    st.caption(f"Totale: {len(_nomi_calc)} tappe calcolate")
+                st.session_state['_diag_giro_oggi_data'] = {
+                    'idx_effettivo': idx_effettivo,
+                    'data_effettiva_oggi': str(data_effettiva_oggi),
+                    'oggi_date': str(oggi_date),
+                    'giro_salvato_presente': giro_salvato is not None,
+                    'oggi_in_scambio_gg': oggi_in_scambio_gg,
+                    'nomi_tappe_calcolate': [t.get('nome_cliente', '?') for t in (tappe_oggi or [])],
+                }
+            else:
+                st.session_state.pop('_diag_giro_oggi_data', None)
             
             # OTTIMIZZAZIONE ORDINE CON GOOGLE MAPS (tempi stradali reali + TSP)
             if tappe_oggi and len(tappe_oggi) >= 2 and GOOGLE_MAPS_API_KEY:
@@ -4073,6 +4053,91 @@ def main_app():
                         st.link_button(f"🗺️ NAVIGA ({len(tappe_rimanenti)} tappe)", url, use_container_width=True, type="primary")
                     else:
                         st.success("🎉 Hai completato tutte le visite programmate!")
+                
+                # ============================================================
+                # === SEZIONI SECONDARIE (IN FONDO ALLA VISTA) ===
+                # Spostate qui per dare priorità visiva alla lista clienti:
+                # 1. ⚙️ Gestisci Giro (collassato)
+                # 2. 🚨 Alert clienti critici (compatto)
+                # 3. 🔄 Banner Scambio attivo (se presente)
+                # 4. 🔍 Diagnostica scambio (collassato, se scambio attivo)
+                # ============================================================
+                st.divider()
+                
+                # --- 1. Gestisci Giro (collassato) ---
+                with st.expander("⚙️ Gestisci Giro", expanded=False):
+                    variante_attuale_end = st.session_state.get('variante_giro', 0)
+                    if variante_attuale_end > 0:
+                        st.info(f"🔄 Giro rigenerato {variante_attuale_end} volta/e — Premi 🔄 in alto per provare un altro percorso")
+                        if st.button("↩️ Torna al giro originale", key="btn_reset_variante_end"):
+                            st.session_state.variante_giro = 0
+                            st.session_state._route_cache_key = None
+                            st.session_state._forza_ricalcolo = True
+                            st.rerun()
+                    
+                    st.write("**🚫 Escludi clienti dal giro di oggi:**")
+                    clienti_attivi_end = df[df['visitare'] == 'SI']['nome_cliente'].tolist() if not df.empty and 'visitare' in df.columns else []
+                    if clienti_attivi_end:
+                        esclusi_selezionati_end = st.multiselect(
+                            "Seleziona clienti da escludere:",
+                            sorted(clienti_attivi_end),
+                            default=st.session_state.esclusi_oggi,
+                            key="escludi_clienti_select_end"
+                        )
+                        col_esc1_end, col_esc2_end = st.columns(2)
+                        with col_esc1_end:
+                            if st.button("🔄 Ricalcola Giro", type="primary", use_container_width=True, key="btn_ricalcola_end"):
+                                st.session_state.esclusi_oggi = esclusi_selezionati_end
+                                st.session_state._forza_ricalcolo = True
+                                st.rerun()
+                        with col_esc2_end:
+                            if st.button("🗑️ Rimuovi Esclusioni", use_container_width=True, key="btn_rimuovi_esclusioni_end"):
+                                st.session_state.esclusi_oggi = []
+                                st.session_state._forza_ricalcolo = True
+                                st.rerun()
+                        if st.session_state.esclusi_oggi:
+                            st.warning(f"⚠️ **{len(st.session_state.esclusi_oggi)} clienti esclusi** dal giro di oggi")
+                    else:
+                        st.info("Nessun cliente attivo da escludere")
+                
+                # --- 2. Alert clienti critici (compatto) ---
+                _critici_end = [c for c in get_clienti_trascurati(df) if c['livello'] == 'critico']
+                if _critici_end:
+                    st.markdown(
+                        f'<div style="background:rgba(244,67,54,0.08);border:0.5px solid rgba(244,67,54,0.20);'
+                        f'border-radius:10px;padding:8px 14px;font-size:13px;color:inherit;'
+                        f'display:flex;align-items:center;gap:8px;margin:6px 0;">'
+                        f'<span>🚨</span><span><strong>{len(_critici_end)} clienti critici</strong> da visitare urgentemente</span>'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
+                
+                # --- 3. Banner Scambio attivo (se presente) ---
+                if oggi_in_scambio_gg:
+                    _giorni_nomi_swap_end = ["Lun","Mar","Mer","Gio","Ven","Sab","Dom"]
+                    st.markdown(
+                        f'<div style="background:rgba(33,150,243,0.10);border:0.5px solid rgba(33,150,243,0.25);'
+                        f'border-radius:10px;padding:8px 14px;font-size:13px;color:inherit;'
+                        f'display:flex;align-items:center;gap:8px;margin:6px 0;">'
+                        f'<span>🔄</span><span>Scambio attivo: mostro il giro di <strong>'
+                        f'{_giorni_nomi_swap_end[idx_effettivo]} {data_effettiva_oggi.strftime("%d/%m/%Y")}</strong></span>'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
+                
+                # --- 4. Diagnostica scambio (se scambio attivo) ---
+                _diag_data_end = st.session_state.get('_diag_giro_oggi_data')
+                if _diag_data_end:
+                    with st.expander("🔍 Diagnostica scambio Giro Oggi", expanded=False):
+                        _giorni_short = ['Lun','Mar','Mer','Gio','Ven','Sab','Dom']
+                        _ix = _diag_data_end['idx_effettivo']
+                        st.markdown(f"**idx_effettivo:** `{_ix}` ({_giorni_short[_ix] if _ix < 7 else '?'})")
+                        st.markdown(f"**data_effettiva_oggi:** `{_diag_data_end['data_effettiva_oggi']}`")
+                        st.markdown(f"**oggi_date:** `{_diag_data_end['oggi_date']}`")
+                        st.markdown(f"**giro_salvato presente:** `{_diag_data_end['giro_salvato_presente']}` — ignorato perché scambio attivo")
+                        st.markdown(f"**Clienti nel giro calcolato:**")
+                        st.code(repr(_diag_data_end['nomi_tappe_calcolate']), language='python')
+                        st.caption(f"Totale: {len(_diag_data_end['nomi_tappe_calcolate'])} tappe")
                 
                 # === SEZIONE VISITE FUORI GIRO ===
                 st.divider()
