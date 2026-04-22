@@ -414,6 +414,101 @@ hr {
     margin-top: 18px !important;  /* allinea verticalmente con st.header */
 }
 
+/* === AGENDA — STILE COLONNE GIORNI (Alternativa A) ===
+   Header colonna compatto con nome giorno, numero grande, stats.
+   Mini-pulsanti azione 26x26.
+   Lista tappe con pallino numerato piccolo + nome cliente.
+*/
+.gv-day-header {
+    text-align: center;
+    padding: 8px 4px 10px;
+    border-radius: 10px;
+    background: rgba(128,128,128,0.06);
+    margin-bottom: 6px;
+    border: 0.5px solid rgba(128,128,128,0.12);
+}
+.gv-day-header-today {
+    background: rgba(33,150,243,0.08);
+    border-color: rgba(33,150,243,0.35);
+}
+.gv-day-header-swapped {
+    background: rgba(156,39,176,0.08);
+    border-color: rgba(156,39,176,0.35);
+}
+.gv-day-header-ferie {
+    background: rgba(255,152,0,0.08);
+    border-color: rgba(255,152,0,0.35);
+}
+.gv-day-dow {
+    font-size: 10px; color: rgba(128,128,128,0.95);
+    text-transform: uppercase; letter-spacing: 0.4px;
+    font-weight: 500;
+}
+.gv-day-header-today .gv-day-dow { color: #2196f3; }
+.gv-day-num {
+    font-size: 22px; font-weight: 500; line-height: 1;
+    margin: 2px 0;
+    color: var(--text-color);
+}
+.gv-day-stats {
+    font-size: 11px; color: rgba(128,128,128,0.95);
+    margin-top: 3px;
+}
+.gv-swap-badge {
+    display: inline-block;
+    font-size: 9px; text-transform: uppercase; letter-spacing: 0.3px;
+    background: rgba(156,39,176,0.2); color: #c77dd8;
+    padding: 1px 6px; border-radius: 8px;
+    margin-top: 4px;
+}
+
+/* Mini-pulsanti nella colonna giorno (Scambia / Mappa) — 26x26 */
+.gv-day-minibtn + div .stButton > button,
+.gv-day-minibtn ~ div .stButton > button {
+    min-height: 28px !important;
+    height: 28px !important;
+    padding: 2px !important;
+    font-size: 12px !important;
+    border-radius: 6px !important;
+}
+
+/* Lista tappa nella colonna giorno */
+.gv-ag-tappa {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 6px;
+    border-radius: 6px;
+    margin-bottom: 2px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.1s ease;
+    text-decoration: none !important;
+    color: inherit !important;
+}
+.gv-ag-tappa:hover {
+    background: rgba(128,128,128,0.08);
+}
+.gv-ag-num-mini {
+    width: 18px; height: 18px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 500; flex-shrink: 0;
+}
+.gv-ag-num-red { background: rgba(244,67,54,0.18); color: #f44336; }
+.gv-ag-num-orange { background: rgba(255,152,0,0.18); color: #ff9800; }
+.gv-ag-num-green { background: rgba(76,175,80,0.22); color: #4caf50; }
+.gv-ag-num-gray { background: rgba(128,128,128,0.18); }
+.gv-ag-tappa-name {
+    flex: 1; min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-size: 12px;
+    color: var(--text-color);
+}
+.gv-ag-empty {
+    font-size: 11px; color: rgba(128,128,128,0.9);
+    text-align: center; padding: 20px 6px; font-style: italic;
+}
+
 /* Nascondi il "Made with Streamlit" footer */
 footer, #MainMenu, [data-testid="stDecoration"] { visibility: hidden !important; }
 </style>
@@ -4878,11 +4973,22 @@ def main_app():
                 return ferie_inizio <= data <= ferie_fine
             return False
         
-        # Vista settimanale a colonne (tutta la settimana visibile)
+        # Vista settimanale a colonne (tutta la settimana visibile) - STILE RINNOVATO
         if giorni_attivi:
             
             totale_visite_settimana = 0
             totale_km_settimana = 0
+            
+            # Pre-calcola date scambiate (per badge "Scambio" sul giorno coinvolto)
+            date_in_scambio = set()
+            for (d1_iso, d2_iso) in (scambi_list or []):
+                try:
+                    _d1 = datetime.fromisoformat(d1_iso).date()
+                    _d2 = datetime.fromisoformat(d2_iso).date()
+                    date_in_scambio.add(_d1)
+                    date_in_scambio.add(_d2)
+                except Exception:
+                    pass
             
             cols_giorni = st.columns(len(giorni_attivi))
             
@@ -4891,39 +4997,70 @@ def main_app():
                 tappe_giorno = agenda_settimana.get(giorno_idx, [])
                 is_ferie = is_giorno_ferie_agenda(data_giorno)
                 is_oggi = data_giorno == oggi
+                is_swapped = data_giorno in date_in_scambio
                 
                 with cols_giorni[col_idx]:
-                    # Header compatto
+                    # Determina classe CSS header (oggi/scambio/ferie/normale)
+                    header_class = "gv-day-header"
+                    if is_ferie:
+                        header_class += " gv-day-header-ferie"
+                    elif is_oggi:
+                        header_class += " gv-day-header-today"
+                    elif is_swapped:
+                        header_class += " gv-day-header-swapped"
+                    
+                    # Etichetta giorno
                     nome_g = giorni_nomi_full[giorno_idx][:3]
-                    data_str = data_giorno.strftime('%d/%m')
+                    if is_ferie:
+                        dow_display = f"🏖️ {nome_g}"
+                    elif is_oggi:
+                        dow_display = f"📍 {nome_g}"
+                    else:
+                        dow_display = nome_g
+                    
+                    # Calcola stats giorno
+                    n_visite_g = len(tappe_giorno) if not is_ferie else 0
+                    km_g = sum(t.get('distanza_km', 0) for t in tappe_giorno) if not is_ferie else 0
                     
                     if is_ferie:
-                        st.markdown(f"##### 🏖️ {nome_g}")
-                    elif is_oggi:
-                        st.markdown(f"##### 📍 **{nome_g}**")
+                        stats_html = '<div class="gv-day-stats">Ferie</div>'
+                    elif tappe_giorno:
+                        stats_html = f'<div class="gv-day-stats">{n_visite_g} tappe · {km_g:.0f}km</div>'
                     else:
-                        st.markdown(f"##### {nome_g}")
-                    st.caption(data_str)
+                        stats_html = '<div class="gv-day-stats">—</div>'
                     
-                    # Pulsanti compatti
+                    # Badge scambio
+                    swap_badge_html = '<div class="gv-swap-badge">Scambio</div>' if is_swapped and not is_ferie else ''
+                    
+                    # Render header colonna (HTML unico)
+                    st.markdown(
+                        f'<div class="{header_class}">'
+                        f'<div class="gv-day-dow">{dow_display}</div>'
+                        f'<div class="gv-day-num">{data_giorno.strftime("%d/%m")}</div>'
+                        f'{stats_html}'
+                        f'{swap_badge_html}'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
+                    
+                    # Mini-pulsanti azione (Scambia + Mappa/Ferie) - compatti 28px
                     c1, c2 = st.columns(2)
                     with c1:
+                        st.markdown('<div class="gv-day-minibtn"></div>', unsafe_allow_html=True)
                         if st.session_state.giorno_da_scambiare is None:
-                            # Nessuno scambio in corso: click per avviare lo scambio
                             if st.button("🔄", key=f"swap_{data_giorno}", help="Scambia questo giorno", use_container_width=True):
                                 st.session_state.giorno_da_scambiare = data_giorno
                                 st.rerun()
                         elif st.session_state.giorno_da_scambiare == data_giorno:
-                            # Questo è il giorno selezionato: mostra stato
                             st.button("✅", key=f"swap_{data_giorno}", disabled=True, use_container_width=True,
                                      help="Giorno selezionato per lo scambio — usa il calendario sopra per scegliere con quale giorno scambiare")
                         else:
-                            # Un altro giorno è già in scambio: permetti di cambiare il giorno sorgente
                             if st.button("🔁", key=f"swap_{data_giorno}", use_container_width=True,
                                         help=f"Cambia giorno sorgente (sostituisce {st.session_state.giorno_da_scambiare.strftime('%d/%m')})"):
                                 st.session_state.giorno_da_scambiare = data_giorno
                                 st.rerun()
                     with c2:
+                        st.markdown('<div class="gv-day-minibtn"></div>', unsafe_allow_html=True)
                         if tappe_giorno and not is_ferie:
                             if st.button("🗺️", key=f"mappa_{data_giorno}", help="Mappa", use_container_width=True):
                                 tappe_per_mappa = tappe_giorno
@@ -4954,38 +5091,63 @@ def main_app():
                             else:
                                 st.button("🏖️", key=f"ferie_{data_giorno}", disabled=True, use_container_width=True)
                     
-                    st.divider()
-                    
-                    # Contenuto giorno
+                    # Contenuto giorno: lista tappe con pallino numerato piccolo
                     if is_ferie:
-                        st.warning("🏖️ **FERIE**")
+                        st.markdown('<div class="gv-ag-empty">🏖️ Ferie</div>', unsafe_allow_html=True)
                         continue
                     
                     if tappe_giorno:
-                        n_visite = len(tappe_giorno)
-                        km_g = sum(t.get('distanza_km', 0) for t in tappe_giorno)
-                        st.caption(f"🚗 {n_visite} · 🛣️ {km_g:.0f}km")
-                        
-                        totale_visite_settimana += n_visite
+                        totale_visite_settimana += n_visite_g
                         totale_km_settimana += km_g
                         
-                        for tappa in tappe_giorno[:8]:
+                        # Lista tappe con stile Alternativa A
+                        # Ogni tappa è un link che apre la scheda cliente (query param open_cliente)
+                        import urllib.parse as _urlp
+                        for idx_t, tappa in enumerate(tappe_giorno[:8], 1):
                             ritardo = tappa.get('ritardo', 0)
-                            badge = "🔴" if ritardo >= 14 else ("🟡" if ritardo >= 0 else "🟢")
-                            nome = tappa['nome_cliente'][:14] + ".." if len(tappa['nome_cliente']) > 14 else tappa['nome_cliente']
+                            urgenza_score = tappa.get('urgenza', 0)
                             
-                            if st.button(f"{badge} {nome}", key=f"ag_{data_giorno}_{tappa['nome_cliente']}", use_container_width=True):
-                                st.session_state.cliente_selezionato = tappa['nome_cliente']
-                                st.session_state.active_tab = "👤 Anagrafica"
-                                st.rerun()
+                            # Colore numero in base a urgenza/ritardo
+                            if ritardo == 999 or urgenza_score >= 80 or ritardo >= 14:
+                                num_cls = "gv-ag-num-red"
+                            elif ritardo >= 7 or urgenza_score >= 50:
+                                num_cls = "gv-ag-num-orange"
+                            elif ritardo >= 0 or urgenza_score >= 30:
+                                num_cls = "gv-ag-num-orange"
+                            else:
+                                num_cls = "gv-ag-num-gray"
+                            
+                            nome_c = tappa['nome_cliente']
+                            nome_display = nome_c[:16] + '..' if len(nome_c) > 16 else nome_c
+                            nome_safe = nome_display.replace('<', '&lt;').replace('>', '&gt;')
+                            
+                            # Link HTML preservando query params attuali (sessione)
+                            try:
+                                _qp = dict(st.query_params)
+                            except Exception:
+                                _qp = {}
+                            _qp['open_cliente'] = nome_c
+                            _query_string = _urlp.urlencode(_qp, doseq=True)
+                            link_url = f"?{_query_string}"
+                            
+                            st.markdown(
+                                f'<a href="{link_url}" class="gv-ag-tappa" target="_self">'
+                                f'<div class="gv-ag-num-mini {num_cls}">{idx_t}</div>'
+                                f'<div class="gv-ag-tappa-name">{nome_safe}</div>'
+                                f'</a>',
+                                unsafe_allow_html=True
+                            )
                         
                         if len(tappe_giorno) > 8:
-                            st.caption(f"+{len(tappe_giorno) - 8} altre")
+                            st.markdown(
+                                f'<div class="gv-ag-empty">+{len(tappe_giorno) - 8} altre</div>',
+                                unsafe_allow_html=True
+                            )
                     else:
                         if data_giorno < oggi:
-                            st.caption("📅 Passato")
+                            st.markdown('<div class="gv-ag-empty">📅 Passato</div>', unsafe_allow_html=True)
                         else:
-                            st.caption("📭 Vuoto")
+                            st.markdown('<div class="gv-ag-empty">📭 Vuoto</div>', unsafe_allow_html=True)
             
             # Statistiche settimana
             st.divider()
