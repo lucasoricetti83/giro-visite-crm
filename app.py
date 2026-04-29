@@ -2871,7 +2871,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         # === FUSIONE CLUSTER PICCOLI (< 5 clienti) con il cluster più vicino ===
         # Motivazione: un cluster con pochi clienti genera un giorno "leggero" (3-4 tappe invece di 8).
         # Li fondiamo nel cluster vicino, poi ridistribuiamo in modo bilanciato.
-        SOGLIA_MERGE = 5
+        SOGLIA_MERGE = 1
         
         def _baricentro(cl):
             if not cl:
