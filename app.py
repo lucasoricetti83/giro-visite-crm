@@ -2967,7 +2967,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 cambiato = True
             return clusters
         
-        cluster_giorni = _bilancia_cluster(cluster_giorni, SOGLIA_BILANCIA)
+        # cluster_giorni = _bilancia_cluster(cluster_giorni, SOGLIA_BILANCIA)  # DISABILITATO v12: spostava outlier nei giorni vuoti
         
         _snapshot_cluster("3. Post bilanciamento", cluster_giorni)
         
