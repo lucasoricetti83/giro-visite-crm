@@ -3041,7 +3041,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                     
                     # Score: urgenza normalizzata - penalità distanza
                     # 1km = ~1.2 minuti = penalità proporzionale
-                    score = c['urgenza'] - tempo_viaggio_min * 1.5
+                    score = c['urgenza'] - tempo_viaggio_min * (1.5 if len(selezionati) == 0 else 3.5)
                     
                     if score > migliore_score:
                         migliore_score = score
