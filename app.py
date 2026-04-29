@@ -3895,7 +3895,7 @@ def main_app():
                         df, config,
                         st.session_state.esclusi_oggi if offset_w_gg == 0 else [],
                         settimana_offset=offset_w_gg,
-                        variante=0  # stesso di Agenda → cluster coerenti
+                        variante=st.session_state.get('variante_giro', 0)  # rispetta Rigenera
                     )
                     tappe_oggi = list(ag_completa.get(idx_effettivo, []))
                 else:
@@ -3904,7 +3904,7 @@ def main_app():
                         df, config,
                         st.session_state.esclusi_oggi,
                         settimana_offset=0,
-                        variante=0  # stesso di Agenda → cluster coerenti
+                        variante=st.session_state.get('variante_giro', 0)  # rispetta Rigenera
                     )
                     tappe_oggi = list(ag_oggi.get(idx_effettivo, []))
             except Exception as e:
