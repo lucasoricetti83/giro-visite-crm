@@ -523,8 +523,16 @@ footer, #MainMenu, [data-testid="stDecoration"] { visibility: hidden !important;
 
 # --- FUNZIONI PER PERSISTENZA SESSIONE ---
 def generate_session_token(user_id, email):
-    """Genera un token di sessione sicuro"""
-    secret = "girovisitepro_secret_2024"  # In produzione usare un secret più sicuro
+    """Genera un token di sessione sicuro.
+    Il secret NON deve mai stare nel codice sorgente (specie se il repo è pubblico):
+    chiunque lo legga potrebbe forgiare un token valido per qualsiasi utente.
+    Va configurato tra i secrets di Streamlit Cloud come SESSION_SECRET
+    (stringa lunga e casuale, es. `openssl rand -hex 32`)."""
+    secret = st.secrets.get("SESSION_SECRET", "")
+    if not secret:
+        st.error("⚠️ **Configurazione mancante!** Aggiungi `SESSION_SECRET` tra i secrets di Streamlit Cloud "
+                  "(Settings → Secrets) — una stringa lunga e casuale, es. generata con `openssl rand -hex 32`.")
+        st.stop()
     data = f"{user_id}:{email}:{secret}"
     return hashlib.sha256(data.encode()).hexdigest()[:32]
 
@@ -2610,121 +2618,17 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         risultati_app[g_app] = selezionati
     
     # ========================================
-    # 5c. K-MEANS SUL POOL RIMANENTE (giorni senza app)
+    # NOTA: qui esisteva un primo clustering (ex step 5c-7: kmeans_geo su
+    # pool_rimanente → zone_info → rotazione per variante → assegnazione zone/giorni)
+    # che veniva calcolato ad ogni run ma il cui risultato (`assegnazione`, `zone_info`)
+    # non era MAI letto a valle: l'assegnazione clienti→giorni reale avviene con un
+    # secondo k-means indipendente allo step 11 qui sotto (`cluster_giorni`).
+    # Rimosso perché codice morto — lavoro sprecato ad ogni rerun di Streamlit senza
+    # alcun effetto sul risultato. Il vincolo di prossimità a 20km che questo blocco
+    # applicava in fase di "riempimento zona" è stato riportato nel bilanciamento
+    # a step 11 (_bilancia_cluster, max_km_spostamento) così l'idea non si perde.
     # ========================================
-    pool_rimanente = [c for c in pool if c['nome'] not in nomi_usati_da_app]
-    # Crea SEMPRE molte zone (1 zona ogni ~6-8 clienti) per granularità geografica
-    # Anche con 1 solo giorno, avere più zone permette di scegliere la più compatta
-    if pool_rimanente:
-        # Almeno 4 zone, max len(pool)/5, target = pool/6
-        n_zone = max(4, min(len(pool_rimanente) // 5, len(pool_rimanente) // 6 + n_giorni_senza_app * 2))
-    else:
-        n_zone = max(1, n_giorni_senza_app)
-    n_zone = max(1, n_zone)
-    
-    if len(pool_rimanente) >= n_zone and n_zone > 0:
-        zone_raw, zone_centers = kmeans_geo(pool_rimanente, n_zone)
-    elif pool_rimanente:
-        zone_raw = [pool_rimanente] + [[] for _ in range(n_zone - 1)]
-        zone_centers = [(pool_rimanente[0]['lat'], pool_rimanente[0]['lon'])] + [(base_lat, base_lon)] * (n_zone - 1)
-    else:
-        zone_raw = [[] for _ in range(n_zone)]
-        zone_centers = [(base_lat, base_lon)] * n_zone
-    
-    # Le zone contengono TUTTI i clienti del pool raggruppati per vicinanza.
-    # Lo step 11 selezionerà i max_visite più urgenti per ogni zona.
-    # NON bilanciare qui — spostare clienti tra zone crea giri assurdi.
-    
-    # Ordina zone per angolo dalla base (così sono geograficamente ordinate)
-    zone_info = []
-    for i, z in enumerate(zone_raw):
-        if not z:
-            zone_info.append({'clienti': [], 'angle': 999 + i, 'center': zone_centers[i]})
-            continue
-        cx = sum(c['lat'] for c in z) / len(z)
-        cy = sum(c['lon'] for c in z) / len(z)
-        angle = math_degrees(atan2(cx - base_lat, cy - base_lon)) % 360
-        zone_info.append({'clienti': z, 'angle': angle, 'center': (cx, cy)})
-    
-    zone_info.sort(key=lambda z: z['angle'])
-    
-    # ========================================
-    # 6. VARIANTE (Rigenera): ruota assegnazione zone
-    # ========================================
-    if variante > 0 and len(zone_info) > 1:
-        shift = variante % len(zone_info)
-        zone_info = zone_info[shift:] + zone_info[:shift]
-    
-    # ========================================
-    # 7. ASSEGNA ZONE → GIORNI (semplice: 1 zona migliore + vicini)
-    # ========================================
-    assegnazione = {}
-    giorni_senza_app = [g for g in giorni if g not in giorni_con_app]
-    n_gsa = len(giorni_senza_app)
-    
-    if n_gsa > 0 and zone_info:
-        # Filtra zone vuote
-        zone_valide = [z for z in zone_info if z['clienti']]
-        
-        # Calcola score di ogni zona: urgenza media + bonus per dimensione
-        def score_zona(z):
-            cls = z['clienti']
-            urg_media = sum(c['urgenza'] for c in cls) / len(cls)
-            # Bonus dimensione: zone con almeno max_visite clienti hanno priorità
-            bonus_size = min(len(cls) / max_visite, 1.0) * 20
-            return urg_media + bonus_size
-        
-        zone_valide.sort(key=lambda z: -score_zona(z))
-        
-        # NESSUNA rotazione settimanale sui cluster — così le zone geografiche
-        # rimangono stabili tra settimane diverse. La varietà viene data solo
-        # dall'ordine interno di selezione (bias su urgenza < 60, vedi simula_giornata).
-        
-        zone_usate = set()
-        
-        for idx_g, g in enumerate(giorni_senza_app):
-            # Trova prima zona non usata con almeno 1 cliente
-            zona_scelta = None
-            for i, z in enumerate(zone_valide):
-                if i not in zone_usate and z['clienti']:
-                    zona_scelta = z
-                    zone_usate.add(i)
-                    break
-            
-            if zona_scelta is None:
-                assegnazione[g] = {'clienti': [], 'center': (base_lat, base_lon)}
-                continue
-            
-            # Centro della zona
-            cls_zona = zona_scelta['clienti']
-            cx_z = sum(c['lat'] for c in cls_zona) / len(cls_zona)
-            cy_z = sum(c['lon'] for c in cls_zona) / len(cls_zona)
-            
-            # Se la zona ha meno di max_visite clienti, aggiungi vicini dalle altre zone
-            if len(cls_zona) < max_visite:
-                vicini = []
-                for i, z2 in enumerate(zone_valide):
-                    if i in zone_usate:
-                        continue
-                    for c in z2['clienti']:
-                        d = haversine(c['lat'], c['lon'], cx_z, cy_z)
-                        if d <= 20:  # solo entro 20km dal centro
-                            vicini.append((d, c, i))
-                
-                vicini.sort(key=lambda x: x[0])
-                # Aggiungi vicini fino a riempire max_visite (no buffer per evitare outlier)
-                target = max_visite
-                for d, c, i_zona in vicini:
-                    if len(cls_zona) >= target:
-                        break
-                    cls_zona.append(c)
-            
-            # Ricalcola centro dopo l'aggiunta
-            cx = sum(c['lat'] for c in cls_zona) / len(cls_zona)
-            cy = sum(c['lon'] for c in cls_zona) / len(cls_zona)
-            
-            assegnazione[g] = {'clienti': cls_zona, 'center': (cx, cy)}
-    
+
     # ========================================
     # 9-10. COSTRUISCI ANELLO PER OGNI GIORNO
     # ========================================
@@ -2871,7 +2775,10 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         # === FUSIONE CLUSTER PICCOLI (< 5 clienti) con il cluster più vicino ===
         # Motivazione: un cluster con pochi clienti genera un giorno "leggero" (3-4 tappe invece di 8).
         # Li fondiamo nel cluster vicino, poi ridistribuiamo in modo bilanciato.
-        SOGLIA_MERGE = 1
+        # NOTA: prima era impostato a 1, quindi in pratica non fondeva mai nulla (nessun cluster reale
+        # ha meno di 1 cliente) — i cluster piccoli/outlier restavano isolati invece di essere assorbiti
+        # in una zona vicina più sensata. Riportato a 5, coerente con l'intento originale del commento.
+        SOGLIA_MERGE = 5
         
         def _baricentro(cl):
             if not cl:
@@ -2929,46 +2836,71 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
         # mentre altri sono vuoti. Ribilanciamo in modo che ogni cluster ≈ pool/n_giorni_liberi.
         SOGLIA_BILANCIA = int(len(pool_per_giorni) / max(1, n_giorni_liberi)) + 3
         
-        def _bilancia_cluster(clusters, max_per_cluster):
+        def _bilancia_cluster(clusters, max_per_cluster, max_km_spostamento=20):
             """
-            Se un cluster ha troppi clienti, i più lontani dal suo baricentro
-            vengono spostati nei cluster vuoti (o meno pieni).
+            Se un cluster ha troppi clienti, sposta i più lontani dal suo baricentro
+            verso il cluster CON SPAZIO LIBERO PIÙ VICINO — ma solo se quella destinazione
+            è entro max_km_spostamento dal cliente stesso.
+
+            NOTA v13: la versione precedente spostava sempre verso il cluster globalmente
+            più vuoto, senza guardare la distanza — così un cliente lontano finiva scaricato
+            in un giorno "vuoto" solo perché quel giorno aveva posto, rovinando la compattezza
+            geografica del giro (esattamente il motivo per cui era stata disattivata in v12).
+            Ora si sposta solo se c'è una destinazione vicina; altrimenti si preferisce
+            lasciare un giorno un po' più pieno piuttosto che creare un giro sparso.
             """
             clusters = [list(c) for c in clusters]  # copia mutabile
             n = len(clusters)
             cambiato = True
             iterazioni = 0
-            while cambiato and iterazioni < 10:
+            while cambiato and iterazioni < 20:
                 cambiato = False
                 iterazioni += 1
-                # Trova cluster più pieno e cluster più vuoto
+
+                # Cluster più pieno (deve superare il limite per proseguire)
                 idx_pieno = max(range(n), key=lambda i: len(clusters[i]))
-                idx_vuoto = min(range(n), key=lambda i: len(clusters[i]))
-                
                 if len(clusters[idx_pieno]) <= max_per_cluster:
                     break
-                if len(clusters[idx_vuoto]) >= max_per_cluster:
-                    break
-                if idx_pieno == idx_vuoto:
-                    break
-                
-                # Sposta il cliente più lontano dal baricentro del pieno
-                # (quello più outlier) nel vuoto
+
                 bar_pieno = _baricentro(clusters[idx_pieno])
                 if bar_pieno is None:
                     break
-                # Trova cliente più distante dal baricentro
-                cliente_outlier = max(
+
+                # Candidati all'espulsione, dal più lontano dal baricentro del proprio cluster
+                candidati_outlier = sorted(
                     clusters[idx_pieno],
-                    key=lambda c: haversine(c['lat'], c['lon'], bar_pieno[0], bar_pieno[1])
+                    key=lambda c: -haversine(c['lat'], c['lon'], bar_pieno[0], bar_pieno[1])
                 )
-                clusters[idx_pieno] = [c for c in clusters[idx_pieno] if c['nome'] != cliente_outlier['nome']]
-                clusters[idx_vuoto].append(cliente_outlier)
-                cambiato = True
+
+                spostato = False
+                for outlier in candidati_outlier:
+                    # Cerca, tra i cluster con posto libero, quello geograficamente più vicino all'outlier
+                    miglior_idx_dest = None
+                    miglior_d = float('inf')
+                    for idx_dest in range(n):
+                        if idx_dest == idx_pieno or len(clusters[idx_dest]) >= max_per_cluster:
+                            continue
+                        bar_dest = _baricentro(clusters[idx_dest])
+                        d = haversine(outlier['lat'], outlier['lon'], bar_dest[0], bar_dest[1]) if bar_dest else outlier.get('dist_base', float('inf'))
+                        if d < miglior_d:
+                            miglior_d = d
+                            miglior_idx_dest = idx_dest
+
+                    if miglior_idx_dest is not None and miglior_d <= max_km_spostamento:
+                        clusters[idx_pieno] = [c for c in clusters[idx_pieno] if c['nome'] != outlier['nome']]
+                        clusters[miglior_idx_dest].append(outlier)
+                        cambiato = True
+                        spostato = True
+                        break  # ricomincia il while per rivalutare il cluster più pieno
+
+                if not spostato:
+                    # Nessun cliente in eccesso ha una destinazione entro il raggio consentito:
+                    # meglio fermarsi che rovinare la compattezza geografica di un altro giorno.
+                    break
             return clusters
-        
-        # cluster_giorni = _bilancia_cluster(cluster_giorni, SOGLIA_BILANCIA)  # DISABILITATO v12: spostava outlier nei giorni vuoti
-        
+
+        cluster_giorni = _bilancia_cluster(cluster_giorni, SOGLIA_BILANCIA)
+
         _snapshot_cluster("3. Post bilanciamento", cluster_giorni)
         
         # Ordina cluster per angolo dalla base
@@ -7108,7 +7040,58 @@ def main_app():
             # Invalida cache agenda (il max cambia → i giri cambiano)
             st.session_state.pop('_agende_cache', None)
             st.toast(f"✅ Max visite/giorno: {max_vis_nuovo}", icon="✅")
-        
+
+        st.divider()
+        st.subheader("🔁 Frequenza Visite in Blocco")
+        st.caption("Imposta la stessa cadenza per tutti i clienti attivi in un solo colpo (es. 2 visite al mese = ogni 15 giorni) "
+                    "e assicura che il weekend resti escluso dalla pianificazione.")
+
+        col_freq1, col_freq2 = st.columns([2, 1])
+        with col_freq1:
+            freq_bulk_giorni = st.number_input(
+                "Cadenza visite (giorni tra una visita e l'altra)",
+                min_value=1, max_value=180, value=15,
+                help="15 giorni ≈ 2 visite al mese"
+            )
+        with col_freq2:
+            st.write("")
+            st.write("")
+            if st.button("📅 Applica a tutti i clienti attivi", use_container_width=True, type="primary", key="btn_freq_bulk"):
+                try:
+                    user_id_bulk = get_user_id()
+                    n_aggiornati = 0
+                    if user_id_bulk:
+                        # Un solo update in blocco su Supabase — esclude automaticamente i record
+                        # interni (__SCAMBI_GIORNI__, __GIRO_SALVATO__) perché hanno visitare='NO'
+                        resp_bulk = supabase.table('clienti').update(
+                            {'frequenza_giorni': int(freq_bulk_giorni)}
+                        ).eq('user_id', user_id_bulk).eq('visitare', 'SI').execute()
+                        n_aggiornati = len(resp_bulk.data) if resp_bulk.data else 0
+
+                    # Assicura che sabato e domenica restino esclusi dalla pianificazione
+                    giorni_lav_attuali = config.get('giorni_lavorativi', [0, 1, 2, 3, 4])
+                    if isinstance(giorni_lav_attuali, str):
+                        giorni_lav_attuali = [int(x) for x in giorni_lav_attuali.strip('{}').split(',')]
+                    giorni_lav_puliti = [g for g in giorni_lav_attuali if g not in (5, 6)]
+                    if not giorni_lav_puliti:
+                        giorni_lav_puliti = [0, 1, 2, 3, 4]
+                    weekend_rimosso = giorni_lav_puliti != giorni_lav_attuali
+                    if weekend_rimosso:
+                        config['giorni_lavorativi'] = giorni_lav_puliti
+                        save_config(config)
+                        st.session_state.config = config
+
+                    st.session_state.reload_data = True
+                    st.session_state.pop('_agende_cache', None)
+                    msg = f"✅ Frequenza aggiornata a {int(freq_bulk_giorni)} giorni per {n_aggiornati} clienti attivi."
+                    if weekend_rimosso:
+                        msg += " Sabato e Domenica rimossi dai giorni lavorativi."
+                    st.success(msg)
+                    time_module.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Errore aggiornamento in blocco: {str(e)}")
+
         st.divider()
         st.subheader("🏖️ Ferie / Giorni di Chiusura")
         
@@ -7977,7 +7960,82 @@ def main_app():
                         st.rerun()
                     except Exception as e:
                         st.error(f"Errore: {e}")
-        
+
+        st.divider()
+        st.subheader("🧹 Candidati alla Disattivazione")
+        st.caption("Clienti che probabilmente non hanno più senso nel giro: mai contattati e senza alcuno storico, "
+                    "oppure in ritardo cronico da molto tempo (competono sempre per uno slot con urgenza massima "
+                    "senza che nessuno li visiti mai). Vengono solo SEGNALATI — la disattivazione (visitare=NO) "
+                    "avviene solo se la approvi qui sotto, cliente per cliente.")
+
+        soglia_cronico = st.slider(
+            "Considera 'in ritardo cronico' oltre (giorni)",
+            min_value=60, max_value=365, value=180, step=10,
+            key="soglia_cronico_disattiva"
+        )
+
+        if not df.empty and 'visitare' in df.columns:
+            df_attivi_diag = df[df['visitare'] == 'SI'].copy()
+            oggi_diag = ora_italiana.date()
+
+            candidati_mai_contattato = []
+            candidati_cronici = []
+
+            for _, r in df_attivi_diag.iterrows():
+                ultima_c = r.get('ultima_visita')
+                storico_c = str(r.get('storico_report', '') or '').strip()
+
+                if pd.isnull(ultima_c):
+                    # Mai visitato: candidato solo se non ha NEMMENO uno storico
+                    # (altrimenti potrebbe essere un lead nuovo appena inserito)
+                    if not storico_c:
+                        candidati_mai_contattato.append(r)
+                    continue
+
+                freq_c = int(r.get('frequenza_giorni', 30))
+                ultima_date_c = ultima_c.date() if hasattr(ultima_c, 'date') else ultima_c
+                prossima_c = ultima_date_c + timedelta(days=freq_c)
+                ritardo_c = (oggi_diag - prossima_c).days
+                if ritardo_c > soglia_cronico:
+                    candidati_cronici.append((r, ritardo_c))
+
+            candidati_cronici.sort(key=lambda x: -x[1])
+            tot_candidati = len(candidati_mai_contattato) + len(candidati_cronici)
+
+            if tot_candidati == 0:
+                st.success("✅ Nessun candidato alla disattivazione con i criteri attuali.")
+            else:
+                st.warning(f"⚠️ **{tot_candidati} clienti** rispondono ai criteri sopra.")
+                selezionati_disattiva = []
+
+                if candidati_mai_contattato:
+                    st.markdown(f"**🔵 Mai contattati, senza storico ({len(candidati_mai_contattato)}):**")
+                    for r in candidati_mai_contattato:
+                        luogo = r.get('citta', '') or r.get('indirizzo', '') or ''
+                        if st.checkbox(f"{r['nome_cliente']} — {luogo}", key=f"deact_mc_{r['id']}"):
+                            selezionati_disattiva.append(r['id'])
+
+                if candidati_cronici:
+                    st.markdown(f"**🔴 In ritardo cronico oltre {soglia_cronico}gg ({len(candidati_cronici)}):**")
+                    for r, ritardo_c in candidati_cronici:
+                        if st.checkbox(f"{r['nome_cliente']} — in ritardo da {ritardo_c}gg", key=f"deact_cr_{r['id']}"):
+                            selezionati_disattiva.append(r['id'])
+
+                if selezionati_disattiva:
+                    if st.button(f"❌ Disattiva {len(selezionati_disattiva)} clienti selezionati",
+                                 type="primary", key="btn_disattiva_candidati"):
+                        n_ok = 0
+                        for cid in selezionati_disattiva:
+                            if update_cliente(cid, {'visitare': 'NO'}):
+                                n_ok += 1
+                        st.session_state.reload_data = True
+                        st.session_state.pop('_agende_cache', None)
+                        st.success(f"✅ {n_ok} clienti disattivati (visitare=NO).")
+                        time_module.sleep(1)
+                        st.rerun()
+                else:
+                    st.caption("Seleziona i clienti da disattivare con le checkbox sopra, poi conferma col bottone.")
+
         st.divider()
         st.subheader("🗑️ Elimina Tutti i Dati")
         st.warning("⚠️ Questa azione è **IRREVERSIBILE**!")
