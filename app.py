@@ -1368,39 +1368,103 @@ def fetch_clienti():
                 df['citta'] = df['citta'].fillna('')
             else:
                 df['citta'] = ''
-            
+
+            # Fascia oraria preferita (Mattina/Pomeriggio/Indifferente)
+            if 'fascia_preferita' in df.columns:
+                df['fascia_preferita'] = df['fascia_preferita'].fillna('Indifferente').astype(str).str.strip().str.capitalize()
+                df.loc[~df['fascia_preferita'].isin(['Mattina', 'Pomeriggio']), 'fascia_preferita'] = 'Indifferente'
+            else:
+                df['fascia_preferita'] = 'Indifferente'
+
             return df
         return pd.DataFrame()
     except Exception as e:
         st.error(f"❌ Errore caricamento clienti: {str(e)}")
         return pd.DataFrame()
 
+def _colonna_mancante(err_str):
+    """Estrae il nome della colonna da un errore PGRST204 'Could not find the X column', se presente."""
+    match = re.search(r"find the '([^']+)' column", err_str)
+    return match.group(1) if match else None
+
 def save_cliente(cliente_data):
-    """Salva un nuovo cliente"""
+    """
+    Salva un nuovo cliente. Resiliente a colonne non ancora presenti nello schema
+    Supabase (es. `fascia_preferita` appena introdotta): se manca, la rimuove e
+    ritenta, avvisando una sola volta per sessione — non blocca il salvataggio
+    degli altri campi.
+    """
     try:
         user_id = get_user_id()
+        cliente_data = dict(cliente_data)
         cliente_data['user_id'] = user_id
-        response = supabase.table('clienti').insert(cliente_data).execute()
-        return True
+        colonne_rimosse = []
+        for _tentativo in range(8):
+            try:
+                response = supabase.table('clienti').insert(cliente_data).execute()
+                if colonne_rimosse and not st.session_state.get('_avviso_colonne_clienti_mostrato'):
+                    cols_str = ", ".join(f"`{c}`" for c in colonne_rimosse)
+                    st.warning(
+                        f"ℹ️ Alcuni campi ({cols_str}) non sono ancora presenti nel database e non sono "
+                        f"stati salvati. Aggiungi le colonne alla tabella `clienti` in Supabase per renderli permanenti."
+                    )
+                    st.session_state['_avviso_colonne_clienti_mostrato'] = True
+                return True
+            except Exception as e_ins:
+                col = _colonna_mancante(str(e_ins))
+                if col and col in cliente_data:
+                    colonne_rimosse.append(col)
+                    del cliente_data[col]
+                    continue
+                raise
+        st.error(f"❌ Impossibile salvare dopo diversi tentativi. Colonne problematiche: {colonne_rimosse}")
+        return False
     except Exception as e:
         st.error(f"❌ Errore salvataggio: {str(e)}")
         return False
 
 def update_cliente(cliente_id, update_data):
-    """Aggiorna un cliente esistente"""
+    """
+    Aggiorna un cliente esistente. Resiliente a colonne non ancora presenti nello
+    schema Supabase (es. `fascia_preferita` appena introdotta): se manca, la rimuove
+    e ritenta, così una singola colonna mancante non blocca il salvataggio di tutti
+    gli altri campi modificati insieme.
+    """
     try:
-        response = supabase.table('clienti').update(update_data).eq('id', cliente_id).execute()
-        # Supabase/PostgREST non solleva sempre un'eccezione se la RLS blocca la scrittura:
-        # a volte restituisce semplicemente 0 righe modificate senza errore. Se non risulta
-        # nessuna riga aggiornata, è un fallimento "silenzioso" che va segnalato esplicitamente,
-        # altrimenti l'utente vede il pulsante non fare nulla senza sapere perché.
-        if not response.data:
-            st.error(
-                "❌ Nessuna riga aggiornata (probabile blocco permessi/RLS o cliente non trovato). "
-                "Se il problema persiste dopo un refresh, controlla il secret SUPABASE_SERVICE_ROLE_KEY su Streamlit Cloud."
-            )
-            return False
-        return True
+        update_data = dict(update_data)
+        colonne_rimosse = []
+        for _tentativo in range(8):
+            try:
+                response = supabase.table('clienti').update(update_data).eq('id', cliente_id).execute()
+                # Supabase/PostgREST non solleva sempre un'eccezione se la RLS blocca la scrittura:
+                # a volte restituisce semplicemente 0 righe modificate senza errore. Se non risulta
+                # nessuna riga aggiornata, è un fallimento "silenzioso" che va segnalato esplicitamente,
+                # altrimenti l'utente vede il pulsante non fare nulla senza sapere perché.
+                if not response.data:
+                    st.error(
+                        "❌ Nessuna riga aggiornata (probabile blocco permessi/RLS o cliente non trovato). "
+                        "Se il problema persiste dopo un refresh, controlla il secret SUPABASE_SERVICE_ROLE_KEY su Streamlit Cloud."
+                    )
+                    return False
+                if colonne_rimosse and not st.session_state.get('_avviso_colonne_clienti_mostrato'):
+                    cols_str = ", ".join(f"`{c}`" for c in colonne_rimosse)
+                    st.warning(
+                        f"ℹ️ Alcuni campi ({cols_str}) non sono ancora presenti nel database e non sono "
+                        f"stati salvati. Aggiungi le colonne alla tabella `clienti` in Supabase per renderli permanenti."
+                    )
+                    st.session_state['_avviso_colonne_clienti_mostrato'] = True
+                return True
+            except Exception as e_upd:
+                col = _colonna_mancante(str(e_upd))
+                if col and col in update_data:
+                    colonne_rimosse.append(col)
+                    del update_data[col]
+                    if not update_data:
+                        return True  # non restava nient'altro da salvare
+                    continue
+                raise
+        st.error(f"❌ Impossibile aggiornare dopo diversi tentativi. Colonne problematiche: {colonne_rimosse}")
+        return False
     except Exception as e:
         st.error(f"❌ Errore aggiornamento: {str(e)}")
         return False
@@ -2449,6 +2513,56 @@ def clear_gps_from_url():
         if key in st.query_params:
             del st.query_params[key]
 
+def _tappa_ha_orario_fisso(t):
+    """
+    Vero se la tappa ha già un orario stabilito (appuntamento) e quindi non va spostata
+    nella sequenza per rispettare le preferenze di fascia oraria degli altri clienti.
+    """
+    if t.get('is_app'):
+        return True
+    tipo = str(t.get('tipo_tappa', '') or '')
+    return 'APPUNTAMENTO' in tipo.upper()
+
+def applica_preferenza_fascia_oraria(tappe):
+    """
+    Riordina una lista di tappe/clienti in modo che quelle con preferenza "Mattina"
+    vengano SEMPRE prima di quelle con preferenza "Pomeriggio" nello stesso giorno
+    (vincolo rigido, impostabile per singolo cliente in Anagrafica). L'ordine relativo
+    originale viene mantenuto il più possibile all'interno di ciascun gruppo, per non
+    stravolgere inutilmente l'ottimizzazione geografica del percorso. Le tappe con un
+    orario già fissato (appuntamenti) restano ancorate alla loro posizione originale.
+
+    Va richiamata come ULTIMO passaggio prima di mostrare/salvare l'ordine di un giorno,
+    quindi anche dopo un eventuale riordino con Google Maps (che altrimenti potrebbe
+    rimescolare di nuovo mattina/pomeriggio).
+    """
+    if not tappe or len(tappe) <= 1:
+        return tappe
+
+    indici_liberi = [i for i, t in enumerate(tappe) if not _tappa_ha_orario_fisso(t)]
+    if len(indici_liberi) <= 1:
+        return tappe
+
+    mattina, indiff, pomeriggio = [], [], []
+    for i in indici_liberi:
+        t = tappe[i]
+        f = str(t.get('fascia_preferita') or t.get('fascia') or 'Indifferente').strip().capitalize()
+        if f == 'Mattina':
+            mattina.append(t)
+        elif f == 'Pomeriggio':
+            pomeriggio.append(t)
+        else:
+            indiff.append(t)
+
+    if not mattina and not pomeriggio:
+        return tappe  # nessuna preferenza impostata su questi clienti: nulla da fare
+
+    nuovo_ordine_liberi = mattina + indiff + pomeriggio
+    nuove_tappe = list(tappe)
+    for i, t in zip(indici_liberi, nuovo_ordine_liberi):
+        nuove_tappe[i] = t
+    return nuove_tappe
+
 # --- 5. CALCOLO GIRO OTTIMIZZATO (v8 — CLUSTER CITTÀ + ANELLI) ---
 def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, variante=0, override_ultima_visita=None, giorni_non_disponibili=None, spostamenti_cliente=None):
     """
@@ -2631,7 +2745,11 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                         continue
         
         flat, flon = float(lat), float(lon)
-        
+
+        fascia_pref = str(r.get('fascia_preferita', 'Indifferente') or 'Indifferente').strip().capitalize()
+        if fascia_pref not in ('Mattina', 'Pomeriggio'):
+            fascia_pref = 'Indifferente'
+
         tutti.append({
             'id': r['id'],
             'nome': r['nome_cliente'],
@@ -2644,7 +2762,8 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             'urgenza': urgenza,
             'giorni_ritardo': giorni_ritardo,
             'frequenza': freq,
-            'prossima_visita': prossima_visita
+            'prossima_visita': prossima_visita,
+            'fascia_preferita': fascia_pref
         })
     
     if not tutti:
@@ -3585,15 +3704,19 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     # ========================================
     for giorno in giorni_calcolo:
         data_g, giro = risultati.get(giorno, (lunedi + timedelta(days=giorno), []))
-        
+
+        # Vincolo rigido: clienti "Mattina" sempre prima di quelli "Pomeriggio"
+        # nello stesso giorno (appuntamenti esclusi, restano al loro orario fisso).
+        giro = applica_preferenza_fascia_oraria(giro)
+
         tappe_finali = []
         pos_lat, pos_lon = base_lat, base_lon
         ora = datetime.combine(data_g, ora_inizio)
-        
+
         for c in giro:
             dist = haversine(pos_lat, pos_lon, c['lat'], c['lon'])
             tempo = (dist / velocita_media) * 60
-            
+
             if c.get('is_app'):
                 ora_arr = c.get('ora_app', '09:00')
             else:
@@ -3603,7 +3726,7 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                     arrivo = ora + timedelta(minutes=tempo)
                 ora_arr = arrivo.strftime('%H:%M')
                 ora = arrivo + timedelta(minutes=durata_visita)
-            
+
             tappe_finali.append({
                 'id': c['id'],
                 'nome_cliente': c['nome'],
@@ -3616,7 +3739,8 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 'distanza_km': round(dist, 1),
                 'ritardo': c.get('giorni_ritardo', 0),
                 'citta': c.get('citta', ''),
-                'urgenza': c.get('urgenza', 0)
+                'urgenza': c.get('urgenza', 0),
+                'fascia_preferita': c.get('fascia_preferita', 'Indifferente')
             })
             pos_lat, pos_lon = c['lat'], c['lon']
         
@@ -4371,9 +4495,13 @@ def main_app():
                         'distanza_km': round(_dist_ex, 1),
                         'ritardo': _rit_ex,
                         'citta': _r_ex.get('citta', ''),
-                        'urgenza': _urg_ex
+                        'urgenza': _urg_ex,
+                        'fascia_preferita': str(_r_ex.get('fascia_preferita', 'Indifferente') or 'Indifferente')
                     })
                     _pos_lat_ex, _pos_lon_ex = _lat_ex, _lon_ex
+
+            # Vincolo rigido fascia oraria anche sui clienti aggiunti manualmente
+            tappe_oggi = applica_preferenza_fascia_oraria(tappe_oggi)
 
             # === SALVATAGGIO GIRO ===
             # Non salviamo più il "giro di oggi" come record separato — era fonte di bug.
@@ -4421,7 +4549,11 @@ def main_app():
                 else:
                     route_info = st.session_state.get('_route_info')
                     tappe_oggi = st.session_state.get('_tappe_ottimizzate', tappe_oggi)
-            
+
+                # Riapplica il vincolo rigido fascia oraria: Google Maps potrebbe aver
+                # rimescolato l'ordine deciso dall'algoritmo interno.
+                tappe_oggi = applica_preferenza_fascia_oraria(tappe_oggi)
+
             # === SALVA GIRO SU DB → DISABILITATO ===
             # Il record persistente __GIRO_SALVATO__ causava bug:
             # - Giro Oggi leggeva IDs vecchi dopo scambi/riorganizzazioni
@@ -5657,6 +5789,8 @@ def main_app():
                             try:
                                 tappe_giorno, route_info_giorno = ottimizza_ordine_con_google(
                                     tappe_giorno, _blat_ag, _blon_ag, GOOGLE_MAPS_API_KEY)
+                                # Google potrebbe aver rimescolato mattina/pomeriggio: riapplica il vincolo
+                                tappe_giorno = applica_preferenza_fascia_oraria(tappe_giorno)
                             except Exception:
                                 route_info_giorno = None
                             _rc_ag[_rc_key_ag] = (tappe_giorno, route_info_giorno)
@@ -5998,6 +6132,7 @@ def main_app():
                     try:
                         tappe_opt, route_info_new = ottimizza_ordine_con_google(
                             tappe, lat_base, lon_base, GOOGLE_MAPS_API_KEY)
+                        tappe_opt = applica_preferenza_fascia_oraria(tappe_opt)
                         if route_info_new and route_info_new.get('polyline'):
                             route_info = route_info_new
                             st.session_state._route_info = route_info
@@ -6626,7 +6761,27 @@ def main_app():
                             if update_cliente(cliente['id'], {'visitare': 'SI' if nuovo_stato_vis else 'NO'}):
                                 st.session_state.reload_data = True
                                 st.rerun()
-                    
+
+                    # Preferenza fascia oraria: quando va visitato, se importa
+                    fascia_attuale = str(cliente.get('fascia_preferita', 'Indifferente') or 'Indifferente')
+                    if fascia_attuale not in ('Mattina', 'Pomeriggio'):
+                        fascia_attuale = 'Indifferente'
+                    opzioni_fascia = ['Indifferente', 'Mattina', 'Pomeriggio']
+                    etichette_fascia = {'Indifferente': '↔️ Indifferente', 'Mattina': '🌅 Mattina', 'Pomeriggio': '🌇 Pomeriggio'}
+                    nuova_fascia = st.radio(
+                        "🕐 Quando visitarlo",
+                        opzioni_fascia,
+                        index=opzioni_fascia.index(fascia_attuale),
+                        format_func=lambda v: etichette_fascia[v],
+                        horizontal=True,
+                        key=f"fascia_{cliente['id']}",
+                        help="Se il cliente va visitato solo in un momento preciso della giornata, il giro lo terrà sempre prima (Mattina) o dopo (Pomeriggio) rispetto agli altri"
+                    )
+                    if nuova_fascia != fascia_attuale:
+                        if update_cliente(cliente['id'], {'fascia_preferita': nuova_fascia}):
+                            st.session_state.reload_data = True
+                            st.rerun()
+
                     # === DIAGNOSTICA: perché nel/non nel giro ===
                     with st.expander("🔍 Diagnostica pianificazione", expanded=False):
                         problemi = []
@@ -7001,7 +7156,16 @@ def main_app():
                         visitare_attuale = str(cliente.get('visitare', 'SI')).upper().strip()
                         visitare_index = 0 if visitare_attuale == 'SI' else 1
                         visitare = c1.selectbox("🚗 Nel Giro?", ["SI", "NO"], index=visitare_index, key=f"visitare_{cliente['id']}")
-                        
+
+                        fascia_opts = ["Indifferente", "Mattina", "Pomeriggio"]
+                        fascia_attuale_form = str(cliente.get('fascia_preferita', 'Indifferente') or 'Indifferente')
+                        if fascia_attuale_form not in fascia_opts:
+                            fascia_attuale_form = 'Indifferente'
+                        fascia_preferita = c1.selectbox(
+                            "🕐 Quando visitarlo", fascia_opts, index=fascia_opts.index(fascia_attuale_form),
+                            key=f"fascia_form_{cliente['id']}"
+                        )
+
                         telefono = c2.text_input("Telefono", cliente.get('telefono', ''), key=f"tel_{cliente['id']}")
                         cellulare = c2.text_input("Cellulare", cliente.get('cellulare', ''), key=f"cell_{cliente['id']}")
                         mail = c2.text_input("Email", cliente.get('mail', ''), key=f"mail_{cliente['id']}")
@@ -7030,9 +7194,10 @@ def main_app():
                                 'latitude': latitudine,
                                 'longitude': longitudine,
                                 'note': note,
-                                'storico_report': storico
+                                'storico_report': storico,
+                                'fascia_preferita': fascia_preferita
                             }
-                            
+
                             if update_cliente(cliente['id'], update_data):
                                 st.session_state.reload_data = True
                                 st.success(f"✅ Salvato! Nel giro: {visitare}")
@@ -7277,7 +7442,8 @@ def main_app():
             citta = c1.text_input("Città *", value=st.session_state.nuovo_cliente_citta)
             provincia = c1.text_input("Provincia", value=st.session_state.nuovo_cliente_provincia)
             frequenza = c1.number_input("Frequenza visite (gg)", value=30)
-            
+            fascia_preferita_nuovo = c1.selectbox("🕐 Quando visitarlo", ["Indifferente", "Mattina", "Pomeriggio"])
+
             telefono = c2.text_input("Telefono")
             cellulare = c2.text_input("Cellulare")
             mail = c2.text_input("Email")
@@ -7314,7 +7480,8 @@ def main_app():
                             'latitude': coords[0],
                             'longitude': coords[1],
                             'visitare': 'SI',
-                            'stato_cliente': 'CLIENTE NUOVO'
+                            'stato_cliente': 'CLIENTE NUOVO',
+                            'fascia_preferita': fascia_preferita_nuovo
                         })
                         
                         # Reset campi GPS
