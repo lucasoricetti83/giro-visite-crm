@@ -254,6 +254,8 @@ hr {
 }
 .gv-iconbtn:hover, .gv-iconbtn:active { background: rgba(128,128,128,0.15); }
 .gv-iconbtn-disabled { opacity: 0.3; pointer-events: none; }
+.gv-iconbtn-check { border-color: rgba(76,175,80,0.55); color: #4caf50; }
+.gv-iconbtn-check:hover, .gv-iconbtn-check:active { background: rgba(76,175,80,0.15); }
 
 /* Nome cliente cliccabile (link Streamlit nascosto che copre la zona nome) */
 .gv-row-clickable {
@@ -1599,6 +1601,137 @@ def load_scambi_giorni():
     return []
 
 
+# --- PERSISTENZA GIORNI NON DISPONIBILI (es. giorni "Ferie" / lavoro per altra azienda) ---
+def save_giorni_non_disponibili(giorni_list):
+    """
+    Salva l'elenco dei giorni (date ISO, stringhe) marcati come non disponibili su Supabase.
+    Persistito nello stesso pattern di __SCAMBI_GIORNI__: un record speciale nella tabella clienti.
+    """
+    import json
+    try:
+        user_id = get_user_id()
+        if not user_id:
+            return False
+
+        # Pulizia: date uniche, stringhe ISO
+        giorni_puliti = sorted(set(str(g) for g in giorni_list if g))
+        giorni_str = json.dumps(giorni_puliti)
+
+        resp = supabase.table('clienti').select('id').eq('user_id', user_id).eq('nome_cliente', '__GIORNI_NON_DISPONIBILI__').execute()
+
+        if resp.data:
+            supabase.table('clienti').update({'note': giorni_str}).eq('id', resp.data[0]['id']).execute()
+        else:
+            supabase.table('clienti').insert({
+                'user_id': user_id,
+                'nome_cliente': '__GIORNI_NON_DISPONIBILI__',
+                'visitare': 'NO',
+                'note': giorni_str
+            }).execute()
+        return True
+    except Exception as e:
+        try:
+            st.warning(f"⚠️ Errore salvataggio giorni non disponibili su Supabase: {e}")
+        except Exception:
+            pass
+        return False
+
+def load_giorni_non_disponibili():
+    """
+    Carica l'elenco dei giorni non disponibili da Supabase.
+    Restituisce sempre una LISTA di stringhe data ISO (es. ['2026-09-04']).
+    """
+    import json
+    try:
+        user_id = get_user_id()
+        if not user_id:
+            return []
+        resp = supabase.table('clienti').select('note').eq('user_id', user_id).eq('nome_cliente', '__GIORNI_NON_DISPONIBILI__').execute()
+        if resp.data and resp.data[0].get('note'):
+            data = json.loads(resp.data[0]['note'])
+            if isinstance(data, list):
+                return sorted(set(str(g) for g in data if g))
+    except Exception:
+        pass
+    return []
+
+
+def get_giorni_ferie_singoli_session():
+    """
+    Ritorna la lista (di oggetti date) dei giorni singoli marcati come non disponibili,
+    caricandola da Supabase al primo utilizzo della sessione. Funziona da qualunque tab
+    (non solo dalla tab Agenda, dove il valore viene poi anche aggiornato/persistito).
+    """
+    import streamlit as _st
+    if 'giorni_ferie_singoli' not in _st.session_state:
+        try:
+            _st.session_state.giorni_ferie_singoli = [
+                datetime.fromisoformat(d).date() for d in load_giorni_non_disponibili()
+            ]
+        except Exception:
+            _st.session_state.giorni_ferie_singoli = []
+    return _st.session_state.giorni_ferie_singoli
+
+
+# --- PERSISTENZA SPOSTAMENTI SINGOLO CLIENTE → GIORNO ---
+def save_spostamenti_cliente(spostamenti_dict):
+    """
+    Salva su Supabase gli spostamenti manuali di singoli clienti su un altro giorno
+    della settimana (senza toccare il resto dell'agenda). Formato: {client_id_str: data_iso}.
+    """
+    import json
+    try:
+        user_id = get_user_id()
+        if not user_id:
+            return False
+        pulito = {str(k): str(v)[:10] for k, v in (spostamenti_dict or {}).items() if k and v}
+        sp_str = json.dumps(pulito)
+
+        resp = supabase.table('clienti').select('id').eq('user_id', user_id).eq('nome_cliente', '__SPOSTAMENTI_CLIENTE__').execute()
+        if resp.data:
+            supabase.table('clienti').update({'note': sp_str}).eq('id', resp.data[0]['id']).execute()
+        else:
+            supabase.table('clienti').insert({
+                'user_id': user_id,
+                'nome_cliente': '__SPOSTAMENTI_CLIENTE__',
+                'visitare': 'NO',
+                'note': sp_str
+            }).execute()
+        return True
+    except Exception as e:
+        try:
+            st.warning(f"⚠️ Errore salvataggio spostamenti cliente su Supabase: {e}")
+        except Exception:
+            pass
+        return False
+
+def load_spostamenti_cliente():
+    """Carica gli spostamenti manuali cliente→giorno da Supabase. Ritorna {client_id_str: data_iso}."""
+    import json
+    try:
+        user_id = get_user_id()
+        if not user_id:
+            return {}
+        resp = supabase.table('clienti').select('note').eq('user_id', user_id).eq('nome_cliente', '__SPOSTAMENTI_CLIENTE__').execute()
+        if resp.data and resp.data[0].get('note'):
+            data = json.loads(resp.data[0]['note'])
+            if isinstance(data, dict):
+                return {str(k): str(v)[:10] for k, v in data.items() if k and v}
+    except Exception:
+        pass
+    return {}
+
+def get_spostamenti_cliente_session():
+    """Ritorna (e carica al primo utilizzo) il dict {client_id_str: data_iso} degli spostamenti attivi."""
+    import streamlit as _st
+    if 'spostamenti_cliente' not in _st.session_state:
+        try:
+            _st.session_state.spostamenti_cliente = load_spostamenti_cliente()
+        except Exception:
+            _st.session_state.spostamenti_cliente = {}
+    return _st.session_state.spostamenti_cliente
+
+
 def trova_data_scambiata(data_obj, scambi_list):
     """
     Dato una data (date), cerca negli scambi la data con cui è stata scambiata.
@@ -2245,7 +2378,7 @@ def clear_gps_from_url():
             del st.query_params[key]
 
 # --- 5. CALCOLO GIRO OTTIMIZZATO (v8 — CLUSTER CITTÀ + ANELLI) ---
-def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, variante=0, override_ultima_visita=None):
+def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, variante=0, override_ultima_visita=None, giorni_non_disponibili=None, spostamenti_cliente=None):
     """
     ALGORITMO v11 — K-Means geografico + appuntamento come baricentro + proiezione progressiva.
     
@@ -2574,13 +2707,29 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                         sum(c['lon'] for c in cl) / len(cl)
                     ))
                 else:
-                    new_centers.append(centers[i])
-            
-            if all(abs(a[0]-b[0]) < 0.001 and abs(a[1]-b[1]) < 0.001 
+                    # Cluster svuotato in questa iterazione: prima veniva "congelato" nella
+                    # vecchia posizione, che però non attira più nessun punto — restava vuoto
+                    # per sempre (causa nota di giornate a 0 visite: il giorno agganciato a
+                    # questo cluster restava strutturalmente scarico settimana dopo settimana,
+                    # dato che l'accoppiamento zona→giorno è stabile). Lo ricollochiamo invece
+                    # sul punto più lontano dagli altri centri (farthest-first, come in
+                    # inizializzazione): così è garantito che attiri almeno quel punto alla
+                    # prossima iterazione, invece di restare vuoto per sempre.
+                    altri_centri = [c for j, c in enumerate(centers) if j != i]
+                    if altri_centri and punti:
+                        p_lontano = max(
+                            punti,
+                            key=lambda p: min(haversine(p['lat'], p['lon'], c[0], c[1]) for c in altri_centri)
+                        )
+                        new_centers.append((p_lontano['lat'], p_lontano['lon']))
+                    else:
+                        new_centers.append(centers[i])
+
+            if all(abs(a[0]-b[0]) < 0.001 and abs(a[1]-b[1]) < 0.001
                    for a, b in zip(centers, new_centers)):
                 break
             centers = new_centers
-        
+
         return clusters, centers
     
     # Cluster il POOL sui giorni SENZA appuntamento
@@ -2729,7 +2878,25 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     # Criterio primario: DISTANZA (clienti vicini nello stesso giorno)
     # Criterio secondario: FREQUENZA/URGENZA (chi scade prima ha priorità)
     # Vincolo: tempo reale (orari lavoro, spostamenti, durata visita)
-    
+
+    def _tempo_minuti_giro(giro_lista):
+        """
+        Stima i minuti necessari per un giro: casa → primo cliente → ... → ultimo
+        cliente (spostamenti reali via haversine/velocità media) + durata visita
+        per ciascuna tappa. NON include il rientro finale a casa (coerente con
+        "il tempo che ho a disposizione dalla mattina al pomeriggio, considerando
+        le trasferte da casa al primo cliente e da cliente a cliente").
+        Usata come vincolo REALE di capacità giornaliera, non un numero fisso.
+        """
+        if not giro_lista:
+            return 0.0
+        km_tot = 0.0
+        plat, plon = base_lat, base_lon
+        for _cc in giro_lista:
+            km_tot += haversine(plat, plon, _cc['lat'], _cc['lon'])
+            plat, plon = _cc['lat'], _cc['lon']
+        return (km_tot / velocita_media) * 60 + len(giro_lista) * durata_visita
+
     risultati = {}
     
     # Clienti disponibili (esclusi quelli con appuntamento)
@@ -3088,6 +3255,9 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             # Rispetta max_visite — non stravolgere i giri
             if len(giro) >= max_visite:
                 continue
+            # Rispetta anche il tempo reale disponibile (non solo il conteggio)
+            if _tempo_minuti_giro(giro + [c]) > minuti_lavoro:
+                continue
             # Se il giorno è vuoto, considerato ma con penalità (preferibile uno NON vuoto
             # perché il cliente dev'essere "in zona" con altri; comunque è meglio di niente)
             if not giro:
@@ -3114,7 +3284,171 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
             risultati[miglior_giorno] = (data_g_rec, giro_rec)
             nomi_schedulati.add(c['nome'])
             n_recuperati += 1
-    
+
+    # ========================================
+    # 11c. GIORNI NON DISPONIBILI (es. quel giorno lavoro per un'altra azienda)
+    #
+    # A differenza delle "ferie" (range di date), qui il giorno NON viene tolto da
+    # giorni_calcolo: il K-means ha già lavorato con lo stesso numero di cluster/giorni
+    # di sempre, quindi le zone degli altri giorni NON vengono rimescolate.
+    # Solo ORA, a valle di tutte le assegnazioni, sposto le tappe già finite su un
+    # giorno indisponibile sul primo giorno SUCCESSIVO della stessa settimana che ha
+    # ancora posto libero ("scorre in avanti"). Se nessun giorno successivo ha posto,
+    # provo un giorno precedente della stessa settimana; se anche questo non c'è,
+    # il cliente resta fuori e rientra naturalmente nel calcolo della settimana
+    # successiva (stesso giorno di sempre), grazie alla proiezione progressiva.
+    # ========================================
+    n_spostati_11c = 0
+    n_rimasti_fuori_11c = 0
+    if giorni_non_disponibili:
+        try:
+            giorni_non_disp_set = set(str(d)[:10] for d in giorni_non_disponibili)
+        except Exception:
+            giorni_non_disp_set = set()
+        giorni_dest_toccati = set()
+        for _giorno_off in [g for g in risultati.keys() if risultati[g][0].isoformat() in giorni_non_disp_set]:
+            data_g_off, giro_off = risultati[_giorno_off]
+            if not giro_off:
+                continue
+            tappe_da_spostare = list(giro_off)
+            risultati[_giorno_off] = (data_g_off, [])
+            giorni_dopo = sorted(
+                (g for g in risultati.keys()
+                 if g != _giorno_off and risultati[g][0] > data_g_off and risultati[g][0].isoformat() not in giorni_non_disp_set),
+                key=lambda g: risultati[g][0]
+            )
+            giorni_prima = sorted(
+                (g for g in risultati.keys()
+                 if g != _giorno_off and risultati[g][0] < data_g_off and risultati[g][0].isoformat() not in giorni_non_disp_set),
+                key=lambda g: risultati[g][0]
+            )
+            giorni_dest_ordinati = giorni_dopo + giorni_prima
+            for c in tappe_da_spostare:
+                piazzato = False
+                for g_dest in giorni_dest_ordinati:
+                    data_dest, giro_dest = risultati[g_dest]
+                    if len(giro_dest) >= max_visite:
+                        continue
+                    if _tempo_minuti_giro(giro_dest + [c]) > minuti_lavoro:
+                        continue
+                    giro_dest.append(c)
+                    risultati[g_dest] = (data_dest, giro_dest)
+                    giorni_dest_toccati.add(g_dest)
+                    piazzato = True
+                    n_spostati_11c += 1
+                    break
+                if not piazzato:
+                    nomi_schedulati.discard(c['nome'])
+                    n_rimasti_fuori_11c += 1
+        # Ri-ottimizza l'ordine (TSP 2-opt) dei giorni che hanno ricevuto tappe extra,
+        # così il giro resta compatto anche dopo l'inserimento
+        for g_dest in giorni_dest_toccati:
+            data_dest, giro_dest = risultati[g_dest]
+            if len(giro_dest) >= 3:
+                giro_dest = costruisci_anello(giro_dest, base_lat, base_lon)
+                risultati[g_dest] = (data_dest, giro_dest)
+
+    # ========================================
+    # 11d. CORREZIONE CAPACITÀ ORARIA REALE
+    #
+    # Richiesta utente: "il parametro non è solo N visite giornaliere, ma il
+    # tempo che ho a disposizione dalla mattina al pomeriggio, considerando le
+    # trasferte da casa al primo cliente e da cliente a cliente".
+    #
+    # Ultimo controllo, dopo tutte le assegnazioni/recuperi: per ogni giorno
+    # verifico il tempo REALE (spostamenti + durata visita) contro le ore
+    # lavorative nette (pausa pranzo esclusa). Se un giorno sfora, tolgo la
+    # tappa più marginale (urgenza più bassa, a parità la più lontana dal
+    # baricentro del giorno) e provo a ricollocarla su un altro giorno della
+    # settimana che abbia ancora tempo libero; se nessuno ne ha, resta fuori e
+    # rientra naturalmente nel calcolo della settimana successiva.
+    # ========================================
+    n_sforati_11d = 0
+    for _giorno_cap in list(risultati.keys()):
+        _data_cap, _giro_cap = risultati[_giorno_cap]
+        while len(_giro_cap) > 1 and _tempo_minuti_giro(_giro_cap) > minuti_lavoro:
+            _cx = sum(cc['lat'] for cc in _giro_cap) / len(_giro_cap)
+            _cy = sum(cc['lon'] for cc in _giro_cap) / len(_giro_cap)
+            _candidato = min(
+                _giro_cap,
+                key=lambda cc: (cc.get('urgenza', 0), -haversine(cc['lat'], cc['lon'], _cx, _cy))
+            )
+            _giro_cap = [cc for cc in _giro_cap if cc is not _candidato]
+
+            _piazzato_11d = False
+            for _g2 in sorted(risultati.keys(), key=lambda g: risultati[g][0]):
+                if _g2 == _giorno_cap:
+                    continue
+                _data_g2, _giro_g2 = risultati[_g2]
+                _ipotetico = list(_giro_g2) + [_candidato]
+                if _tempo_minuti_giro(_ipotetico) <= minuti_lavoro:
+                    if len(_ipotetico) >= 3:
+                        _ipotetico = costruisci_anello(_ipotetico, base_lat, base_lon)
+                    risultati[_g2] = (_data_g2, _ipotetico)
+                    _piazzato_11d = True
+                    break
+            if not _piazzato_11d:
+                nomi_schedulati.discard(_candidato['nome'])
+                n_sforati_11d += 1
+        if len(_giro_cap) >= 3:
+            _giro_cap = costruisci_anello(_giro_cap, base_lat, base_lon)
+        risultati[_giorno_cap] = (_data_cap, _giro_cap)
+
+    # ========================================
+    # 11e. SPOSTAMENTI MANUALI CLIENTE → GIORNO
+    #
+    # Richiesta utente: poter rimandare UN singolo cliente a un altro giorno
+    # della settimana da Giro Oggi, "senza toccare tutto il resto del giorno".
+    # Applicato per ULTIMO e in modo forzato (come un appuntamento): il cliente
+    # esce dal giorno dove sarebbe finito naturalmente e viene inserito nel
+    # giorno scelto, qualunque sia già lì — non viene più corretto dai passi
+    # precedenti (11b/11c/11d hanno già girato).
+    # ========================================
+    n_spostati_manuale_11e = 0
+    if spostamenti_cliente:
+        for _cid_sp, _data_sp_iso in spostamenti_cliente.items():
+            try:
+                _data_sp = datetime.fromisoformat(str(_data_sp_iso)[:10]).date()
+            except Exception:
+                continue
+            _giorno_target = next((g for g in risultati if risultati[g][0] == _data_sp), None)
+            if _giorno_target is None:
+                continue  # giorno fuori da questa settimana / non lavorativo: nessun effetto
+
+            _cliente_sp = None
+            _giorno_sorgente = None
+            for _g_search, (_d_search, _giro_search) in risultati.items():
+                for _cc in _giro_search:
+                    if str(_cc.get('id')) == str(_cid_sp):
+                        _cliente_sp = _cc
+                        _giorno_sorgente = _g_search
+                        break
+                if _cliente_sp is not None:
+                    break
+            if _cliente_sp is None:
+                # Non è finito in nessun giro questa settimana (es. scartato per capacità):
+                # recupero i suoi dati base dal pool per inserirlo comunque nel giorno scelto.
+                _cliente_sp = next((cc for cc in pool if str(cc.get('id')) == str(_cid_sp)), None)
+            if _cliente_sp is None:
+                continue
+            if _giorno_sorgente == _giorno_target:
+                continue  # è già nel giorno giusto (o coincide col giorno di destinazione)
+
+            if _giorno_sorgente is not None:
+                _d_src, _giro_src = risultati[_giorno_sorgente]
+                _giro_src = [cc for cc in _giro_src if cc is not _cliente_sp]
+                if len(_giro_src) >= 3:
+                    _giro_src = costruisci_anello(_giro_src, base_lat, base_lon)
+                risultati[_giorno_sorgente] = (_d_src, _giro_src)
+
+            _d_tgt, _giro_tgt = risultati[_giorno_target]
+            _giro_tgt = _giro_tgt + [_cliente_sp]
+            if len(_giro_tgt) >= 3:
+                _giro_tgt = costruisci_anello(_giro_tgt, base_lat, base_lon)
+            risultati[_giorno_target] = (_d_tgt, _giro_tgt)
+            nomi_schedulati.add(_cliente_sp['nome'])
+            n_spostati_manuale_11e += 1
+
     # Salvo metadati per eventuale debug / dashboard
     try:
         import streamlit as _st
@@ -3142,6 +3476,10 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
                 'n_non_schedulati': len(pool) - len(nomi_schedulati) - len(nomi_usati_da_app),
                 'max_visite': max_visite,
                 'n_giorni_liberi': n_giorni_liberi,
+                'n_spostati_giorno_non_disponibile': n_spostati_11c,
+                'n_rimasti_fuori_giorno_non_disponibile': n_rimasti_fuori_11c,
+                'n_sforati_capacita_oraria': n_sforati_11d,
+                'n_spostati_manualmente': n_spostati_manuale_11e,
                 'timestamp': datetime.now().isoformat(),
                 # Diagnostica deep-dive
                 'debug_cluster_states': _debug_cluster_states,
@@ -3198,35 +3536,40 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     return agenda
 
 
-def calcola_agenda_settimana_con_proiezione(df, config, esclusi=[], settimana_offset=0, variante=0):
+def calcola_agenda_settimana_con_proiezione(df, config, esclusi=[], settimana_offset=0, variante=0, giorni_non_disponibili=None, spostamenti_cliente=None):
     """
-    Calcola l'agenda per una settimana specifica, PROIETTANDO che le settimane 
+    Calcola l'agenda per una settimana specifica, PROIETTANDO che le settimane
     precedenti (da 0 fino a settimana_offset-1) siano già state visitate.
     Questo evita che gli stessi clienti urgenti appaiano ripetutamente ogni settimana.
-    
+
     Usa cache in session_state per evitare ricalcoli.
     """
     # Per settimane passate o correnti: no proiezione, usa i dati reali
     if settimana_offset <= 0:
         return calcola_agenda_settimanale(df, config, esclusi,
                                           settimana_offset=settimana_offset,
-                                          variante=variante)
-    
-    # Cache in session_state
+                                          variante=variante,
+                                          giorni_non_disponibili=giorni_non_disponibili,
+                                          spostamenti_cliente=spostamenti_cliente)
+
+    # Cache in session_state (la chiave include i giorni non disponibili e gli spostamenti
+    # manuali, così un cambio invalida solo le combinazioni che lo riguardano)
     try:
         import streamlit as _st
-        cache_key = f"_proj_ag_{settimana_offset}_{variante}_{len(df)}"
+        _gnd_key = ','.join(sorted(str(d)[:10] for d in giorni_non_disponibili)) if giorni_non_disponibili else ''
+        _sp_key = ','.join(sorted(f"{k}:{v}" for k, v in (spostamenti_cliente or {}).items()))
+        cache_key = f"_proj_ag_{settimana_offset}_{variante}_{len(df)}_{_gnd_key}_{_sp_key}"
         agende_cache = _st.session_state.setdefault('_agende_cache', {})
         if cache_key in agende_cache:
             return agende_cache[cache_key]
     except Exception:
         agende_cache = None
         cache_key = None
-    
+
     oggi_proj = ora_italiana.date()
     lunedi_oggi_proj = oggi_proj - timedelta(days=oggi_proj.weekday())
     overrides = {}  # {client_id: data_visita}
-    
+
     # Calcola progressivamente da settimana 0 a settimana_offset-1,
     # accumulando le visite simulate
     for w in range(settimana_offset):
@@ -3235,7 +3578,9 @@ def calcola_agenda_settimana_con_proiezione(df, config, esclusi=[], settimana_of
             esclusi if w == 0 else [],
             settimana_offset=w,
             variante=variante,
-            override_ultima_visita=dict(overrides)
+            override_ultima_visita=dict(overrides),
+            giorni_non_disponibili=giorni_non_disponibili,
+            spostamenti_cliente=spostamenti_cliente
         )
         lunedi_w = lunedi_oggi_proj + timedelta(weeks=w)
         for giorno_idx, tappe in ag_w.items():
@@ -3246,19 +3591,21 @@ def calcola_agenda_settimana_con_proiezione(df, config, esclusi=[], settimana_of
                     prev = overrides.get(t['id'])
                     if prev is None or prev < data_visita:
                         overrides[t['id']] = data_visita
-    
+
     # Calcola la settimana richiesta con tutti gli overrides accumulati
     risultato = calcola_agenda_settimanale(
         df, config, [],
         settimana_offset=settimana_offset,
         variante=variante,
-        override_ultima_visita=dict(overrides)
+        override_ultima_visita=dict(overrides),
+        giorni_non_disponibili=giorni_non_disponibili,
+        spostamenti_cliente=spostamenti_cliente
     )
-    
+
     # Salva in cache
     if cache_key and agende_cache is not None:
         agende_cache[cache_key] = risultato
-    
+
     return risultato
 
 
@@ -3666,7 +4013,40 @@ def main_app():
                 if row['ultima_visita'].strftime('%Y-%m-%d') == oggi_str:
                     if row['nome_cliente'] not in st.session_state.visitati_oggi:
                         st.session_state.visitati_oggi.append(row['nome_cliente'])
-    
+
+    # === HANDLER: "Segna visitato" rapido da Giro Oggi (link <a href="?quick_visit=NOME">) ===
+    # Un tap segna subito la visita (ultima_visita = oggi) senza aprire il form completo.
+    # Dopo il tap, la riga mostra un campo nota facoltativo (vedi tab Giro Oggi) che si può
+    # anche saltare e compilare più tardi dalla scheda cliente.
+    try:
+        quick_visit_param = st.query_params.get("quick_visit")
+        if quick_visit_param:
+            _riga_qv = df[df['nome_cliente'] == quick_visit_param]
+            if not _riga_qv.empty:
+                _id_qv = _riga_qv.iloc[0]['id']
+                if update_cliente(_id_qv, {'ultima_visita': ora_italiana.date().isoformat()}):
+                    if quick_visit_param not in st.session_state.visitati_oggi:
+                        st.session_state.visitati_oggi.append(quick_visit_param)
+                    st.session_state.nota_rapida_pending = quick_visit_param
+                    st.session_state.reload_data = True
+                    st.toast(f"✅ {quick_visit_param} segnato come visitato", icon="✅")
+            del st.query_params["quick_visit"]
+            st.rerun()
+    except Exception:
+        pass
+
+    # === HANDLER: "Sposta cliente" da Giro Oggi (link <a href="?sposta_cliente=NOME">) ===
+    # Apre un piccolo selettore inline (sotto la riga del cliente) per scegliere
+    # un altro giorno della settimana su cui rimandarlo, senza toccare il resto del giorno.
+    try:
+        sposta_cliente_param = st.query_params.get("sposta_cliente")
+        if sposta_cliente_param:
+            st.session_state.sposta_cliente_pending = sposta_cliente_param
+            del st.query_params["sposta_cliente"]
+            st.rerun()
+    except Exception:
+        pass
+
     # Se è il pannello admin, mostralo
     if st.session_state.active_tab == "🔐 Admin":
         if user_is_admin:
@@ -3823,20 +4203,26 @@ def main_app():
                     lunedi_oggi_ref_gg = oggi_date - timedelta(days=oggi_date.weekday())
                     offset_w_gg = (lunedi_target - lunedi_oggi_ref_gg).days // 7
                     
+                    _gnd_oggi = [d.isoformat() for d in get_giorni_ferie_singoli_session()]
                     ag_completa = calcola_agenda_settimana_con_proiezione(
                         df, config,
                         st.session_state.esclusi_oggi if offset_w_gg == 0 else [],
                         settimana_offset=offset_w_gg,
-                        variante=st.session_state.get('variante_giro', 0)  # rispetta Rigenera
+                        variante=st.session_state.get('variante_giro', 0),  # rispetta Rigenera
+                        giorni_non_disponibili=_gnd_oggi,
+                        spostamenti_cliente=get_spostamenti_cliente_session()
                     )
                     tappe_oggi = list(ag_completa.get(idx_effettivo, []))
                 else:
                     # Caso normale: prendi dall'agenda di questa settimana
+                    _gnd_oggi = [d.isoformat() for d in get_giorni_ferie_singoli_session()]
                     ag_oggi = calcola_agenda_settimana_con_proiezione(
                         df, config,
                         st.session_state.esclusi_oggi,
                         settimana_offset=0,
-                        variante=st.session_state.get('variante_giro', 0)  # rispetta Rigenera
+                        variante=st.session_state.get('variante_giro', 0),  # rispetta Rigenera
+                        giorni_non_disponibili=_gnd_oggi,
+                        spostamenti_cliente=get_spostamenti_cliente_session()
                     )
                     tappe_oggi = list(ag_oggi.get(idx_effettivo, []))
             except Exception as e:
@@ -3846,7 +4232,59 @@ def main_app():
             # Se lista vuota come fallback
             if not tappe_oggi:
                 tappe_oggi = calcola_piano_giornaliero(df, idx_effettivo, config, st.session_state.esclusi_oggi, variante=0)
-            
+
+            # === CLIENTI AGGIUNTI MANUALMENTE ("📍 Riempi giornata" più sotto) ===
+            # Clienti vicini aggiunti al volo quando le visite vanno più veloci del previsto.
+            # Vengono accodati al giro (poi eventualmente riordinati da Google Maps qui sotto).
+            if 'aggiunti_oggi' not in st.session_state:
+                st.session_state.aggiunti_oggi = []
+            if st.session_state.aggiunti_oggi:
+                def _ritardo_urgenza_rapido(row):
+                    ultima_ru = row.get('ultima_visita')
+                    freq_ru = int(row.get('frequenza_giorni', 30) or 30)
+                    if pd.isnull(ultima_ru) or (hasattr(ultima_ru, 'year') and ultima_ru.year < 2001):
+                        return 999, 85.0
+                    ultima_date_ru = ultima_ru.date() if hasattr(ultima_ru, 'date') else ultima_ru
+                    prossima_ru = ultima_date_ru + timedelta(days=freq_ru)
+                    giorni_rit_ru = (ora_italiana.date() - prossima_ru).days
+                    urg_ru = min(100.0, max(0.0, 50.0 + giorni_rit_ru))
+                    return giorni_rit_ru, urg_ru
+
+                _nomi_gia_presenti = {t['nome_cliente'] for t in tappe_oggi}
+                if tappe_oggi:
+                    _pos_lat_ex, _pos_lon_ex = tappe_oggi[-1]['latitude'], tappe_oggi[-1]['longitude']
+                else:
+                    _pos_lat_ex = float(config.get('lat_base', 41.9028))
+                    _pos_lon_ex = float(config.get('lon_base', 12.4964))
+                for _nome_ex in list(st.session_state.aggiunti_oggi):
+                    if _nome_ex in _nomi_gia_presenti or _nome_ex in st.session_state.visitati_oggi:
+                        continue
+                    _riga_ex = df[df['nome_cliente'] == _nome_ex]
+                    if _riga_ex.empty:
+                        continue
+                    _r_ex = _riga_ex.iloc[0]
+                    _lat_ex, _lon_ex = _r_ex.get('latitude'), _r_ex.get('longitude')
+                    if pd.isna(_lat_ex) or pd.isna(_lon_ex) or float(_lat_ex) == 0 or float(_lon_ex) == 0:
+                        continue
+                    _lat_ex, _lon_ex = float(_lat_ex), float(_lon_ex)
+                    _dist_ex = haversine(_pos_lat_ex, _pos_lon_ex, _lat_ex, _lon_ex)
+                    _rit_ex, _urg_ex = _ritardo_urgenza_rapido(_r_ex)
+                    tappe_oggi.append({
+                        'id': _r_ex['id'],
+                        'nome_cliente': _nome_ex,
+                        'latitude': _lat_ex,
+                        'longitude': _lon_ex,
+                        'indirizzo': _r_ex.get('indirizzo', ''),
+                        'cellulare': _r_ex.get('cellulare', ''),
+                        'ora_arrivo': '~',
+                        'tipo_tappa': '➕ Aggiunto',
+                        'distanza_km': round(_dist_ex, 1),
+                        'ritardo': _rit_ex,
+                        'citta': _r_ex.get('citta', ''),
+                        'urgenza': _urg_ex
+                    })
+                    _pos_lat_ex, _pos_lon_ex = _lat_ex, _lon_ex
+
             # === SALVATAGGIO GIRO ===
             # Non salviamo più il "giro di oggi" come record separato — era fonte di bug.
             # Manteniamo solo la cache Google Maps ottimization in session_state (non persistita).
@@ -4002,10 +4440,27 @@ def main_app():
                     # Link azioni
                     nav_url = f"https://www.google.com/maps/dir/?api=1&destination={t['latitude']},{t['longitude']}"
                     cell_val = str(t.get('cellulare', '')).strip()
-                    
-                    # Azioni a destra: Naviga+Chiama, oppure spunta se visitato
+
+                    # URL di supporto (query param, preservando quelli attuali: uid/email/token/ecc.)
+                    import urllib.parse as _urlp
+                    try:
+                        _qp_base = dict(st.query_params)
+                    except Exception:
+                        _qp_base = {}
+                    _qp_scheda = dict(_qp_base); _qp_scheda['open_cliente'] = t['nome_cliente']
+                    scheda_url = f"?{_urlp.urlencode(_qp_scheda, doseq=True)}"
+                    _qp_qv = dict(_qp_base); _qp_qv['quick_visit'] = t['nome_cliente']
+                    quick_visit_url = f"?{_urlp.urlencode(_qp_qv, doseq=True)}"
+                    _qp_sp = dict(_qp_base); _qp_sp['sposta_cliente'] = t['nome_cliente']
+                    sposta_cliente_url = f"?{_urlp.urlencode(_qp_sp, doseq=True)}"
+
+                    # Azioni a destra: Naviga+Chiama+Segna visitato, oppure spunta + nota se già visitato
                     if visitato:
-                        actions_html = '<div class="gv-check-big">✓</div>'
+                        note_btn = (
+                            f'<a href="{scheda_url}" target="_self" class="gv-iconbtn" title="Aggiungi nota"'
+                            f' onclick="event.stopPropagation()">🖊️</a>'
+                        )
+                        actions_html = f'<div class="gv-check-big">✓</div>{note_btn}'
                     else:
                         nav_btn = (
                             f'<a href="{nav_url}" target="_blank" class="gv-iconbtn" title="Naviga" onclick="event.stopPropagation()">'
@@ -4024,26 +4479,23 @@ def main_app():
                                 '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>'
                                 '</span>'
                             )
-                        actions_html = f'{nav_btn}{chiama_btn}'
-                    
+                        check_btn = (
+                            f'<a href="{quick_visit_url}" target="_self" class="gv-iconbtn gv-iconbtn-check" title="Segna visitato"'
+                            f' onclick="event.stopPropagation()">'
+                            f'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>'
+                            f'</a>'
+                        )
+                        sposta_btn = (
+                            f'<a href="{sposta_cliente_url}" target="_self" class="gv-iconbtn" title="Sposta ad un altro giorno"'
+                            f' onclick="event.stopPropagation()">📅</a>'
+                        )
+                        actions_html = f'{nav_btn}{chiama_btn}{check_btn}{sposta_btn}'
+
                     # Nome cliente: link HTML diretto (niente JS) che preserva la sessione.
-                    # Costruiamo la URL server-side includendo TUTTI i query params attuali
-                    # (uid, email, token, ecc.) più il nuovo open_cliente. Il browser naviga
-                    # nativamente → stesso pattern che funziona per la freccia "Naviga".
-                    import urllib.parse as _urlp
+                    # target=_self così il browser naviga nativamente sulla stessa tab.
                     nome_safe = t['nome_cliente'].replace('<', '&lt;').replace('>', '&gt;')
                     time_str = t.get('ora_arrivo', '--:--')
-                    
-                    # Leggi i query params attuali e costruisci la query string
-                    try:
-                        _qp = dict(st.query_params)
-                    except Exception:
-                        _qp = {}
-                    _qp['open_cliente'] = t['nome_cliente']
-                    # Serializza in query string (gestisce spazi, accenti, ecc.)
-                    _query_string = _urlp.urlencode(_qp, doseq=True)
-                    scheda_url = f"?{_query_string}"
-                    
+
                     row_class = "gv-taprow gv-taprow-done" if visitato else "gv-taprow"
                     
                     # UNICA RIGA HTML (link diretto per il nome, target _self = stessa tab)
@@ -4060,7 +4512,76 @@ def main_app():
                         f'</div>'
                     )
                     st.markdown(row_html, unsafe_allow_html=True)
-                    
+
+                    # Nota rapida facoltativa (appena dopo aver segnato "visitato" con il tap veloce)
+                    if st.session_state.get('nota_rapida_pending') == t['nome_cliente']:
+                        with st.container(border=True):
+                            nota_rapida_txt = st.text_area(
+                                "📝 Nota veloce (facoltativa)",
+                                key=f"nota_rapida_{t['nome_cliente']}",
+                                height=68,
+                                placeholder="Es. ordine confermato, richiamare tra 2 settimane..."
+                            )
+                            col_nr1, col_nr2 = st.columns(2)
+                            if col_nr1.button("💾 Salva nota", key=f"salva_nota_{t['nome_cliente']}", use_container_width=True, type="primary"):
+                                if nota_rapida_txt.strip():
+                                    _cli_nr = df[df['nome_cliente'] == t['nome_cliente']]
+                                    if not _cli_nr.empty:
+                                        _id_nr = _cli_nr.iloc[0]['id']
+                                        _vecchio_nr = str(_cli_nr.iloc[0].get('storico_report', '') or '')
+                                        _nuovo_nr = f"[{ora_italiana.date().strftime('%d/%m/%Y')}] [VISITA RAPIDA] {nota_rapida_txt.strip()}"
+                                        _storico_nr = _nuovo_nr + "\n\n" + _vecchio_nr if _vecchio_nr.strip() else _nuovo_nr
+                                        update_cliente(_id_nr, {'storico_report': _storico_nr})
+                                        st.session_state.reload_data = True
+                                st.session_state.nota_rapida_pending = None
+                                st.rerun()
+                            if col_nr2.button("⏭️ Salta", key=f"salta_nota_{t['nome_cliente']}", use_container_width=True):
+                                st.session_state.nota_rapida_pending = None
+                                st.rerun()
+
+                    # Sposta questo cliente su un altro giorno della settimana (senza toccare il resto)
+                    if st.session_state.get('sposta_cliente_pending') == t['nome_cliente']:
+                        with st.container(border=True):
+                            _giorni_nomi_sp = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"]
+                            _giorni_lav_sp = config.get('giorni_lavorativi', [0, 1, 2, 3, 4])
+                            if isinstance(_giorni_lav_sp, str):
+                                _giorni_lav_sp = [int(x) for x in _giorni_lav_sp.strip('{}').split(',')]
+                            _oggi_sp = ora_italiana.date()
+                            _lun_sp = _oggi_sp - timedelta(days=_oggi_sp.weekday())
+                            _gnd_sp_set = {d.isoformat() for d in get_giorni_ferie_singoli_session()}
+                            _opzioni_sp = {}
+                            for _g_sp in _giorni_lav_sp:
+                                _data_opt_sp = _lun_sp + timedelta(days=_g_sp)
+                                if _data_opt_sp < _oggi_sp or _data_opt_sp == data_effettiva_oggi:
+                                    continue
+                                if _data_opt_sp.isoformat() in _gnd_sp_set:
+                                    continue
+                                _opzioni_sp[f"{_giorni_nomi_sp[_g_sp]} {_data_opt_sp.strftime('%d/%m')}"] = _data_opt_sp
+                            if not _opzioni_sp:
+                                st.caption("Nessun altro giorno disponibile questa settimana.")
+                                if st.button("✖️ Chiudi", key=f"chiudi_sposta_{t['nome_cliente']}", use_container_width=True):
+                                    st.session_state.sposta_cliente_pending = None
+                                    st.rerun()
+                            else:
+                                _scelta_sp = st.selectbox("📅 Sposta a:", list(_opzioni_sp.keys()), key=f"sel_sposta_{t['nome_cliente']}")
+                                col_sp1, col_sp2 = st.columns(2)
+                                if col_sp1.button("✅ Conferma", key=f"conferma_sposta_{t['nome_cliente']}", use_container_width=True, type="primary"):
+                                    _cli_sp = df[df['nome_cliente'] == t['nome_cliente']]
+                                    if not _cli_sp.empty:
+                                        _id_sp = str(_cli_sp.iloc[0]['id'])
+                                        _sp_dict = dict(get_spostamenti_cliente_session())
+                                        _sp_dict[_id_sp] = _opzioni_sp[_scelta_sp].isoformat()
+                                        st.session_state.spostamenti_cliente = _sp_dict
+                                        save_spostamenti_cliente(_sp_dict)
+                                        st.session_state.pop('_agende_cache', None)
+                                        st.session_state._route_cache_key = None
+                                        st.toast(f"📅 {t['nome_cliente']} spostato a {_scelta_sp}", icon="📅")
+                                    st.session_state.sposta_cliente_pending = None
+                                    st.rerun()
+                                if col_sp2.button("✖️ Annulla", key=f"annulla_sposta_{t['nome_cliente']}", use_container_width=True):
+                                    st.session_state.sposta_cliente_pending = None
+                                    st.rerun()
+
                     # Promemoria (sotto la riga, se presente e non visitato)
                     if not visitato and cliente_row is not None and pd.notnull(cliente_row.get('promemoria')) and str(cliente_row.get('promemoria')).strip():
                         st.markdown(f"""
@@ -4087,7 +4608,72 @@ def main_app():
                         st.link_button(f"🗺️ NAVIGA ({len(tappe_rimanenti)} tappe)", url, use_container_width=True, type="primary")
                     else:
                         st.success("🎉 Hai completato tutte le visite programmate!")
-                
+
+                # === 📍 RIEMPI GIORNATA: suggerimenti clienti vicini ===
+                # Se le visite vanno più veloci del previsto, suggerisce clienti attivi
+                # non ancora nel giro di oggi, ordinati per vicinanza all'ultima tappa.
+                with st.expander("📍 Riempi giornata — clienti vicini", expanded=False):
+                    if not df.empty and 'visitare' in df.columns:
+                        if tappe_oggi:
+                            _pos_lat_sugg = tappe_oggi[-1]['latitude']
+                            _pos_lon_sugg = tappe_oggi[-1]['longitude']
+                        else:
+                            _pos_lat_sugg = float(config.get('lat_base', 41.9028))
+                            _pos_lon_sugg = float(config.get('lon_base', 12.4964))
+
+                        _nomi_esclusi_sugg = (
+                            {t['nome_cliente'] for t in tappe_oggi}
+                            | set(st.session_state.visitati_oggi)
+                            | set(st.session_state.esclusi_oggi)
+                        )
+                        _candidati_sugg = []
+                        for _, _r_sugg in df[df['visitare'] == 'SI'].iterrows():
+                            if _r_sugg['nome_cliente'] in _nomi_esclusi_sugg:
+                                continue
+                            _lat_sugg, _lon_sugg = _r_sugg.get('latitude'), _r_sugg.get('longitude')
+                            if pd.isna(_lat_sugg) or pd.isna(_lon_sugg) or float(_lat_sugg) == 0 or float(_lon_sugg) == 0:
+                                continue
+                            _dist_sugg = haversine(_pos_lat_sugg, _pos_lon_sugg, float(_lat_sugg), float(_lon_sugg))
+                            if _dist_sugg > 15:  # solo clienti realmente "vicini" (entro 15km)
+                                continue
+                            _candidati_sugg.append((_dist_sugg, _r_sugg))
+                        _candidati_sugg.sort(key=lambda x: x[0])
+                        _candidati_sugg = _candidati_sugg[:8]
+
+                        if not _candidati_sugg:
+                            st.caption("Nessun cliente attivo entro 15 km dall'ultima tappa.")
+                        else:
+                            st.caption(f"Clienti attivi entro 15 km da {'ultima tappa del giro' if tappe_oggi else 'casa'}:")
+                            for _dist_sugg, _r_sugg in _candidati_sugg:
+                                _ultima_sugg = _r_sugg.get('ultima_visita')
+                                if pd.isnull(_ultima_sugg) or (hasattr(_ultima_sugg, 'year') and _ultima_sugg.year < 2001):
+                                    _stato_sugg = "🔴 mai visitato"
+                                else:
+                                    _ud_sugg = _ultima_sugg.date() if hasattr(_ultima_sugg, 'date') else _ultima_sugg
+                                    _freq_sugg = int(_r_sugg.get('frequenza_giorni', 30) or 30)
+                                    _gr_sugg = (ora_italiana.date() - (_ud_sugg + timedelta(days=_freq_sugg))).days
+                                    _stato_sugg = f"in ritardo di {_gr_sugg}gg" if _gr_sugg > 0 else f"tra {-_gr_sugg}gg"
+                                col_sg1, col_sg2 = st.columns([4, 1])
+                                col_sg1.markdown(f"**{_r_sugg['nome_cliente']}** — {_dist_sugg:.1f} km · {_stato_sugg}")
+                                if col_sg2.button("➕", key=f"add_vicino_{_r_sugg['nome_cliente']}", use_container_width=True, help="Aggiungi al giro di oggi"):
+                                    if 'aggiunti_oggi' not in st.session_state:
+                                        st.session_state.aggiunti_oggi = []
+                                    if _r_sugg['nome_cliente'] not in st.session_state.aggiunti_oggi:
+                                        st.session_state.aggiunti_oggi.append(_r_sugg['nome_cliente'])
+                                    st.session_state._route_cache_key = None
+                                    st.rerun()
+
+                        if st.session_state.get('aggiunti_oggi'):
+                            st.divider()
+                            st.caption("Aggiunti manualmente oggi:")
+                            for _nome_agg in list(st.session_state.aggiunti_oggi):
+                                col_ag1, col_ag2 = st.columns([4, 1])
+                                col_ag1.markdown(f"➕ {_nome_agg}")
+                                if col_ag2.button("✖️", key=f"rimuovi_agg_{_nome_agg}", use_container_width=True, help="Rimuovi dal giro di oggi"):
+                                    st.session_state.aggiunti_oggi.remove(_nome_agg)
+                                    st.session_state._route_cache_key = None
+                                    st.rerun()
+
                 # ============================================================
                 # === SEZIONI SECONDARIE (IN FONDO ALLA VISTA) ===
                 # Spostate qui per dare priorità visiva alla lista clienti:
@@ -4133,7 +4719,24 @@ def main_app():
                             st.warning(f"⚠️ **{len(st.session_state.esclusi_oggi)} clienti esclusi** dal giro di oggi")
                     else:
                         st.info("Nessun cliente attivo da escludere")
-                
+
+                    # --- Spostamenti manuali attivi (cliente → altro giorno) ---
+                    _sp_attivi_end = get_spostamenti_cliente_session()
+                    if _sp_attivi_end:
+                        st.write("**📅 Spostamenti attivi:**")
+                        for _id_sp_end, _data_sp_end in list(_sp_attivi_end.items()):
+                            _riga_sp_end = df[df['id'].astype(str) == str(_id_sp_end)]
+                            _nome_sp_end = _riga_sp_end.iloc[0]['nome_cliente'] if not _riga_sp_end.empty else f"cliente {_id_sp_end}"
+                            col_spe1, col_spe2 = st.columns([4, 1])
+                            col_spe1.caption(f"{_nome_sp_end} → {_data_sp_end}")
+                            if col_spe2.button("✖️", key=f"annulla_sp_end_{_id_sp_end}", use_container_width=True, help="Annulla spostamento"):
+                                _sp_dict_end = dict(_sp_attivi_end)
+                                _sp_dict_end.pop(_id_sp_end, None)
+                                st.session_state.spostamenti_cliente = _sp_dict_end
+                                save_spostamenti_cliente(_sp_dict_end)
+                                st.session_state.pop('_agende_cache', None)
+                                st.rerun()
+
                 # --- 2. Alert clienti critici (compatto) ---
                 _critici_end = [c for c in get_clienti_trascurati(df) if c['livello'] == 'critico']
                 if _critici_end:
@@ -4481,10 +5084,10 @@ def main_app():
         if 'current_week_index' not in st.session_state:
             st.session_state.current_week_index = 0  # 0 = settimana corrente
         
-        # Inizializza giorni in ferie (lista di date)
-        if 'giorni_ferie_singoli' not in st.session_state:
-            st.session_state.giorni_ferie_singoli = []
-        
+        # Inizializza giorni in ferie (lista di date) — caricati da Supabase così sono persistenti
+        # e vengono davvero esclusi dal calcolo (non solo colorati esteticamente)
+        get_giorni_ferie_singoli_session()
+
         # Inizializza stato per scambio giorni
         if 'giorno_da_scambiare' not in st.session_state:
             st.session_state.giorno_da_scambiare = None
@@ -4612,10 +5215,12 @@ def main_app():
         # Uso la versione CON PROIEZIONE: se si sta vedendo una settimana futura,
         # proietta che le settimane precedenti siano già state visitate (no ripetizioni)
         agenda_settimana = calcola_agenda_settimana_con_proiezione(
-            df, 
-            config, 
+            df,
+            config,
             st.session_state.esclusi_oggi if st.session_state.current_week_index == 0 else [],
-            st.session_state.current_week_index
+            st.session_state.current_week_index,
+            giorni_non_disponibili=[d.isoformat() for d in get_giorni_ferie_singoli_session()],
+            spostamenti_cliente=get_spostamenti_cliente_session()
         )
         
         # ============================================================
@@ -4659,7 +5264,9 @@ def main_app():
                         df,
                         config,
                         st.session_state.esclusi_oggi if offset_w == 0 else [],
-                        settimana_offset=offset_w
+                        settimana_offset=offset_w,
+                        giorni_non_disponibili=[d.isoformat() for d in get_giorni_ferie_singoli_session()],
+                        spostamenti_cliente=get_spostamenti_cliente_session()
                     )
                 except Exception:
                     ag_other = {}
@@ -5022,10 +5629,16 @@ def main_app():
                             if not is_ferie:
                                 if st.button("🏖️", key=f"ferie_{data_giorno}", help="Ferie", use_container_width=True):
                                     st.session_state.giorni_ferie_singoli.append(data_giorno)
+                                    save_giorni_non_disponibili([d.isoformat() for d in st.session_state.giorni_ferie_singoli])
+                                    st.session_state.pop('_agende_cache', None)
+                                    st.session_state._route_cache_key = None
                                     st.rerun()
                             elif data_giorno in st.session_state.giorni_ferie_singoli:
                                 if st.button("🔙", key=f"ferie_{data_giorno}", help="Togli ferie", use_container_width=True):
                                     st.session_state.giorni_ferie_singoli.remove(data_giorno)
+                                    save_giorni_non_disponibili([d.isoformat() for d in st.session_state.giorni_ferie_singoli])
+                                    st.session_state.pop('_agende_cache', None)
+                                    st.session_state._route_cache_key = None
                                     st.rerun()
                             else:
                                 st.button("🏖️", key=f"ferie_{data_giorno}", disabled=True, use_container_width=True)
@@ -7024,14 +7637,17 @@ def main_app():
         
         st.divider()
         st.subheader("🎯 Massimo Visite al Giorno")
-        st.caption("Numero massimo di clienti da visitare in una singola giornata (anche se il tempo permetterebbe di più).")
-        
+        st.caption("Tetto di sicurezza: il numero di visite che entrano davvero in un giorno è calcolato dal "
+                   "tempo reale a disposizione (trasferte casa→primo cliente, cliente→cliente, durata visita, "
+                   "pausa pranzo) — questo valore è solo il limite massimo oltre il quale non si va comunque, "
+                   "anche se il tempo lo permetterebbe.")
+
         max_visite_val = int(config.get('max_visite_giornaliere', 8))
-        max_visite_val = max(5, min(12, max_visite_val))  # clamp iniziale
+        max_visite_val = max(5, min(15, max_visite_val))  # clamp iniziale
         max_vis_nuovo = st.slider(
             "Numero massimo visite/giorno",
-            min_value=5, max_value=12, value=max_visite_val,
-            help="Consigliato: 8-9. Limita il numero di clienti per evitare giornate troppo pesanti."
+            min_value=5, max_value=15, value=max_visite_val,
+            help="Consigliato: 8-9. Il tempo reale resta comunque il vincolo principale — questo è solo un tetto."
         )
         if max_vis_nuovo != config.get('max_visite_giornaliere'):
             config['max_visite_giornaliere'] = max_vis_nuovo
@@ -7091,6 +7707,46 @@ def main_app():
                     st.rerun()
                 except Exception as e:
                     st.error(f"❌ Errore aggiornamento in blocco: {str(e)}")
+
+        st.divider()
+        st.subheader("🔄 Riparti da Zero — Reset Piano Visite")
+        st.warning("⚠️ Azzera la data dell'ultima visita di TUTTI i clienti attivi, come se il ciclo ripartisse da oggi "
+                    "in modo uniforme (invece di avere alcuni fermi da giorni, altri da anni). Utile per smaltire un "
+                    "arretrato molto vecchio in un colpo solo. Dopo il reset, usa 🧹 Candidati alla Disattivazione "
+                    "qui sotto (o la Gestione Rapida in Anagrafica) per togliere dal giro chi in realtà non va più visitato.")
+
+        if not df.empty and 'visitare' in df.columns:
+            n_attivi_reset = len(df[df['visitare'] == 'SI'])
+            st.caption(f"Interesserebbe **{n_attivi_reset} clienti attivi** — la data verrà impostata a "
+                        f"\"oggi meno la loro frequenza\", così risultano tutti dovuti da oggi.")
+
+            conferma_reset = st.checkbox(
+                "Confermo di voler resettare la data dell'ultima visita per tutti i clienti attivi",
+                key="confirm_reset_piano"
+            )
+            if conferma_reset:
+                if st.button("🔄 RIPARTI DA ZERO", type="primary", use_container_width=True, key="btn_reset_piano"):
+                    df_reset = df[df['visitare'] == 'SI']
+                    progress_r = st.progress(0)
+                    status_r = st.empty()
+                    n_ok_reset = 0
+                    oggi_reset = ora_italiana.date()
+                    tot_reset = len(df_reset)
+                    for idx_r, (_, row_r) in enumerate(df_reset.iterrows()):
+                        freq_r = int(row_r.get('frequenza_giorni', 30))
+                        nuova_ultima = (oggi_reset - timedelta(days=freq_r)).isoformat()
+                        status_r.text(f"Reset: {row_r['nome_cliente']}...")
+                        if update_cliente(row_r['id'], {'ultima_visita': nuova_ultima}):
+                            n_ok_reset += 1
+                        if tot_reset:
+                            progress_r.progress((idx_r + 1) / tot_reset)
+                    progress_r.empty()
+                    status_r.empty()
+                    st.session_state.reload_data = True
+                    st.session_state.pop('_agende_cache', None)
+                    st.success(f"✅ Reset completato: {n_ok_reset} clienti ripartono da oggi, allineati sulla stessa cadenza.")
+                    time_module.sleep(1)
+                    st.rerun()
 
         st.divider()
         st.subheader("🏖️ Ferie / Giorni di Chiusura")
@@ -7612,8 +8268,10 @@ def main_app():
             offset_map = {"Settimana corrente": 0, "Prossima settimana": 1, "Tra 2 settimane": 2}
             offset = offset_map.get(settimana_exp, 0)
             
-            # Calcola agenda
-            agenda_exp = calcola_agenda_settimanale(df, config, [], offset)
+            # Calcola agenda (rispettando i giorni marcati come non disponibili)
+            agenda_exp = calcola_agenda_settimanale(df, config, [], offset,
+                giorni_non_disponibili=[d.isoformat() for d in get_giorni_ferie_singoli_session()],
+                spostamenti_cliente=get_spostamenti_cliente_session())
             
             # Prepara dati per export
             righe_agenda = []
@@ -7909,7 +8567,9 @@ def main_app():
                     try:
                         variante_dbg = st.session_state.get('variante_giro', 0)
                         esclusi_dbg = st.session_state.get('esclusi_oggi', [])
-                        agenda_dbg = calcola_agenda_settimanale(df, config, esclusi_dbg, settimana_offset=0, variante=variante_dbg)
+                        agenda_dbg = calcola_agenda_settimanale(df, config, esclusi_dbg, settimana_offset=0, variante=variante_dbg,
+                            giorni_non_disponibili=[d.isoformat() for d in get_giorni_ferie_singoli_session()],
+                            spostamenti_cliente=get_spostamenti_cliente_session())
                         
                         for g_idx in sorted(agenda_dbg.keys()):
                             tappe = agenda_dbg[g_idx]
