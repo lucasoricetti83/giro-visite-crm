@@ -2523,14 +2523,48 @@ def _tappa_ha_orario_fisso(t):
     tipo = str(t.get('tipo_tappa', '') or '')
     return 'APPUNTAMENTO' in tipo.upper()
 
+def _fascia_di(t):
+    f = str(t.get('fascia_preferita') or t.get('fascia') or 'Indifferente').strip().capitalize()
+    return f if f in ('Mattina', 'Pomeriggio') else 'Indifferente'
+
+def _rispetta_vincolo_fascia(fasce):
+    """
+    Vero se l'ordine è compatibile con una partizione "mattina, poi indifferenti,
+    poi pomeriggio": tutte le tappe 'Mattina' devono precedere TUTTE le altre (non solo
+    le 'Pomeriggio' — anche gli 'Indifferente' vanno dopo), e tutte le 'Pomeriggio'
+    devono seguire tutte le altre. Così un singolo cliente "Mattina" in mezzo a soli
+    clienti indifferenti viene comunque riconosciuto come "va spostato all'inizio",
+    non solo quando è dopo un cliente "Pomeriggio".
+    """
+    idx_mattina = [i for i, f in enumerate(fasce) if f == 'Mattina']
+    idx_non_mattina = [i for i, f in enumerate(fasce) if f != 'Mattina']
+    if idx_mattina and idx_non_mattina and max(idx_mattina) > min(idx_non_mattina):
+        return False
+
+    idx_pomeriggio = [i for i, f in enumerate(fasce) if f == 'Pomeriggio']
+    idx_non_pomeriggio = [i for i, f in enumerate(fasce) if f != 'Pomeriggio']
+    if idx_pomeriggio and idx_non_pomeriggio and min(idx_pomeriggio) < max(idx_non_pomeriggio):
+        return False
+
+    return True
+
 def applica_preferenza_fascia_oraria(tappe):
     """
-    Riordina una lista di tappe/clienti in modo che quelle con preferenza "Mattina"
-    vengano SEMPRE prima di quelle con preferenza "Pomeriggio" nello stesso giorno
-    (vincolo rigido, impostabile per singolo cliente in Anagrafica). L'ordine relativo
-    originale viene mantenuto il più possibile all'interno di ciascun gruppo, per non
-    stravolgere inutilmente l'ottimizzazione geografica del percorso. Le tappe con un
-    orario già fissato (appuntamenti) restano ancorate alla loro posizione originale.
+    Garantisce che, nello stesso giorno, le tappe con preferenza "Mattina" vengano
+    SEMPRE prima di quelle con preferenza "Pomeriggio" (vincolo rigido, impostabile
+    per singolo cliente in Anagrafica). Le tappe con un orario già fissato
+    (appuntamenti) restano ancorate alla loro posizione originale.
+
+    Prova, in ordine, tre strategie (dalla più economica in km alla più invasiva):
+    1. L'ordine geografico già calcolato rispetta il vincolo? Non tocca nulla.
+    2. Il giro è stato costruito come un anello ottimizzato: percorrerlo in senso
+       inverso ha la STESSA distanza totale (stessi archi, verso opposto). Se basta
+       invertire la sequenza per rispettare il vincolo, è la soluzione a costo zero:
+       chi prima veniva visitato per ultimo ora viene visitato per primo e viceversa.
+    3. Solo se nemmeno l'inversione basta (preferenze "Mattina"/"Pomeriggio" miste e
+       intrecciate), ripiega su una partizione forzata (mattina, poi indifferenti,
+       poi pomeriggio) che garantisce comunque il vincolo ma può costare qualche km
+       in più.
 
     Va richiamata come ULTIMO passaggio prima di mostrare/salvare l'ordine di un giorno,
     quindi anche dopo un eventuale riordino con Google Maps (che altrimenti potrebbe
@@ -2543,19 +2577,33 @@ def applica_preferenza_fascia_oraria(tappe):
     if len(indici_liberi) <= 1:
         return tappe
 
+    fasce_liberi = [_fascia_di(tappe[i]) for i in indici_liberi]
+    if 'Mattina' not in fasce_liberi and 'Pomeriggio' not in fasce_liberi:
+        return tappe  # nessuna preferenza impostata su questi clienti: nulla da fare
+
+    # 1. L'ordine attuale rispetta già il vincolo
+    if _rispetta_vincolo_fascia(fasce_liberi):
+        return tappe
+
+    # 2. Prova a invertire la sequenza delle tappe libere: stessa distanza totale
+    #    (è lo stesso anello percorso al contrario), ma mattina/pomeriggio si scambiano
+    if _rispetta_vincolo_fascia(list(reversed(fasce_liberi))):
+        nuove_tappe = list(tappe)
+        liberi_invertiti = [tappe[i] for i in reversed(indici_liberi)]
+        for i, t in zip(indici_liberi, liberi_invertiti):
+            nuove_tappe[i] = t
+        return nuove_tappe
+
+    # 3. Fallback: partizione forzata (mattina prima, poi indifferenti, poi pomeriggio)
     mattina, indiff, pomeriggio = [], [], []
     for i in indici_liberi:
-        t = tappe[i]
-        f = str(t.get('fascia_preferita') or t.get('fascia') or 'Indifferente').strip().capitalize()
+        f = _fascia_di(tappe[i])
         if f == 'Mattina':
-            mattina.append(t)
+            mattina.append(tappe[i])
         elif f == 'Pomeriggio':
-            pomeriggio.append(t)
+            pomeriggio.append(tappe[i])
         else:
-            indiff.append(t)
-
-    if not mattina and not pomeriggio:
-        return tappe  # nessuna preferenza impostata su questi clienti: nulla da fare
+            indiff.append(tappe[i])
 
     nuovo_ordine_liberi = mattina + indiff + pomeriggio
     nuove_tappe = list(tappe)
