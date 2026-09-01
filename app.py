@@ -4572,7 +4572,8 @@ def main_app():
             
             # OTTIMIZZAZIONE ORDINE CON GOOGLE MAPS (tempi stradali reali + TSP)
             if tappe_oggi and len(tappe_oggi) >= 2 and GOOGLE_MAPS_API_KEY:
-                cache_key = f"route_{idx_effettivo}_{variante}_{len(tappe_oggi)}_{','.join(t['nome_cliente'][:5] for t in tappe_oggi[:3])}"
+                _fasce_key_oggi = ','.join(str(t.get('fascia_preferita', 'Indifferente'))[:1] for t in tappe_oggi)
+                cache_key = f"route_{idx_effettivo}_{variante}_{len(tappe_oggi)}_{','.join(t['nome_cliente'][:5] for t in tappe_oggi[:3])}_{_fasce_key_oggi}"
                 if st.session_state.get('_route_cache_key') != cache_key:
                     try:
                         tappe_oggi, route_info = ottimizza_ordine_con_google(
@@ -5826,9 +5827,10 @@ def main_app():
                     _blat_ag = float(config.get('lat_base', 0))
                     _blon_ag = float(config.get('lon_base', 0))
                     if _blat_ag != 0 and _blon_ag != 0:
+                        _fasce_key_ag = ','.join(str(t.get('fascia_preferita', 'Indifferente'))[:1] for t in tappe_giorno)
                         _rc_key_ag = (
                             f"route_ag_{data_giorno.isoformat()}_{len(tappe_giorno)}_"
-                            f"{','.join(t['nome_cliente'][:5] for t in tappe_giorno[:3])}"
+                            f"{','.join(t['nome_cliente'][:5] for t in tappe_giorno[:3])}_{_fasce_key_ag}"
                         )
                         _rc_ag = st.session_state.setdefault('_agenda_route_cache', {})
                         if _rc_key_ag in _rc_ag:
