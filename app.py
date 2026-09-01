@@ -1390,6 +1390,16 @@ def update_cliente(cliente_id, update_data):
     """Aggiorna un cliente esistente"""
     try:
         response = supabase.table('clienti').update(update_data).eq('id', cliente_id).execute()
+        # Supabase/PostgREST non solleva sempre un'eccezione se la RLS blocca la scrittura:
+        # a volte restituisce semplicemente 0 righe modificate senza errore. Se non risulta
+        # nessuna riga aggiornata, è un fallimento "silenzioso" che va segnalato esplicitamente,
+        # altrimenti l'utente vede il pulsante non fare nulla senza sapere perché.
+        if not response.data:
+            st.error(
+                "❌ Nessuna riga aggiornata (probabile blocco permessi/RLS o cliente non trovato). "
+                "Se il problema persiste dopo un refresh, controlla il secret SUPABASE_SERVICE_ROLE_KEY su Streamlit Cloud."
+            )
+            return False
         return True
     except Exception as e:
         st.error(f"❌ Errore aggiornamento: {str(e)}")
@@ -1399,6 +1409,12 @@ def delete_cliente(cliente_id):
     """Elimina un cliente"""
     try:
         response = supabase.table('clienti').delete().eq('id', cliente_id).execute()
+        if not response.data:
+            st.error(
+                "❌ Nessuna riga eliminata (probabile blocco permessi/RLS o cliente non trovato). "
+                "Se il problema persiste dopo un refresh, controlla il secret SUPABASE_SERVICE_ROLE_KEY su Streamlit Cloud."
+            )
+            return False
         return True
     except Exception as e:
         st.error(f"❌ Errore eliminazione: {str(e)}")
