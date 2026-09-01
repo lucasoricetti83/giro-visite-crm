@@ -576,6 +576,7 @@ def restore_session_from_url():
 
 SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
+SUPABASE_SERVICE_ROLE_KEY = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY", "")
 LOCATIONIQ_KEY = st.secrets.get("LOCATIONIQ_KEY", "")
 GOOGLE_MAPS_API_KEY = st.secrets.get("GOOGLE_MAPS_API_KEY", "")
 ADMIN_EMAIL = st.secrets.get("ADMIN_EMAIL", "")
@@ -590,9 +591,34 @@ TRIAL_DAYS = 14
 
 @st.cache_resource
 def get_supabase_client():
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+    # IMPORTANTE: usiamo la service_role key (non la anon key) perché questo client è
+    # condiviso tra TUTTE le sessioni dell'app (st.cache_resource è una cache globale di
+    # processo, non per-utente). Con la anon key, l'autorizzazione delle query dipendeva
+    # dal token di login dell'ULTIMO utente che si era collegato su questo stesso client
+    # condiviso — causa di errori intermittenti "row-level security policy" dopo un
+    # redeploy (che svuota la cache) o con più utenti connessi insieme.
+    # Con la service_role key la RLS viene bypassata e l'autorizzazione è affidata al
+    # filtro esplicito `.eq('user_id', ...)` già presente in ogni funzione del codice.
+    # ATTENZIONE: la service_role key ha accesso completo al database e ignora la RLS.
+    # Va inserita SOLO nei Secrets di Streamlit Cloud — mai nel codice, mai nel repo
+    # (anche se pubblico), mai esposta lato client (qui è sicura perché l'app gira
+    # interamente lato server).
+    chiave_da_usare = SUPABASE_SERVICE_ROLE_KEY or SUPABASE_KEY
+    return create_client(SUPABASE_URL, chiave_da_usare)
 
 supabase: Client = get_supabase_client()
+
+if not SUPABASE_SERVICE_ROLE_KEY:
+    if not st.session_state.get('_avviso_service_role_mostrato'):
+        st.warning(
+            "⚠️ Manca il secret `SUPABASE_SERVICE_ROLE_KEY`: l'app funziona ancora con la "
+            "vecchia chiave, ma può dare errori di salvataggio (\"row-level security policy\") "
+            "a intermittenza dopo un redeploy o con più utenti connessi insieme. Vai su "
+            "Supabase → Settings → API, copia la **service_role key** (non la anon/public — "
+            "attenzione, dà accesso completo al database) e aggiungila nei Secrets di "
+            "Streamlit Cloud con il nome `SUPABASE_SERVICE_ROLE_KEY`."
+        )
+        st.session_state['_avviso_service_role_mostrato'] = True
 
 # --- 2. GESTIONE ABBONAMENTI/UTENTI ---
 def get_user_subscription(user_id, email=None):
