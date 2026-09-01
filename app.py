@@ -3993,6 +3993,7 @@ def main_app():
         st.session_state.reload_data = False
         # Invalida cache proiezione agenda (i dati sono cambiati)
         st.session_state.pop('_agende_cache', None)
+        st.session_state.pop('_agenda_route_cache', None)
     
     if 'config' not in st.session_state:
         config = fetch_config()
@@ -4591,6 +4592,7 @@ def main_app():
                                         st.session_state.spostamenti_cliente = _sp_dict
                                         save_spostamenti_cliente(_sp_dict)
                                         st.session_state.pop('_agende_cache', None)
+                                        st.session_state.pop('_agenda_route_cache', None)
                                         st.session_state._route_cache_key = None
                                         st.toast(f"📅 {t['nome_cliente']} spostato a {_scelta_sp}", icon="📅")
                                     st.session_state.sposta_cliente_pending = None
@@ -4752,6 +4754,7 @@ def main_app():
                                 st.session_state.spostamenti_cliente = _sp_dict_end
                                 save_spostamenti_cliente(_sp_dict_end)
                                 st.session_state.pop('_agende_cache', None)
+                                st.session_state.pop('_agenda_route_cache', None)
                                 st.rerun()
 
                 # --- 2. Alert clienti critici (compatto) ---
@@ -5561,7 +5564,31 @@ def main_app():
                 is_ferie = is_giorno_ferie_agenda(data_giorno)
                 is_oggi = data_giorno == oggi
                 is_swapped = data_giorno in date_in_scambio
-                
+
+                # === Raffina la sequenza con Google Maps (strade/tempi reali) ===
+                # Copre tutta la settimana visibile in Agenda, non solo il giorno aperto
+                # nella Mappa. Cache in session_state per non richiamare l'API ad ogni
+                # rerun di Streamlit — solo quando la composizione del giorno cambia.
+                route_info_giorno = None
+                if GOOGLE_MAPS_API_KEY and not is_ferie and len(tappe_giorno) >= 2:
+                    _blat_ag = float(config.get('lat_base', 0))
+                    _blon_ag = float(config.get('lon_base', 0))
+                    if _blat_ag != 0 and _blon_ag != 0:
+                        _rc_key_ag = (
+                            f"route_ag_{data_giorno.isoformat()}_{len(tappe_giorno)}_"
+                            f"{','.join(t['nome_cliente'][:5] for t in tappe_giorno[:3])}"
+                        )
+                        _rc_ag = st.session_state.setdefault('_agenda_route_cache', {})
+                        if _rc_key_ag in _rc_ag:
+                            tappe_giorno, route_info_giorno = _rc_ag[_rc_key_ag]
+                        else:
+                            try:
+                                tappe_giorno, route_info_giorno = ottimizza_ordine_con_google(
+                                    tappe_giorno, _blat_ag, _blon_ag, GOOGLE_MAPS_API_KEY)
+                            except Exception:
+                                route_info_giorno = None
+                            _rc_ag[_rc_key_ag] = (tappe_giorno, route_info_giorno)
+
                 with cols_giorni[col_idx]:
                     # Determina classe CSS header (oggi/scambio/ferie/normale)
                     header_class = "gv-day-header"
@@ -5626,18 +5653,13 @@ def main_app():
                         st.markdown('<div class="gv-day-minibtn"></div>', unsafe_allow_html=True)
                         if tappe_giorno and not is_ferie:
                             if st.button("🗺️", key=f"mappa_{data_giorno}", help="Mappa", use_container_width=True):
-                                tappe_per_mappa = tappe_giorno
-                                route_per_mappa = None
-                                if GOOGLE_MAPS_API_KEY and len(tappe_giorno) >= 2:
-                                    blat = float(config.get('lat_base', 0))
-                                    blon = float(config.get('lon_base', 0))
-                                    if blat != 0 and blon != 0:
-                                        tappe_per_mappa, route_per_mappa = ottimizza_ordine_con_google(
-                                            tappe_giorno, blat, blon, GOOGLE_MAPS_API_KEY)
-                                        st.session_state._route_info = route_per_mappa
+                                # tappe_giorno è già stato raffinato con Google Maps qui sopra
+                                # (se configurato) — nessuna chiamata API duplicata.
+                                if route_info_giorno:
+                                    st.session_state._route_info = route_info_giorno
                                 st.session_state.mappa_giorno_selezionato = {
                                     'data': data_giorno,
-                                    'tappe': tappe_per_mappa,
+                                    'tappe': tappe_giorno,
                                     'giorno_nome': giorni_nomi_full[giorno_idx]
                                 }
                                 st.session_state.active_tab = "🗺️ Mappa"
@@ -5648,6 +5670,7 @@ def main_app():
                                     st.session_state.giorni_ferie_singoli.append(data_giorno)
                                     save_giorni_non_disponibili([d.isoformat() for d in st.session_state.giorni_ferie_singoli])
                                     st.session_state.pop('_agende_cache', None)
+                                    st.session_state.pop('_agenda_route_cache', None)
                                     st.session_state._route_cache_key = None
                                     st.rerun()
                             elif data_giorno in st.session_state.giorni_ferie_singoli:
@@ -5655,6 +5678,7 @@ def main_app():
                                     st.session_state.giorni_ferie_singoli.remove(data_giorno)
                                     save_giorni_non_disponibili([d.isoformat() for d in st.session_state.giorni_ferie_singoli])
                                     st.session_state.pop('_agende_cache', None)
+                                    st.session_state.pop('_agenda_route_cache', None)
                                     st.session_state._route_cache_key = None
                                     st.rerun()
                             else:
@@ -7651,6 +7675,7 @@ def main_app():
             st.session_state.config = config
             # Invalida cache agenda: il max_visite dipende anche dalla durata
             st.session_state.pop('_agende_cache', None)
+            st.session_state.pop('_agenda_route_cache', None)
         
         st.divider()
         st.subheader("🎯 Massimo Visite al Giorno")
@@ -7672,6 +7697,7 @@ def main_app():
             st.session_state.config = config
             # Invalida cache agenda (il max cambia → i giri cambiano)
             st.session_state.pop('_agende_cache', None)
+            st.session_state.pop('_agenda_route_cache', None)
             st.toast(f"✅ Max visite/giorno: {max_vis_nuovo}", icon="✅")
 
         st.divider()
@@ -7716,6 +7742,7 @@ def main_app():
 
                     st.session_state.reload_data = True
                     st.session_state.pop('_agende_cache', None)
+                    st.session_state.pop('_agenda_route_cache', None)
                     msg = f"✅ Frequenza aggiornata a {int(freq_bulk_giorni)} giorni per {n_aggiornati} clienti attivi."
                     if weekend_rimosso:
                         msg += " Sabato e Domenica rimossi dai giorni lavorativi."
@@ -7761,6 +7788,7 @@ def main_app():
                     status_r.empty()
                     st.session_state.reload_data = True
                     st.session_state.pop('_agende_cache', None)
+                    st.session_state.pop('_agenda_route_cache', None)
                     st.success(f"✅ Reset completato: {n_ok_reset} clienti ripartono da oggi, allineati sulla stessa cadenza.")
                     time_module.sleep(1)
                     st.rerun()
@@ -8707,6 +8735,7 @@ def main_app():
                                 n_ok += 1
                         st.session_state.reload_data = True
                         st.session_state.pop('_agende_cache', None)
+                        st.session_state.pop('_agenda_route_cache', None)
                         st.success(f"✅ {n_ok} clienti disattivati (visitare=NO).")
                         time_module.sleep(1)
                         st.rerun()
