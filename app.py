@@ -2820,7 +2820,24 @@ def calcola_agenda_settimanale(df, config, esclusi=[], settimana_offset=0, varia
     def costruisci_anello(clienti_g, blat, blon):
         if len(clienti_g) <= 2:
             return sorted(clienti_g, key=lambda c: -c['dist_base'])
-        
+
+        # Per gruppi piccoli (fino a 7 clienti, 5040 permutazioni: istantaneo),
+        # calcola l'ordine ESATTAMENTE ottimale provando tutte le sequenze possibili,
+        # invece di affidarsi solo a euristiche + 2-opt (che su pochi punti hanno un
+        # "vicinato" troppo piccolo per garantire di trovare il minimo reale — è la
+        # causa dei giri con 3-4 clienti ma un percorso non ottimale).
+        if len(clienti_g) <= 7:
+            import itertools as _itt
+            migliore_perm = None
+            migliore_d_perm = float('inf')
+            for _perm in _itt.permutations(clienti_g):
+                _d_perm = circuito_dist(list(_perm), blat, blon)
+                if _d_perm < migliore_d_perm:
+                    migliore_d_perm = _d_perm
+                    migliore_perm = list(_perm)
+            return migliore_perm
+
+
         # Strategia 1: Angular sweep attorno al centroide
         cx = sum(c['lat'] for c in clienti_g) / len(clienti_g)
         cy = sum(c['lon'] for c in clienti_g) / len(clienti_g)
